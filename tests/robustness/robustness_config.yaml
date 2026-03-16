@@ -1,0 +1,140 @@
+# Robustness Testing Configuration
+# =================================
+# This file configures which robustness tests to run and their parameters.
+
+# General test settings
+general:
+  # Number of prompt variations to use per test
+  n_variations: 5
+
+  # Enable debug mode for verbose output
+  debug_mode: false
+
+  # Output directory for reports and artifacts (relative to tests/robustness/)
+  output_dir: "reports"
+
+  # Save detailed artifacts for each run
+  save_artifacts: true
+
+  # Enable S3 session isolation (required for multi-run tests)
+  s3_session_isolation: true
+
+# Model configuration
+model:
+  # Model provider: "deepseek", "openai", "anthropic"
+  provider: "deepseek"
+
+  # Model ID (provider-specific)
+  model_id: "deepseek-chat"
+
+  # API key environment variable name
+  api_key_env: "DEEPSEEK_API_KEY"
+
+# Robustness metrics configuration
+metrics:
+  # Weights for different metric categories (will be normalized)
+  weights:
+    data_similarity: 0.4
+    semantic_similarity: 0.3
+    process_consistency: 0.2
+    visual_similarity: 0.1
+
+  # Thresholds for rating
+  thresholds:
+    excellent: 0.90
+    good: 0.80
+    acceptable: 0.70
+
+  # Minimum robustness score to pass tests
+  pass_threshold: 0.75
+
+# Tests to run
+# Set enabled: true for tests you want to execute
+tests:
+  # Full pipeline test - runs complete workflow
+  full_pipeline:
+    enabled: false
+    prompt_key: "full_pipeline"
+    description: "Full Cs_copilot workflow: fetch → GTM → density → activity → chemotype analysis"
+
+  # Individual pipeline steps
+  chembl_download:
+    enabled: true
+    prompt_key: "chembl_download"
+    description: "Test ChEMBL data fetching robustness"
+
+  gtm_optimization:
+    enabled: false
+    prompt_key: "gtm_optimization"
+    description: "Test GTM model building robustness"
+    # Requires: chembl_download to be run first (or existing data)
+    depends_on: ["chembl_download"]
+
+  density_analysis:
+    enabled: false
+    prompt_key: "density_analysis"
+    description: "Test density landscape analysis robustness"
+    depends_on: ["gtm_optimization"]
+
+  activity_analysis:
+    enabled: false
+    prompt_key: "activity_analysis"
+    description: "Test activity landscape analysis robustness"
+    depends_on: ["gtm_optimization"]
+
+  chemotype_analysis:
+    enabled: false
+    prompt_key: "chemotype_analysis"
+    description: "Test chemotype analysis robustness"
+    depends_on: ["density_analysis"]
+
+  # Autoencoder tests
+  autoencoder_sampling:
+    enabled: false
+    prompt_key: "autoencoder_sampling"
+    description: "Test basic autoencoder molecule generation robustness"
+
+  gtm_guided_sampling:
+    enabled: false
+    prompt_key: "gtm_guided_sampling"
+    description: "Test GTM-guided autoencoder sampling robustness"
+    depends_on: ["gtm_optimization"]
+
+  interpolation:
+    enabled: false
+    prompt_key: "interpolation"
+    description: "Test molecular interpolation robustness"
+    # Additional parameters for interpolation
+    params:
+      molecule_a: "CCO"  # Ethanol
+      molecule_b: "CCCCCCCCCC"  # Decane
+
+  latent_exploration:
+    enabled: false
+    prompt_key: "latent_exploration"
+    description: "Test latent space exploration robustness"
+    params:
+      seed_molecule: "CC(=O)Oc1ccccc1C(=O)O"  # Aspirin
+
+# Custom prompts (optional)
+# Add custom test scenarios with your own prompts
+custom_tests:
+  # Example custom test:
+  # my_custom_test:
+  #   enabled: false
+  #   prompt: "Your custom prompt here"
+  #   description: "Description of what this tests"
+
+# Reporting options
+reporting:
+  # Generate markdown report
+  generate_markdown: true
+
+  # Generate JSON summary
+  generate_json: true
+
+  # Include per-run details in report
+  include_run_details: true
+
+  # Include recommendations
+  include_recommendations: true

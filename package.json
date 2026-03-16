@@ -1,0 +1,11 @@
+{
+  "name": "cs_copilot-datalayer",
+  "version": "1.0.0",
+  "description": "Chainlit data layer for Cs_copilot",
+  "scripts": {
+    "migrate": "prisma migrate deploy"
+  },
+  "devDependencies": {
+    "prisma": "^6.2.0"
+  }
+}

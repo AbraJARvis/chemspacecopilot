@@ -1,0 +1,100 @@
+prompts:
+  full_pipeline:
+    base: "Fetch kinase 2 inhibitor data, prepare GTM, describe the density landscape, prepare and describe the activity landscape, choose the most dense nodes and analyze the chemotypes in them. What assays do they correspond to? Are actives/inactives well separated? Summarize in detail."
+    variations:
+      - "Retrieve CDK2 inhibitor bioactivity from ChEMBL, build a GTM, describe density and activity landscapes, analyze dense-region scaffolds/assays, assess class separation, and summarize."
+
+  chembl_download:
+    base: "Download kinase 2 inhibitor data from ChEMBL"
+    variations:
+      - "Fetch CDK2 bioactivity from ChEMBL."
+
+  chembl_interactivity:
+    base_prompts:
+      # --------------------------------------------------------------------
+      # Prompts that should trigger clarification
+      # --------------------------------------------------------------------
+      - base: "Download data from ChEMBL"
+        requires_clarification: true
+        variations:
+          - "Fetch ChEMBL data."
+      - base: "Grab some ChEMBL records for kinase inhibitors"
+        requires_clarification: true
+        variations:
+          - "Pull ChEMBL kinase entries."
+      - base: "Retrieve ChEMBL data for antiviral compounds"
+        requires_clarification: true
+        variations:
+          - "ChEMBL virus compound data."
+      - base: "Get ChEMBL data for antibacterial targets"
+        requires_clarification: true
+        variations:
+          - "Download ChEMBL antibacterial target data."
+      - base: "Load ChEMBL activities for GPCRs for homo sapiens"
+        requires_clarification: true
+        variations:
+          - "ChEMBL GPCR data (Homo sapiens)."
+
+      # --------------------------------------------------------------------
+      # Prompts that are fully specified for immediate retrieval
+      # --------------------------------------------------------------------
+      - base: "Retrieve ChEMBL bioactivity (binding) data for human CDK2 targets in Homo sapiens assays"
+        requires_clarification: false
+        variations:
+          - "Download human CDK2 binding assays from ChEMBL."
+      - base: "Download ChEMBL functional assay data for human EGFR with activity type IC50"
+        requires_clarification: false
+        variations:
+          - "Fetch ChEMBL EGFR IC50 functional assays (human)."
+      - base: "Fetch ChEMBL inhibition data for PTP1B (target CHEMBL3553) assays in Homo sapiens"
+        requires_clarification: false
+        variations:
+          - "Retrieve ChEMBL PTP1B inhibition assays (human)."
+      - base: "Retrieve ChEMBL Ki measurements for human CYP3A4 (CHEMBL340) binding assays"
+        requires_clarification: false
+        variations:
+          - "Download ChEMBL CYP3A4 Ki binding data (human)."
+      - base: "Download ChEMBL pIC50 data for human HIV 1 reverse transcriptase (CHEMBL2366517) inhibition assays"
+        requires_clarification: false
+        variations:
+          - "Fetch ChEMBL HIV-1 RT pIC50 inhibition data."
+
+  gtm_optimization:
+    base: "Build a GTM map"
+    variations:
+      - "Optimize GTM with neighborhood param."
+
+  density_analysis:
+    base: "Describe the density landscape"
+    variations:
+      - "Analyze density distribution."
+
+  activity_analysis:
+    base: "Create and describe the activity landscape"
+    variations:
+      - "Generate activity landscape and analyze patterns."
+
+  chemotype_analysis:
+    base: "Find dense nodes and analyze chemotypes. What assays? Are actives separated?"
+    variations:
+      - "Find dense regions, decompose scaffolds, report assays, assess class separation."
+
+  autoencoder_sampling:
+    base: "Sample from autoencoder model"
+    variations:
+      - "Generate molecules with the autoencoder."
+
+  gtm_guided_sampling:
+    base: "Sample from autoencoder model using GTM dense nodes as guidance"
+    variations:
+      - "Generate autoencoder molecules guided by dense GTM regions."
+
+  interpolation:
+    base: "Interpolate between two molecules using the autoencoder"
+    variations:
+      - "Interpolate between two SMILES in latent space."
+
+  latent_exploration:
+    base: "Explore the latent space around a given molecule using the autoencoder"
+    variations:
+      - "Generate similar molecules by exploring a compound's latent neighborhood."

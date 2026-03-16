@@ -1,0 +1,6 @@
+/* Override the logo size to be larger and responsive */
+img.logo {
+    width: min(500px, 80vw) !important;
+    max-width: 500px !important;
+    height: auto !important;
+}

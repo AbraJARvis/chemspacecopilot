@@ -1,0 +1,40 @@
+version: '3.8'
+
+# Development override for docker-compose.yml
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  chainlit-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Hot-reload: mount source code
+      - .:/app
+      # Exclude Python cache and virtual env
+      - /app/__pycache__
+      - /app/.venv
+    environment:
+      # Development mode
+      - CHAINLIT_DEV=true
+      # Disable S3 for faster local development (optional)
+      # - USE_S3=false
+    command: ["uv", "run", "chainlit", "run", "chainlit_app.py", "-w", "--host", "0.0.0.0", "--port", "8000"]
+    stdin_open: true
+    tty: true
+
+  minio:
+    # Expose additional port for debugging (MINIO_CONSOLE_PORT set by docker-start.sh)
+    ports:
+      - "9000:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+
+  postgres:
+    # Expose PostgreSQL for direct access from host (POSTGRES_PORT set by docker-start.sh)
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      # Enable logging for debugging
+      - POSTGRES_LOG_STATEMENT=all

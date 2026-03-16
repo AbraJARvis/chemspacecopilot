@@ -1,0 +1,142 @@
+version: '3.8'
+
+services:
+  # Chainlit Application
+  chainlit-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cs_copilot_chainlit-app
+    container_name: cs_copilot-app
+    ports:
+      - "${CHAINLIT_PORT:-8000}:8000"  # fallback 8000-8010 via docker-start.sh
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # AI Model Configuration (override .modelconf via env vars)
+      - MODEL_PROVIDER=${MODEL_PROVIDER:-}
+      - MODEL_ID=${MODEL_ID:-}
+      - OLLAMA_HOST=${OLLAMA_HOST:-}
+      # DeepSeek API Key (only required when MODEL_PROVIDER=deepseek or not set)
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+
+      # Chainlit Auth
+      - CHAINLIT_AUTH_SECRET=${CHAINLIT_AUTH_SECRET:-default-secret-change-in-production}
+
+      # S3/MinIO Configuration
+      - USE_S3=true
+      - MINIO_ENDPOINT=http://minio:9000
+      - S3_ENDPOINT_URL=http://minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-cs_copilot}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-chempwd123}
+      - ASSETS_BUCKET=${ASSETS_BUCKET:-chatbot-assets}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME:-chatbot-assets}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+
+      # Database Configuration (for Chainlit history)
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/chainlit
+    volumes:
+      # Persistent storage for SQLite databases
+      - ./data:/app/data
+      # Models directory
+      - ./models:/app/models
+    depends_on:
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+      chainlit-db-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - cs_copilot-network
+
+  # Chainlit DB schema (User, Thread, Step, etc.) – runs Prisma migrations after Postgres is up
+  chainlit-db-init:
+    image: cs_copilot_chainlit-app
+    container_name: cs_copilot-chainlit-db-init
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/chainlit
+    working_dir: /app
+    # Fix migration_lock.toml at runtime (Prisma 6.x fails to parse file when it contains comments)
+    command: ["/bin/sh", "-c", "printf '%s\\n' 'provider = \"postgresql\"' > prisma/migrations/migration_lock.toml && npx prisma migrate deploy"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - cs_copilot-network
+    restart: "no"
+
+  # MinIO (S3-compatible storage)
+  minio:
+    image: minio/minio:latest
+    container_name: cs_copilot-minio
+    ports:
+      - "${MINIO_PORT:-9000}:9000"  # API (fallback 9000-9010 via docker-start.sh)
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"  # Console (fallback 9001-9010 via docker-start.sh)
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-cs_copilot}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-chempwd123}
+    volumes:
+      - minio-data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - cs_copilot-network
+
+  # MinIO Setup (Create bucket on first run)
+  minio-setup:
+    image: minio/mc:latest
+    container_name: cs_copilot-minio-setup
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set minio http://minio:9000 ${MINIO_ACCESS_KEY:-cs_copilot} ${MINIO_SECRET_KEY:-chempwd123};
+      mc mb minio/${ASSETS_BUCKET:-chatbot-assets} --ignore-existing;
+      mc anonymous set download minio/${ASSETS_BUCKET:-chatbot-assets};
+      echo 'MinIO bucket setup complete';
+      "
+    networks:
+      - cs_copilot-network
+
+  # PostgreSQL (for Chainlit chat history)
+  postgres:
+    image: postgres:16-alpine
+    container_name: cs_copilot-postgres
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"  # fallback 5432-5441 via docker-start.sh
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=chainlit
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - cs_copilot-network
+
+volumes:
+  minio-data:
+    driver: local
+  postgres-data:
+    driver: local
+
+networks:
+  cs_copilot-network:
+    driver: bridge

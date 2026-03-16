@@ -1,0 +1,230 @@
+prompts:
+  full_pipeline:
+    base: "Fetch kinase 2 inhibitor data, prepare GTM, describe the density landscape, prepare and describe the activity landscape, choose the most dense nodes and analyze the chemotypes in them. What assays do they correspond to? Are actives/inactives well separated? Summarize in detail."
+    variations:
+      - "Retrieve bioactivity data for cyclin-dependent kinase 2 inhibitors from ChEMBL. Construct a GTM projection. Characterize the density distribution across the manifold. Generate activity landscape visualizations and provide detailed analysis. Identify high-density regions and perform scaffold decomposition. Report assay distributions and evaluate class separation. Provide comprehensive summary."
+      - "Get CDK2 inhibitor data. Build GTM map. Show density + activity landscapes. Find dense nodes, analyze chemotypes + assays. Check active/inactive separation. Write summary."
+      - "Can you download kinase 2 inhibitor data and build a GTM with 50 hits? What does the density landscape look like? How about activity? Which nodes are most populated? What scaffolds appear there and which assays? Are actives and inactives in different regions? Please summarize everything."
+      - "First, download kinase 2 inhibitor bioactivity data. Second, optimize a GTM model. Third, analyze and describe the density patterns. Fourth, create activity landscape plots and describe them. Fifth, identify the densest nodes. Sixth, analyze what chemotypes are present in those nodes. Seventh, determine which assays they belong to. Eighth, assess whether active and inactive compounds are separated. Finally, prepare a detailed summary."
+      - "I need a complete analysis of CDK2 inhibitors: fetch the data, map it with GTM, show me where compounds cluster (density), show me where active compounds are (activity landscape), tell me what chemical scaffolds dominate the dense regions, which assays produced this data, whether actives and inactives occupy different areas, and summarize all findings."
+      - "Hi! I'm interested in kinase 2 inhibitors. Could you pull that data for me and create a GTM map using 50 neighbors? Then show me the density landscape and activity landscape. After that, pick the nodes with the most compounds and tell me what chemotypes are there. I also want to know about the assays and whether active vs inactive compounds are in separate regions. Thanks, and please give me a thorough summary!"
+      - "Please conduct a comprehensive chemoinformatics analysis: (1) query ChEMBL for kinase 2 inhibitor bioactivity; (2) apply GTM dimensionality reduction; (3) characterize the density topology; (4) visualize SAR through activity landscapes; (5) perform chemotype enrichment analysis on high-density nodes; (6) annotate assay provenance; (7) evaluate spatial clustering of bioactive vs. inactive molecules; (8) synthesize findings in detailed report."
+      - "Please do the following:\n   - Fetch kinase 2 inhibitor data\n   - Prepare GTM\n   - Describe density landscape\n   - Describe activity landscape\n   - Find most dense nodes\n   - Analyze chemotypes in those nodes\n   - Identify corresponding assays\n   - Check if actives/inactives are well separated\n   - Provide detailed summary"
+      - "I would like you to retrieve compound bioactivity data from the ChEMBL database specifically for kinase 2 (cyclin-dependent kinase 2) inhibitors. Once you have the data, please build a Generative Topographic Mapping model. After the map is built, I need you to analyze and describe what the density landscape looks like - where are the dense and sparse regions. Then create the activity landscape visualization and describe the patterns you see there. Next, identify which nodes on the map have the highest density of compounds. For those dense nodes, perform a chemotype analysis to understand what chemical scaffolds are present. I also want to know which assays contributed compounds to these regions. Additionally, please evaluate whether the active compounds are well separated from the inactive ones on the map. Finally, prepare a comprehensive, detailed summary of all your findings."
+      - "kinase 2 inhibitors: get data, GTM, density map, activity map, dense nodes -> chemotypes + assays, actives vs inactives separated?, summary"
+
+  chembl_download:
+    base: "Download kinase 2 inhibitor data from ChEMBL"
+    variations:
+      - "Fetch CDK2 bioactivity data from ChEMBL database"
+      - "Retrieve cyclin-dependent kinase 2 inhibitor compounds from ChEMBL"
+      - "Get kinase 2 inhibitor bioactivity information from ChEMBL"
+      - "Pull down ChEMBL data for CDK2 inhibitors"
+      - "Can you download kinase 2 inhibitor data for me?"
+      - "I need ChEMBL bioactivity data on cyclin dependent kinase 2 inhibitors"
+      - "Query ChEMBL for kinase 2 inhibitor activity"
+      - "Fetch kinase-2 inhibitor dataset from ChEMBL"
+      - "Get me the ChEMBL compounds and activities for kinase 2 inhibition"
+      - "cdk2 inhibitors from chembl"
+
+  chembl_interactivity:
+    base_prompts:
+      # --------------------------------------------------------------------
+      # Prompts that should trigger clarification
+      # --------------------------------------------------------------------
+      - base: "Download data from ChEMBL"
+        requires_clarification: true
+        variations:
+          - "Fetch data from ChEMBL"
+          - "Can you pull down a dataset from ChEMBL?"
+          - "Download ChEMBL data"
+          - "Get data from ChEMBL"
+          - "I need a dataset on compounds active against SARS-CoV-2 from the ChEMBL database"
+      - base: "Grab some ChEMBL records for kinase inhibitors"
+        requires_clarification: true
+        variations:
+          - "Pull ChEMBL entries related to kinases"
+          - "Get kinase information from ChEMBL"
+          - "Can you fetch some inhibitor data from ChEMBL?"
+          - "Fetch ChEMBL kinase molecules"
+          - "Download kinase assay rows"
+      - base: "Retrieve ChEMBL data for antiviral compounds"
+        requires_clarification: true
+        variations:
+          - "ChEMBL compounds for a virus"
+          - "Collect antiviral ChEMBL data"
+          - "Pull assay data for viral targets"
+          - "ChEMBL entries related to antivirals"
+          - "Need ChEMBL data for virology"
+      - base: "Get ChEMBL data for antibacterial targets"
+        requires_clarification: true
+        variations:
+          - "Download ChEMBL CSV files for antibacterial targets"
+          - "ChEMBL bioassay export for antibacterial targets"
+          - "Pull a ChEMBL dataset for antibacterial targets"
+          - "Can you export ChEMBL bioactivity for antibacterial targets?"
+          - "Extract ChEMBL activities for antibacterial targets"
+      - base: "Load ChEMBL activities for GPCRs for homo sapiens"
+        requires_clarification: true
+        variations:
+          - "GPCR homo sapiens data from ChEMBL"
+          - "ChEMBL GPCR bioactivity homo sapiens"
+          - "Download GPCR tables homo sapiens"
+          - "Fetch GPCR ChEMBL rows homo sapiens"
+          - "Retrieve GPCR compounds homo sapiens"
+
+      # --------------------------------------------------------------------
+      # Prompts that are fully specified for immediate retrieval
+      # --------------------------------------------------------------------
+      - base: "Retrieve ChEMBL bioactivity (binding) data for human CDK2 targets in Homo sapiens assays"
+        requires_clarification: false
+        variations:
+          - "Download ChEMBL binding assays for CDK2 in human"
+          - "Fetch human cyclin-dependent kinase 2 binding data from ChEMBL"
+          - "Pull CDK2 Homo sapiens binding assay table from ChEMBL"
+          - "Get ChEMBL binding measurements for human CDK2"
+          - "Retrieve ChEMBL bioactivities for CDK2 binding (organism: Homo sapiens)"
+      - base: "Download ChEMBL functional assay data for human EGFR with activity type IC50"
+        requires_clarification: false
+        variations:
+          - "Fetch human EGFR IC50 functional assays from ChEMBL"
+          - "Retrieve ChEMBL IC50 functional data for EGFR in Homo sapiens"
+          - "Get ChEMBL EGFR IC50 entries (organism Homo sapiens, assay type functional)"
+          - "Pull EGFR functional IC50 assays in ChEMBL for human"
+          - "ChEMBL IC50 functional assays for human EGFR"
+      - base: "Fetch ChEMBL inhibition data for PTP1B (target CHEMBL3553) assays in Homo sapiens"
+        requires_clarification: false
+        variations:
+          - "Retrieve human PTP1B inhibition assays from ChEMBL"
+          - "Download ChEMBL data for PTP1B inhibition in Homo sapiens"
+          - "Pull PTP1B inhibition bioactivities (organism human)"
+          - "Get ChEMBL inhibition assay rows for PTP1B in humans"
+          - "Fetch human PTP1B inhibition dataset"
+      - base: "Retrieve ChEMBL Ki measurements for human CYP3A4 (CHEMBL340) binding assays"
+        requires_clarification: false
+        variations:
+          - "Download ChEMBL Ki binding data for CYP3A4 in humans"
+          - "Pull human CYP3A4 binding Ki rows from ChEMBL"
+          - "Get ChEMBL Ki values for CYP3A4 binding assays"
+          - "Fetch Ki binding measurements for human CYP3A4"
+          - "Retrieve ChEMBL CYP3A4 binding Ki dataset (organism Homo sapiens)"
+      - base: "Download ChEMBL pIC50 data for human HIV 1 reverse transcriptase (CHEMBL2366517) inhibition assays"
+        requires_clarification: false
+        variations:
+          - "Fetch human HIV 1 RT pIC50 inhibition data from ChEMBL"
+          - "Retrieve ChEMBL pIC50 entries for HIV 1 reverse transcriptase"
+          - "Pull pIC50 inhibition assay rows for human HIV 1 reverse transcriptase"
+          - "Get ChEMBL pIC50 inhibition data for HIV 1 RT (human)"
+          - "Download human immunodeficiency virus 1 reverse transcriptase pIC50 inhibition measurements"
+
+  gtm_optimization:
+    base: "Build a GTM map"
+    variations:
+      - "Optimize GTM using neighborhood parameter"
+      - "Create generative topographic mapping with neighbors"
+      - "Fit a GTM model"
+      - "Construct GTM projection"
+      - "Can you build a GTM map?"
+      - "I need a GTM"
+      - "Prepare a Generative Topographic Map with neighborhood points"
+      - "Apply GTM dimensionality reduction"
+      - "Create a GTM using parameter"
+      - "gtm"
+
+  density_analysis:
+    base: "Describe the density landscape"
+    variations:
+      - "Analyze and characterize the density distribution"
+      - "What does the compound density pattern look like?"
+      - "Provide density landscape analysis"
+      - "Describe the density topology of the map"
+      - "Can you tell me about the density landscape?"
+      - "I want to understand the density patterns on this map"
+      - "Characterize where compounds are dense vs sparse"
+      - "Analyze the density distribution across the GTM"
+      - "Describe how compounds are distributed in terms of density"
+      - "show density map"
+
+  activity_analysis:
+    base: "Create and describe the activity landscape"
+    variations:
+      - "Generate activity landscape visualization and analyze patterns"
+      - "Show me where active compounds are located on the map"
+      - "Produce activity landscape and describe it"
+      - "Visualize the SAR landscape"
+      - "Can you create the activity landscape?"
+      - "I need to see the activity landscape with analysis"
+      - "Make an activity landscape plot and tell me what it shows"
+      - "Generate and characterize the activity distribution"
+      - "Show activity patterns across the GTM"
+      - "activity map + description"
+
+  chemotype_analysis:
+    base: "Find dense nodes and analyze chemotypes. What assays? Are actives separated?"
+    variations:
+      - "Identify high-density regions, decompose scaffolds, report assay provenance, evaluate class separation"
+      - "Which nodes are most populated? What scaffolds? Which assays? Actives vs inactives separated?"
+      - "Pick the densest nodes, analyze their chemotypes, tell me the assays, and check if actives/inactives are separated"
+      - "For the dense nodes: what chemotypes are there, which assays, and are the active and inactive compounds well separated?"
+      - "Can you find the nodes with most compounds, analyze their scaffolds, identify the assays, and tell me if actives are separated from inactives?"
+      - "I want chemotype analysis of dense regions with assay information and active/inactive separation assessment"
+      - "Perform scaffold analysis on high-density nodes, annotate assay sources, evaluate bioactive compound clustering"
+      - "Identify most populated nodes -> chemotype decomposition -> assay mapping -> class separation evaluation"
+      - "For the densest areas of the map, describe the chemical scaffolds present, which experimental assays contributed data, and whether the active molecules are clustered separately from inactive ones"
+      - "dense nodes: scaffolds? assays? separated?"
+
+  autoencoder_sampling:
+    base: "Sample from autoencoder model"
+    variations:
+      - "Generate molecules using the autoencoder model"
+      - "Use the autoencoder to sample new chemical structures"
+      - "Sample novel molecules from the autoencoder's latent space"
+      - "Generate new compounds by sampling from the autoencoder"
+      - "Can you sample some molecules from the autoencoder?"
+      - "I want to generate molecules using the autoencoder model"
+      - "Please sample chemical structures from the trained autoencoder"
+      - "Use autoencoder to generate novel molecular structures"
+      - "Generate new molecules via autoencoder sampling"
+      - "autoencoder: sample molecules"
+
+  gtm_guided_sampling:
+    base: "Sample from autoencoder model using GTM dense nodes as guidance"
+    variations:
+      - "Generate molecules from the autoencoder guided by dense regions on the GTM map"
+      - "Use GTM dense nodes to guide autoencoder sampling of new molecules"
+      - "Sample molecules from autoencoder, focusing on high-density GTM regions"
+      - "Generate new compounds using the autoencoder, guided by where compounds cluster densely on the GTM"
+      - "Can you sample from the autoencoder using the dense GTM nodes as starting points?"
+      - "I want to generate molecules using the autoencoder, but focus on the dense areas of the GTM map"
+      - "Please sample from autoencoder latent space around dense GTM regions"
+      - "Use GTM density information to guide molecule generation from the autoencoder"
+      - "Generate molecules by sampling autoencoder near dense GTM coordinates"
+      - "GTM dense → encode → sample → new molecules"
+
+  interpolation:
+    base: "Interpolate between two molecules using the autoencoder"
+    variations:
+      - "Generate molecules by interpolating between two SMILES strings in latent space"
+      - "Use the autoencoder to create a smooth transition between two molecules"
+      - "Interpolate in latent space between molecule A and molecule B"
+      - "Generate intermediate structures between two compounds using the autoencoder"
+      - "Can you interpolate between these two molecules using the autoencoder?"
+      - "I want to see molecules between compound 1 and compound 2 via latent interpolation"
+      - "Please generate interpolated structures between two molecules using the autoencoder"
+      - "Create a series of molecules transitioning from one structure to another"
+      - "Use autoencoder latent interpolation to generate molecules between two SMILES"
+      - "molecule A → encode → interpolate → decode → molecule B"
+
+  latent_exploration:
+    base: "Explore the latent space around a given molecule using the autoencoder"
+    variations:
+      - "Generate similar molecules by exploring the latent neighborhood of a given compound"
+      - "Use the autoencoder to sample molecules near a specific compound in latent space"
+      - "Explore the chemical space around a molecule by sampling its latent neighborhood"
+      - "Generate analogs of a compound by perturbing its latent representation"
+      - "Can you generate similar molecules to this one using latent space exploration?"
+      - "I want to explore molecules similar to this compound using the autoencoder"
+      - "Please sample molecules near this structure in the autoencoder's latent space"
+      - "Generate molecular analogs by exploring latent space around a given SMILES"
+      - "Use autoencoder to find neighbors of a molecule in latent space"
+      - "molecule → encode → add noise → decode → analogs"

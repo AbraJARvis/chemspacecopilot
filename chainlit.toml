@@ -1,0 +1,16 @@
+[project]
+enable_telemetry = false
+
+[UI]
+name = "ChemSpace Copilot"
+
+[persistence]
+enabled = false
+
+[features]
+
+[features.spontaneous_file_upload]
+enabled = true
+accept = ["*/*"]
+max_files = 10
+max_size_mb = 100

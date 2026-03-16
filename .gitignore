@@ -1,0 +1,39 @@
+**/.ipynb_checkpoints/
+cs_copilot/__pycache__/
+.python-version
+notebooks/__pycache__/
+src/cs_copilot/__pycache__/
+src/cs_copilot/dr_methods/__pycache__/
+reports/
+data/
+tmp/
+# Robustness test artifacts (local copies, S3 is the source of truth)
+tests/robustness/reports/
+tests/robustness/artifacts/
+*.pyc
+*.log.*
+*.log
+cs_copilot_memory.db
+cs_copilot_memory.db-journal
+cs_copilot_memory.db-wal
+cs_copilot_memory.db-shm
+static/
+.chainlit/
+last_session_messages.jsonl
+# Environment variables - never commit secrets!
+.env
+# Persisted secrets (generated in container)
+data/.chainlit_secret
+AGENTS.md
+# Temp files for the UI
+.files/
+synplan_data/*
+synplan_data/
+*.db
+site/
+
+# Marimo session cache
+notebooks/__marimo__/
+
+# HuggingFace Hub cache refs
+models/**/refs/

@@ -1,0 +1,138 @@
+[project]
+name = "cs_copilot"
+version = "0.1.0"
+description = "LLM-powered agent system for GTM-based chemical space analysis"
+authors = [
+    {name = "Alexey Orlov",email = "data2scale@gmail.com"},
+]
+dependencies = [
+    "seaborn>=0.13.2",
+    "jupyterlab>=4.4.9",
+    "ipywidgets>=8.1.7",
+    "optuna>=4.5.0",
+    "chemographykit>=0.1.0",
+    "ugtm>=2.1.0.post2",
+    "rdkit>=2025.9.1",
+    "torch>=2.9.0",
+    "torchvision>=0.24.0",
+    "torchaudio>=2.9.0",
+    "ipykernel>=7.0.1",
+    "dill>=0.4.0",
+    "accelerate>=1.11.0",
+    "pandarallel>=1.6.5",
+    "openai>=2.6.0",
+    "lancedb>=0.25.2",
+    "tantivy>=0.25.0",
+    "pypdf>=6.1.2",
+    "requests>=2.32.5",
+    "exa-py>=1.16.1",
+    "newspaper4k>=0.9.3.1",
+    "lxml-html-clean>=0.4.3",
+    "sqlalchemy>=2.0.44",
+    "agno==2.1.9",
+    "ollama>=0.4.0",
+    "chembl-webresource-client>=0.10.9",
+    "vl-convert-python>=1.8.0",
+    "tabulate>=0.9.0",
+    "chainlit>=2.8.3",
+    "s3fs>=2025.9.0",
+    "asyncpg>=0.30.0",
+    "numba>=0.62.1",
+    "huggingface-hub<1.0",
+    "deepchemography @ git+https://github.com/AxelRolov/deepchemography.git@main",
+    "marimo>=0.18.4",
+    "transformers>=4.57.3",
+    "sentence-transformers>=5.2.0",
+]
+requires-python = "==3.11.*"
+readme = "README.md"
+license = {text = "MIT"}
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cs_copilot"]
+
+[project.optional-dependencies]
+synplanner = [
+    "SynPlanner>=1.2.1",
+    "pubchempy>=1.0.5",
+    "CairoSVG>=2.8.2",
+]
+
+[dependency-groups]
+dev = [
+    "jupyterlab>=4.4.0",
+    "pre-commit>=4.0.0",
+    "pytest>=8.0.0",
+    "pytest-mock>=3.14.0",
+    "black>=24.0.0",
+    "isort>=5.13.0",
+    "ruff>=0.8.0",
+    "sentence-transformers>=3.0.0",
+]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.24",
+]
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+skip_gitignore = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+]
+ignore = [
+    "E501",  # line too long (handled by black)
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"

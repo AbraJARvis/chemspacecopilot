@@ -1,0 +1,18 @@
+# Model Configuration for ChemSpace Copilot
+# =====================================
+# This file controls which LLM backend ChemSpace Copilot uses.
+# Edit the values below or override them with environment variables
+# (MODEL_PROVIDER, MODEL_ID, OLLAMA_HOST).
+
+# provider: "deepseek" (cloud API) or "ollama" (local model)
+provider=deepseek
+
+# Model ID (provider-specific)
+# For deepseek: "deepseek-chat", "deepseek-reasoner", etc.
+# For ollama: any model available on your Ollama instance, e.g. "llama3.1", "qwen2.5:72b"
+model_id=deepseek-chat
+
+# Ollama host (only used when provider=ollama, optional)
+# Default: http://localhost:11434
+# In Docker: use http://host.docker.internal:11434 to reach host Ollama
+# ollama_host=http://localhost:11434
