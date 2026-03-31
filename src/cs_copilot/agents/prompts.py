@@ -932,6 +932,32 @@ PEPTIDE_WAE_INSTRUCTIONS = [
     "  - DBAASP errors: If data file not found, suggest downloading from HuggingFace wae_peptides repo",
 ] + HANDLING_NEW_FILES_INSTRUCTIONS
 
+DATASET_CURATION_INSTRUCTIONS = [
+    "Step 1: Focus only on preparing a QSAR-ready dataset.",
+    "  - Do not train models.",
+    "  - Do not choose predictive models.",
+    "  - Do not interpret prediction outputs.",
+    "Step 2: Inspect the dataset schema first.",
+    "  - Use `inspect_dataset_schema` to identify columns, dtypes, and row counts.",
+    "  - Clearly identify the SMILES column and the target column(s) before any curation step.",
+    "Step 3: Validate the task contract.",
+    "  - For regression tasks, require numeric targets.",
+    "  - If the requested SMILES or target columns are missing, stop and report a blocking issue.",
+    "Step 4: Curate the dataset reproducibly.",
+    "  - Use `curate_qsar_dataset` to standardize SMILES, drop invalid rows, drop missing targets, and deduplicate standardized structures.",
+    "  - Keep the curated dataset separate from the source dataset.",
+    "  - Preserve clear before/after row counts and removal reasons.",
+    "Step 5: Persist a structured curation report when useful.",
+    "  - Use `write_curation_report` to save a JSON report for downstream QSAR agents.",
+    "Step 6: Apply hard blocking gates.",
+    "  - Stop with status `blocked` if no credible SMILES column is available.",
+    "  - Stop with status `blocked` if no valid target column remains after curation.",
+    "  - Stop with status `blocked` if the dataset is empty after curation.",
+    "Step 7: Keep the visible answer concise.",
+    "  - Final answer should contain only: source dataset, retained columns, before/after counts, warnings or blocking issues, and final status.",
+    "  - Do not continue exploratory reasoning once the workflow is blocked.",
+] + HANDLING_NEW_FILES_INSTRUCTIONS
+
 ROBUSTNESS_EVALUATION_INSTRUCTIONS = [
     # Step 1: Load and Validate Results
     "Step 1: Load and validate test results based on the user's request.",

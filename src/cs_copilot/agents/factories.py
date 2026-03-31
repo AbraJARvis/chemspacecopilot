@@ -17,6 +17,7 @@ from cs_copilot.tools import (
     AutoencoderToolkit,
     ChemblToolkit,
     ChemicalSimilarityToolkit,
+    DatasetCurationToolkit,
     GTMToolkit,
     PeptideWAEToolkit,
     PointerPandasTools,
@@ -30,6 +31,7 @@ from .prompts import (
     AUTOENCODER_INSTRUCTIONS,
     CHEMBL_INSTRUCTIONS,
     CHEMOINFORMATICIAN_INSTRUCTIONS,  # Comprehensive chemoinformatics analysis
+    DATASET_CURATION_INSTRUCTIONS,
     GTM_AGENT_INSTRUCTIONS,  # Unified GTM agent (all GTM operations)
     PEPTIDE_WAE_INSTRUCTIONS,  # Peptide WAE for amino acid sequence generation
     REPORT_GENERATOR_INSTRUCTIONS,  # Universal presentation layer
@@ -615,6 +617,47 @@ class ReportGeneratorFactory(BaseAgentFactory):
                     "plots": [],
                     "report_type": None,
                 },
+            },
+        )
+
+
+class DatasetCurationFactory(BaseAgentFactory):
+    """Factory for creating isolated QSAR dataset curation agents."""
+
+    agent_type = "dataset_curation"
+
+    def get_agent_config(self) -> AgentConfig:
+        return AgentConfig(
+            name="dataset_curation_agent",
+            description="""
+            You are a specialized QSAR dataset curation assistant.
+            Your role is to inspect raw datasets, identify the correct SMILES and
+            target columns, standardize structures, remove invalid or duplicate
+            entries, and produce a QSAR-ready curated dataset with a structured
+            curation report.
+
+            Scope:
+            - dataset inspection
+            - column identification
+            - SMILES standardization
+            - duplicate removal
+            - missing target cleanup
+            - curation reporting
+
+            Non-goals:
+            - model training
+            - model selection
+            - prediction execution
+            - prediction analysis
+            """,
+            tools=[DatasetCurationToolkit()],
+            instructions=DATASET_CURATION_INSTRUCTIONS,
+            session_state={
+                "qsar_curation": {
+                    "last_request": {},
+                    "last_result": {},
+                    "history": [],
+                }
             },
         )
 

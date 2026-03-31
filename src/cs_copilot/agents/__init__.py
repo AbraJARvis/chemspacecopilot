@@ -26,6 +26,7 @@ Available Agent Types (5-Agent Architecture):
 ----------------------------------------------
 Core Agents:
 - "chembl_downloader" - Download and process bioactivity data from ChEMBL database
+- "dataset_curation" - Prepare QSAR-ready datasets via isolated curation workflows
 - "gtm_agent" - Unified GTM operations (build, load, density, activity, project) with smart caching
 - "chemoinformatician" - Comprehensive chemoinformatics (chemotype, clustering, SAR, similarity, QSAR)
 - "report_generator" - Universal presentation layer for all analysis types

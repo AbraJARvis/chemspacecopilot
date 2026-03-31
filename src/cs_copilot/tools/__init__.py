@@ -29,6 +29,7 @@ from .chemistry import (
     PeptideWAEToolkit,
     SynPlannerToolkit,
 )
+from .curation import DatasetCurationToolkit
 
 # GTM Toolkit
 from .chemography.gtm import GTMToolkit
@@ -53,6 +54,7 @@ __all__ = [
     "GTMToolkit",
     "BaseChemistryToolkit",
     "ChemicalSimilarityToolkit",
+    "DatasetCurationToolkit",
     "AutoencoderToolkit",
     "PeptideWAEToolkit",
     "SynPlannerToolkit",

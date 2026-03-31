@@ -37,3 +37,10 @@ notebooks/__marimo__/
 
 # HuggingFace Hub cache refs
 models/**/refs/
+
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store
+
+# Local raw dataset used for interactive training runs
+Lipophilicity_AstraZeneca.csv
