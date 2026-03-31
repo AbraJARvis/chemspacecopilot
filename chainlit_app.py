@@ -19,7 +19,7 @@ from chainlit.input_widget import Switch
 from chainlit.types import ThreadDict
 from dotenv import load_dotenv
 
-from cs_copilot.agents.teams import get_cs_copilot_agent_team
+from cs_copilot.agents.teams import get_cs_copilot_agent_team, get_qsar_agent_team
 from cs_copilot.model_config import _is_retriable, arun_with_retry, load_model_from_config
 from cs_copilot.storage import S3
 from cs_copilot.tools.io.formatting import smiles_to_png_bytes
@@ -70,6 +70,17 @@ model = load_model_from_config()
 # ❷ Define the agent factory (per chat thread)
 
 
+def _create_session_agent():
+    """Create the configured team for the current app deployment."""
+    team_mode = os.getenv("CS_COPILOT_AGENT_TEAM", "main").strip().lower()
+    team_factory = get_qsar_agent_team if team_mode == "qsar" else get_cs_copilot_agent_team
+    logger.info("Initializing session agent team: %s", team_mode)
+    return team_factory(
+        model,
+        show_members_responses=False,
+    )
+
+
 # ---------- Chat lifecycle --------------------------------------------------- #
 @cl.on_chat_start
 async def on_chat_start():
@@ -82,10 +93,7 @@ async def on_chat_start():
         logger.info(f"Set S3 session prefix to: {S3.prefix}")
 
     # Initialize session state for this chat thread
-    session_agent = get_cs_copilot_agent_team(
-        model,
-        show_members_responses=False,
-    )
+    session_agent = _create_session_agent()
     cl.user_session.set("agent", session_agent)
     cl.user_session.set("title_set", False)
     cl.user_session.set("session_initialized", True)
@@ -115,10 +123,7 @@ async def on_chat_resume(thread: ThreadDict):
 
     # Only create a new agent if none exists and session wasn't properly initialized
     if not cl.user_session.get("session_initialized") or cl.user_session.get("agent") is None:
-        session_agent = get_cs_copilot_agent_team(
-            model,
-            show_members_responses=False,
-        )
+        session_agent = _create_session_agent()
         cl.user_session.set("agent", session_agent)
         cl.user_session.set("session_initialized", True)
 
@@ -186,6 +191,47 @@ def _pretty(x):
         return json.dumps(x, ensure_ascii=False)
     except Exception:
         return str(x)
+
+
+def _is_qsar_team_mode() -> bool:
+    return os.getenv("CS_COPILOT_AGENT_TEAM", "main").strip().lower() == "qsar"
+
+
+def _extract_qsar_final_report(full_content: str) -> str:
+    """Best-effort extraction of the final QSAR report from a verbose team trace."""
+    if not full_content:
+        return ""
+
+    marked = re.findall(r"<qsar_report>\s*(.*?)\s*</qsar_report>", full_content, flags=re.S | re.I)
+    if marked:
+        return marked[-1].strip()
+
+    report_markers = [
+        "QSAR Dataset Curation Report",
+        "Complete Training Workflow Report",
+        "Lipophilicity Predictions for Simple Molecules",
+        "Lipophilicity Predictions",
+        "Model Selection Analysis",
+        "Selected Model:",
+        "Prediction Results",
+        "Workflow Summary",
+        "Final Status",
+    ]
+
+    last_idx = -1
+    for marker in report_markers:
+        idx = full_content.rfind(marker)
+        if idx > last_idx:
+            last_idx = idx
+
+    if last_idx >= 0:
+        return full_content[last_idx:].strip()
+
+    handoff_idx = full_content.rfind("HANDOFF_STATUS:")
+    if handoff_idx >= 0:
+        return full_content[handoff_idx:].strip()
+
+    return full_content.strip()
 
 
 def _looks_like_markdown_table_line(text: str) -> bool:
@@ -736,9 +782,15 @@ async def relay(stream):
     current_step = None  # active tool Step
     buf = ""  # accumulate until newline
     full_content = ""  # collect all content for final message
+    qsar_mode = _is_qsar_team_mode()
+    qsar_progress_msg = None
 
     # Check if tool calls should be displayed
     show_tool_calls = cl.user_session.get("show_tool_calls", True)
+
+    if qsar_mode:
+        qsar_progress_msg = cl.Message(content="Workflow QSAR en cours...", author="assistant")
+        await qsar_progress_msg.send()
 
     async for chunk in stream:
         # ── tool events → COT sidebar as Steps ───────────────────────────────
@@ -770,14 +822,39 @@ async def relay(stream):
         # Collect for persistence
         full_content += text
 
+        if qsar_mode:
+            continue
+
         buf += text
         while "\n" in buf:  # process complete lines
             line, buf = buf.split("\n", 1)
             assistant = await _stream_line_with_elements(line, assistant, append_newline=True)
 
     # ── flush tail (no final newline) ────────────────────────────────────────
-    if buf:
+    if buf and not qsar_mode:
         assistant = await _stream_line_with_elements(buf, assistant, append_newline=False)
+
+    if qsar_mode:
+        final_report = _extract_qsar_final_report(full_content)
+        if qsar_progress_msg is not None:
+            qsar_progress_msg.content = "Workflow QSAR terminé."
+            await qsar_progress_msg.update()
+        if final_report:
+            final_assistant = None
+            final_buf = final_report
+            while "\n" in final_buf:
+                line, final_buf = final_buf.split("\n", 1)
+                final_assistant = await _stream_line_with_elements(
+                    line,
+                    final_assistant,
+                    append_newline=True,
+                )
+            if final_buf:
+                await _stream_line_with_elements(
+                    final_buf,
+                    final_assistant,
+                    append_newline=False,
+                )
 
     # # Update the final message with complete content for persistence
     # if assistant and full_content.strip():

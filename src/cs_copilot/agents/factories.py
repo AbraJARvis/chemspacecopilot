@@ -34,8 +34,12 @@ from .prompts import (
     CHEMOINFORMATICIAN_INSTRUCTIONS,  # Comprehensive chemoinformatics analysis
     DATASET_CURATION_INSTRUCTIONS,
     GTM_AGENT_INSTRUCTIONS,  # Unified GTM agent (all GTM operations)
+    MODEL_INFERENCE_INSTRUCTIONS,
+    MODEL_REGISTRY_INSTRUCTIONS,
     PEPTIDE_WAE_INSTRUCTIONS,  # Peptide WAE for amino acid sequence generation
     PROPERTY_PREDICTOR_INSTRUCTIONS,
+    QSAR_REPORT_INSTRUCTIONS,
+    QSAR_TRAINING_INSTRUCTIONS,
     REPORT_GENERATOR_INSTRUCTIONS,  # Universal presentation layer
     ROBUSTNESS_EVALUATION_INSTRUCTIONS,
     SYNPLANNER_INSTRUCTIONS,
@@ -704,6 +708,146 @@ class PropertyPredictorFactory(BaseAgentFactory):
                     "prediction_history": [],
                     "catalog_recommendations": {},
                     "training_runs": [],
+                },
+                "prediction_outputs": {
+                    "latest_predictions_csv": None,
+                    "latest_summary": None,
+                },
+            },
+        )
+
+
+class QSARTrainingFactory(BaseAgentFactory):
+    """Factory for isolated QSAR training and evaluation agents."""
+
+    agent_type = "qsar_training"
+
+    def get_agent_config(self) -> AgentConfig:
+        return AgentConfig(
+            name="qsar_training_agent",
+            description="""
+            You are a specialized QSAR training assistant.
+            Your role is to take a curated, QSAR-ready dataset, run a reproducible
+            training workflow, compute real held-out metrics, and prepare a clean
+            handoff for model governance. You do not curate raw datasets, you do
+            not interpret business meaning, and you do not decide catalog policy.
+            """,
+            tools=[
+                ChempropToolkit(),
+                PointerPandasTools(),
+            ],
+            instructions=QSAR_TRAINING_INSTRUCTIONS,
+            session_state={
+                "prediction_models": {
+                    "registered": {},
+                    "last_prediction": {},
+                    "prediction_history": [],
+                    "catalog_recommendations": {},
+                    "training_runs": [],
+                },
+                "prediction_outputs": {
+                    "latest_predictions_csv": None,
+                    "latest_summary": None,
+                },
+                "qsar_training": {
+                    "last_request": {},
+                    "last_result": {},
+                },
+            },
+        )
+
+
+class ModelRegistryFactory(BaseAgentFactory):
+    """Factory for isolated QSAR model registration agents."""
+
+    agent_type = "model_registry"
+
+    def get_agent_config(self) -> AgentConfig:
+        return AgentConfig(
+            name="model_registry_agent",
+            description="""
+            You are a specialized QSAR model governance assistant.
+            Your role is to validate model registration gates, assign the correct
+            model status, and persist eligible models into the prediction catalog.
+            You do not train models or perform free-form prediction analysis.
+            """,
+            tools=[ChempropToolkit()],
+            instructions=MODEL_REGISTRY_INSTRUCTIONS,
+            session_state={
+                "prediction_models": {
+                    "registered": {},
+                    "last_prediction": {},
+                    "prediction_history": [],
+                    "catalog_recommendations": {},
+                    "training_runs": [],
+                },
+                "qsar_registry": {
+                    "last_request": {},
+                    "last_result": {},
+                },
+            },
+        )
+
+
+class ModelInferenceFactory(BaseAgentFactory):
+    """Factory for isolated QSAR model selection and inference agents."""
+
+    agent_type = "model_inference"
+
+    def get_agent_config(self) -> AgentConfig:
+        return AgentConfig(
+            name="model_inference_agent",
+            description="""
+            You are a specialized QSAR model inference assistant.
+            Your role is to select the best available model or use an explicitly
+            requested one, execute predictions, and return structured outputs for
+            downstream reporting. You do not curate datasets or train models.
+            """,
+            tools=[
+                ChempropToolkit(),
+                PointerPandasTools(),
+            ],
+            instructions=MODEL_INFERENCE_INSTRUCTIONS,
+            session_state={
+                "prediction_models": {
+                    "registered": {},
+                    "last_prediction": {},
+                    "prediction_history": [],
+                    "catalog_recommendations": {},
+                    "training_runs": [],
+                },
+                "prediction_outputs": {
+                    "latest_predictions_csv": None,
+                    "latest_summary": None,
+                },
+                "qsar_inference": {
+                    "last_request": {},
+                    "last_result": {},
+                },
+            },
+        )
+
+
+class QSARReportFactory(BaseAgentFactory):
+    """Factory for isolated QSAR reporting agents."""
+
+    agent_type = "qsar_report"
+
+    def get_agent_config(self) -> AgentConfig:
+        return AgentConfig(
+            name="qsar_report_agent",
+            description="""
+            You are the dedicated reporting agent for the isolated QSAR sub-system.
+            Your role is to turn structured outputs from dataset curation, training,
+            registry, and inference into the final user-facing response. You do not
+            execute curation, training, registry, or inference actions yourself.
+            """,
+            tools=[PointerPandasTools()],
+            instructions=QSAR_REPORT_INSTRUCTIONS,
+            session_state={
+                "qsar_report": {
+                    "last_request": {},
+                    "last_result": {},
                 },
                 "prediction_outputs": {
                     "latest_predictions_csv": None,

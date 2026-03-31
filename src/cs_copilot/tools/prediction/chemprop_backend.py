@@ -111,6 +111,33 @@ class ChempropBackend(PredictionBackend):
                 f"Environment snapshot: {env}"
             )
 
+    def _sanitize_train_extra_args(
+        self, extra_args: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Normalize or drop legacy Chemprop CLI arguments before training.
+
+        Older prompts/runs may still emit v1/v2.0-era flags. Chemprop v2.1+
+        rejects some of them hard (notably `num_folds`). We normalize the safe
+        ones and silently drop those that only duplicate newer required args.
+        """
+        sanitized = dict(extra_args or {})
+
+        if "num_folds" in sanitized and "num_replicates" not in sanitized:
+            logger.warning(
+                "Received deprecated Chemprop train arg `num_folds`; mapping it to `num_replicates`."
+            )
+            sanitized["num_replicates"] = sanitized.pop("num_folds")
+        else:
+            sanitized.pop("num_folds", None)
+
+        if "save_dir" in sanitized:
+            logger.warning(
+                "Dropping deprecated/duplicate Chemprop train arg `save_dir`; `output_dir` is already set."
+            )
+            sanitized.pop("save_dir", None)
+
+        return sanitized
+
     def _run_cli(self, args: list[str]) -> subprocess.CompletedProcess:
         self._ensure_available()
         cli_path = self._find_cli_path()
@@ -221,7 +248,9 @@ class ChempropBackend(PredictionBackend):
         if task.reaction_columns:
             args.extend(["--reaction-columns", *task.reaction_columns])
 
-        for key, value in (extra_args or {}).items():
+        sanitized_extra_args = self._sanitize_train_extra_args(extra_args)
+
+        for key, value in sanitized_extra_args.items():
             flag = f"--{key.replace('_', '-')}"
             if isinstance(value, bool):
                 if value:

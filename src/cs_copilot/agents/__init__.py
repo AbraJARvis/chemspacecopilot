@@ -15,6 +15,7 @@ Agent Creation (Recommended):
 
 Team Coordination:
     get_cs_copilot_agent_team(model, **kwargs) - Multi-agent team with intelligent coordination
+    get_qsar_agent_team(model, **kwargs) - Isolated QSAR-only multi-agent team
 
 Utilities:
     get_last_agent_reply(agent) - Extract last message from agent
@@ -27,6 +28,10 @@ Available Agent Types (5-Agent Architecture):
 Core Agents:
 - "chembl_downloader" - Download and process bioactivity data from ChEMBL database
 - "dataset_curation" - Prepare QSAR-ready datasets via isolated curation workflows
+- "qsar_training" - Train and evaluate QSAR models on curated datasets
+- "model_registry" - Apply model governance and persist QSAR models to the catalog
+- "model_inference" - Select registered QSAR models and run predictions
+- "qsar_report" - Draft the only final user-facing report for QSAR workflows
 - "gtm_agent" - Unified GTM operations (build, load, density, activity, project) with smart caching
 - "chemoinformatician" - Comprehensive chemoinformatics (chemotype, clustering, SAR, similarity, QSAR)
 - "report_generator" - Universal presentation layer for all analysis types
@@ -48,7 +53,7 @@ Agent Capabilities Breakdown:
 
 from .factories import AgentConfig, AgentCreationError, BaseAgentFactory
 from .registry import create_agent, get_registry, list_available_agent_types
-from .teams import get_cs_copilot_agent_team
+from .teams import get_cs_copilot_agent_team, get_qsar_agent_team
 from .utils import get_last_agent_reply
 
 __all__ = [
@@ -58,6 +63,7 @@ __all__ = [
     "get_registry",
     # Team coordination
     "get_cs_copilot_agent_team",
+    "get_qsar_agent_team",
     # Utilities
     "get_last_agent_reply",
     # Configuration and exceptions

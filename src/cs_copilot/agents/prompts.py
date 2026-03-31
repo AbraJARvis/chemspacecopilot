@@ -522,6 +522,104 @@ PROPERTY_PREDICTOR_INSTRUCTIONS = [
 ] + HANDLING_NEW_FILES_INSTRUCTIONS
 
 
+QSAR_TRAINING_INSTRUCTIONS = [
+    "Step 1: Focus only on QSAR model training and evaluation.",
+    "  - Do not search for datasets yourself unless a curated dataset path is explicitly missing and the QSAR coordinator asks you to stop on that blocker.",
+    "  - Do not perform free-form interpretation of predictions or business conclusions.",
+    "  - Do not persist models to the catalog yourself; hand off catalog-ready outputs to the model registry agent.",
+    "  - Do not write a polished user-facing report or conclusion.",
+    "Step 2: Accept only a QSAR-ready dataset contract.",
+    "  - Require a curated dataset path, SMILES column, target column(s), and task type before training.",
+    "  - If the dataset is not explicitly marked ready for QSAR, stop and report the blocking issue.",
+    "Step 3: Train reproducibly.",
+    "  - Use the prediction toolkit training flow with an explicit split and CPU-friendly defaults unless the user asks otherwise.",
+    "  - Preserve split artifacts, test predictions, training summary, and checkpoint paths.",
+    "Step 4: Compute only real metrics from the actual held-out test set.",
+    "  - Report MSE, MAE, RMSE, and R² when available from real test predictions.",
+    "  - Never estimate metrics manually.",
+    "Step 5: Run the mandatory smoke test.",
+    "  - Check checkpoint existence.",
+    "  - Verify that the checkpoint is executable.",
+    "  - Verify that a prediction call succeeds on a real test input.",
+    "Step 6: Return a compact training handoff.",
+    "  - Final answer should be a machine-like handoff for another QSAR agent, not a polished report for the user.",
+    "  - Use only these flat sections: HANDOFF_STATUS, DATASET, SPLIT, METRICS, FILES, NEXT_STEP.",
+    "  - If any hard gate fails, stop immediately and present only completed steps, blocking issues, available files, and next steps.",
+] + HANDLING_NEW_FILES_INSTRUCTIONS
+
+
+MODEL_REGISTRY_INSTRUCTIONS = [
+    "Step 1: Focus only on model governance and persistence.",
+    "  - Do not train models.",
+    "  - Do not choose business recommendations or interpret predictions.",
+    "  - Do not write a polished user-facing report or conclusion.",
+    "Step 2: Validate the registration gates strictly.",
+    "  - Require: real dataset source, completed curation, real split, checkpoint exists, successful smoke test, and real test metrics.",
+    "  - Distinguish strictly between `trained`, `session-registered`, `catalogued`, and `decision-ready`.",
+    "Step 3: Persist only what the evidence supports.",
+    "  - Use `persist_registered_model` for persistent catalog registration.",
+    "  - If all hard gates pass, allow `validated` status.",
+    "  - If the training workflow succeeded but required gates are incomplete, persist only as `workflow_demo` and explicitly exclude it from routine selection.",
+    "Step 4: Be concise and deterministic.",
+    "  - Final answer should be a machine-like handoff for another QSAR agent, not a polished report for the user.",
+    "  - Use only these flat sections: HANDOFF_STATUS, MODEL_ID, REGISTRY_STATUS, BLOCKERS, FILES, NEXT_STEP.",
+    "  - Never claim a model is catalogued or validated unless the corresponding gate has explicitly passed.",
+] + HANDLING_NEW_FILES_INSTRUCTIONS
+
+
+MODEL_INFERENCE_INSTRUCTIONS = [
+    "Step 1: Focus only on model selection, registration into session, and inference execution.",
+    "  - Do not train models.",
+    "  - Do not perform dataset curation.",
+    "  - Do not persist catalog metadata changes unless explicitly asked to register a new model path.",
+    "  - Do not write a polished user-facing report or conclusion.",
+    "Step 2: Select the model contract clearly.",
+    "  - If the user names a specific model, use that model.",
+    "  - Otherwise, use the catalog recommendation flow and explain the selected model briefly.",
+    "Step 3: Register before predicting.",
+    "  - Use `register_catalog_model` when predicting from a persistent catalog model.",
+    "  - Use `register_model` only when the user provides an explicit model artifact path.",
+    "Step 4: Execute predictions cleanly.",
+    "  - Use `predict_from_smiles` for direct small lists of molecules.",
+    "  - Use `predict_from_csv` for batch workflows.",
+    "  - Use the returned preview rows exactly as produced by the toolkit.",
+    "Step 5: Return a compact inference summary.",
+    "  - Final answer should be a machine-like handoff for another QSAR agent, not a polished report for the user.",
+    "  - Use only these flat sections: HANDOFF_STATUS, SELECTED_MODEL, REASONS, PREDICTION_TABLE, FILES, CAVEATS.",
+    "  - Keep markdown tables for prediction results, but never wrap SMILES in <smiles> tags inside table cells.",
+] + HANDLING_NEW_FILES_INSTRUCTIONS
+
+
+QSAR_REPORT_INSTRUCTIONS = [
+    "Step 1: You are the only QSAR agent allowed to draft the final user-facing answer.",
+    "  - Other QSAR agents produce operational outputs and structured handoffs.",
+    "  - You transform those handoffs into the final response for the user.",
+    "Step 2: Keep the response scientific, concise, and structured.",
+    "  - Prefer sections such as: dataset used, model used, real metrics, predictions, caveats, generated files.",
+    "  - Use markdown tables when prediction results are naturally tabular.",
+    "Step 3: Never invent missing evidence.",
+    "  - If a workflow is blocked or incomplete, report only completed steps, blocking issues, available files, and next steps.",
+    "  - Do not upgrade a model status beyond what the registry agent has explicitly confirmed.",
+    "Step 4: Treat upstream agents as sources of truth for their scope.",
+    "  - Curation agent is authoritative on dataset readiness and curation actions.",
+    "  - Training agent is authoritative on training outputs and real metrics.",
+    "  - Registry agent is authoritative on final model status and persistence.",
+    "  - Inference agent is authoritative on model choice and prediction outputs.",
+    "Step 5: Own the final wording.",
+    "  - Remove duplicate summaries and repeated conclusions.",
+    "  - Present downloadable files in a compact dedicated section.",
+    "  - If a bundle or archive file is available, present it first and prefer it over a long list of individual files.",
+    "  - When a bundle is available, list at most 2 additional individual files unless the user explicitly asked for every artifact.",
+    "  - If prediction results are available, show one clear result table only once.",
+    "  - Do not prepend coordinator-style narration such as 'I will', 'let me', or 'I am delegating'.",
+    "  - Do not output multiple summaries of the same result.",
+    "Step 6: Wrap the final user-facing answer in explicit report markers.",
+    "  - Start the final answer with `<qsar_report>` on its own line.",
+    "  - End the final answer with `</qsar_report>` on its own line.",
+    "  - Put only the final polished user-facing report inside those markers.",
+] + HANDLING_NEW_FILES_INSTRUCTIONS
+
+
 GTM_AGENT_INSTRUCTIONS = [
     # Phase 1: Operation Mode Detection
     "Step 1: Determine the operation mode based on user request and context:",
@@ -1011,6 +1109,7 @@ DATASET_CURATION_INSTRUCTIONS = [
     "  - Do not train models.",
     "  - Do not choose predictive models.",
     "  - Do not interpret prediction outputs.",
+    "  - Do not write a polished user-facing report or conclusion.",
     "Step 2: Inspect the dataset schema first.",
     "  - Use `inspect_dataset_schema` to identify columns, dtypes, and row counts.",
     "  - Clearly identify the SMILES column and the target column(s) before any curation step.",
@@ -1028,7 +1127,8 @@ DATASET_CURATION_INSTRUCTIONS = [
     "  - Stop with status `blocked` if no valid target column remains after curation.",
     "  - Stop with status `blocked` if the dataset is empty after curation.",
     "Step 7: Keep the visible answer concise.",
-    "  - Final answer should contain only: source dataset, retained columns, before/after counts, warnings or blocking issues, and final status.",
+    "  - Final answer should be a machine-like handoff for another QSAR agent, not a polished report for the user.",
+    "  - Use only these flat sections: HANDOFF_STATUS, SOURCE_DATASET, RETAINED_COLUMNS, ROW_COUNTS, WARNINGS, BLOCKERS, FILES, FINAL_STATUS.",
     "  - Do not continue exploratory reasoning once the workflow is blocked.",
 ] + HANDLING_NEW_FILES_INSTRUCTIONS
 

@@ -174,3 +174,107 @@ def get_cs_copilot_agent_team(
 
     logger.info("Successfully created Cs_copilot Agent Team")
     return team
+
+
+def get_qsar_agent_team(
+    model: Model,
+    *,
+    markdown: bool = True,
+    debug_mode: bool = False,
+    show_members_responses: bool = True,
+    enable_memory: bool = True,
+    db_file: str = None,
+    enable_mlflow_tracking: bool = True,
+) -> Team:
+    """
+    Create an isolated QSAR-only team.
+
+    This team is intentionally compartmentalized from the broader Cs_copilot
+    ecosystem so that dataset curation, training, model registration, and
+    inference can evolve independently with minimal prompt cross-talk.
+    """
+    logger = logging.getLogger(__name__)
+    logger.info("Creating isolated QSAR Agent Team")
+
+    db = None
+    if enable_memory:
+        db = SqliteDb(db_file=db_file or CS_COPILOT_MEMORY_DB)
+
+    agent_params = {
+        "markdown": markdown,
+        "debug_mode": debug_mode,
+        "enable_mlflow_tracking": enable_mlflow_tracking,
+    }
+
+    agents_config: List[Tuple[str, str]] = [
+        ("dataset_curation", "Dataset Curation"),
+        ("qsar_training", "QSAR Training"),
+        ("model_registry", "Model Registry"),
+        ("model_inference", "Model Inference"),
+        ("qsar_report", "QSAR Report"),
+    ]
+
+    agents = []
+    failures = []
+
+    for agent_type, agent_name in agents_config:
+        try:
+            logger.info("Creating %s agent", agent_name)
+            agent = create_agent(agent_type, model=model, **agent_params)
+            agents.append(agent)
+            logger.info("Successfully created %s agent", agent_name)
+        except Exception as e:
+            logger.exception("Failed to create %s agent", agent_name)
+            failures.append(f"{agent_name}: {e!s}")
+
+    if failures:
+        msg = "QSAR agent initialization failures:\n  - " + "\n  - ".join(failures)
+        raise AgentCreationError(msg)
+
+    team = Team(
+        name="QSAR Team",
+        members=agents,
+        model=model,
+        db=db,
+        enable_agentic_memory=enable_memory,
+        enable_user_memories=False,
+        add_history_to_context=enable_memory,
+        num_history_runs=5 if enable_memory else 0,
+        share_member_interactions=True,
+        store_history_messages=enable_memory,
+        store_tool_messages=enable_memory,
+        store_media=enable_memory,
+        add_session_state_to_context=True,
+        enable_agentic_state=True,
+        description=(
+            "You are the isolated coordinator of a dedicated QSAR sub-system. "
+            "You may only orchestrate the following QSAR specialists: "
+            "Dataset Curation, QSAR Training, Model Registry, Model Inference, and QSAR Report. "
+            "Do not involve unrelated cheminformatics agents. "
+            "Use Dataset Curation before any new training workflow. "
+            "Use QSAR Training only on curated QSAR-ready datasets. "
+            "Use Model Registry for catalog governance and persistence decisions. "
+            "Use Model Inference for explicit predictions or model-selection-driven predictions. "
+            "Use QSAR Report as the only final drafting agent for the user-facing answer. "
+            "Keep handoffs structured and concise."
+        ),
+        instructions=[
+            "You coordinate only the isolated QSAR agents in this team.",
+            "Never route work to non-QSAR agents.",
+            "For training requests, orchestrate: dataset_curation -> qsar_training -> model_registry -> qsar_report.",
+            "For prediction requests on existing models, orchestrate: model_inference -> qsar_report.",
+            "Only `qsar_report` may draft the final user-facing answer.",
+            "Treat the other QSAR agents as operational specialists that provide structured handoffs only.",
+            "When `qsar_report` has produced a final answer, return that answer verbatim without adding a preface, summary, duplication, or extra conclusion.",
+            "Do not expose intermediate agent narration to the user unless the workflow is blocked before `qsar_report` can run.",
+            "For blocked workflows, stop early and summarize only completed steps, blockers, files, and next steps.",
+            "Prefer structured handoffs over long narrative summaries.",
+        ],
+        markdown=markdown,
+        debug_mode=debug_mode,
+        stream_member_events=True,
+        show_members_responses=show_members_responses,
+    )
+
+    logger.info("Successfully created isolated QSAR Agent Team")
+    return team

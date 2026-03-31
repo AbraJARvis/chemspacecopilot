@@ -10,6 +10,7 @@ import json
 import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pandas as pd
 from agno.agent import Agent
@@ -42,6 +43,15 @@ def _prediction_output_path(model_id: str, preds_path: Optional[str] = None) -> 
 
 def _strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed:")].copy()
+
+
+def _bundle_artifacts(bundle_path: Path, files: List[Path]) -> Path:
+    bundle_path.parent.mkdir(parents=True, exist_ok=True)
+    with ZipFile(bundle_path, "w", compression=ZIP_DEFLATED) as zf:
+        for file_path in files:
+            if file_path.exists():
+                zf.write(file_path, arcname=file_path.name)
+    return bundle_path
 
 
 class ChempropToolkit(Toolkit):
@@ -659,6 +669,8 @@ class ChempropToolkit(Toolkit):
         training_summary_path.parent.mkdir(parents=True, exist_ok=True)
         training_summary_path.write_text(json.dumps(result, indent=2))
         best_model_path = Path(resolved_output_dir) / "model_0" / "best.pt"
+        config_path = Path(resolved_output_dir) / "config.toml"
+        splits_path = Path(resolved_output_dir) / "splits.json"
         result["summary_path"] = str(training_summary_path)
         if best_model_path.exists():
             result["best_model_path"] = str(best_model_path)
@@ -666,4 +678,23 @@ class ChempropToolkit(Toolkit):
         result["summary_file_ref"] = str(training_summary_path)
         if metric_payload.get("test_predictions_path"):
             result["test_predictions_file_ref"] = metric_payload["test_predictions_path"]
+        bundle_path = (
+            Path(".files")
+            / "prediction_outputs"
+            / f"{Path(resolved_output_dir).name}_training_bundle.zip"
+        ).resolve()
+        bundle = _bundle_artifacts(
+            bundle_path,
+            [
+                Path(train_csv).expanduser(),
+                training_summary_path,
+                best_model_path,
+                config_path,
+                splits_path,
+                Path(metric_payload["test_predictions_path"]).expanduser()
+                if metric_payload.get("test_predictions_path")
+                else Path("/nonexistent"),
+            ],
+        )
+        result["bundle_file_ref"] = str(bundle)
         return result

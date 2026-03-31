@@ -19,6 +19,7 @@ services:
       - OLLAMA_HOST=${OLLAMA_HOST:-}
       # DeepSeek API Key (only required when MODEL_PROVIDER=deepseek or not set)
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - CS_COPILOT_AGENT_TEAM=${CS_COPILOT_AGENT_TEAM:-qsar}
 
       # Chainlit Auth
       - CHAINLIT_AUTH_SECRET=${CHAINLIT_AUTH_SECRET:-default-secret-change-in-production}

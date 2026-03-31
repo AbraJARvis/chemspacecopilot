@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pandas as pd
 from agno.agent import Agent
@@ -34,6 +35,15 @@ def _load_dataset(dataset_path: str) -> pd.DataFrame:
         return pd.read_csv(path)
     with S3.open(dataset_path, "r") as fh:
         return pd.read_csv(fh)
+
+
+def _bundle_files(bundle_path: Path, files: List[Path]) -> Path:
+    bundle_path.parent.mkdir(parents=True, exist_ok=True)
+    with ZipFile(bundle_path, "w", compression=ZIP_DEFLATED) as zf:
+        for file_path in files:
+            if file_path.exists():
+                zf.write(file_path, arcname=file_path.name)
+    return bundle_path
 
 
 class DatasetCurationToolkit(Toolkit):
@@ -333,8 +343,20 @@ class DatasetCurationToolkit(Toolkit):
             "download_file_ref": str(destination),
             "dataset_id": dataset_id,
         }
+        curated_dataset_path = curation_result.get("curated_dataset_path")
+        if curated_dataset_path:
+            curated_path = Path(curated_dataset_path).expanduser()
+            bundle_path = (
+                Path(".files")
+                / "qsar_curation"
+                / f"{dataset_id}_curation_bundle.zip"
+            ).resolve()
+            bundle = _bundle_files(bundle_path, [curated_path, destination])
+            payload["bundle_file_ref"] = str(bundle)
         if agent is not None:
             state = _get_curation_state(agent)
             if state.get("last_result"):
                 state["last_result"]["report_path"] = str(destination)
+                if payload.get("bundle_file_ref"):
+                    state["last_result"]["bundle_file_ref"] = payload["bundle_file_ref"]
         return payload
