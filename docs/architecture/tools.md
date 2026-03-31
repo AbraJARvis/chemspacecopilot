@@ -22,6 +22,11 @@ tools/
 │   ├── autoencoder_toolkit.py     LSTM autoencoder operations
 │   └── descriptors.py             Molecular descriptors
 │
+├── prediction/        Predictive modeling backends and toolkits
+│   ├── backend.py     Backend contract for pluggable predictors
+│   ├── chemprop_backend.py  Chemprop CLI adapter
+│   └── chemprop_toolkit.py  Model registration + prediction workflows
+│
 ├── io/                I/O and formatting
 │   ├── pointer_pandas_tools.py   DataFrame ops + S3 integration
 │   └── formatting.py              SMILES → images, markdown

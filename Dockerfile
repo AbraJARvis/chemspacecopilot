@@ -28,7 +28,11 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 
 # Install Python dependencies via uv
-RUN uv sync --frozen --no-dev
+# Chemprop is installed as an additive runtime dependency for the prediction
+# agent so we can validate the backend inside the app container without making
+# the base project dependency graph mandatory for every environment.
+RUN uv sync --frozen --no-dev \
+    && uv pip install --python /app/.venv/bin/python "chemprop>=2.2.0" "admet-ai"
 
 # Application source
 COPY . .
