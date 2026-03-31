@@ -30,6 +30,7 @@ Core Agents:
 - "chemoinformatician" - Comprehensive chemoinformatics (chemotype, clustering, SAR, similarity, QSAR)
 - "report_generator" - Universal presentation layer for all analysis types
 - "autoencoder" - Molecular generation via LSTM autoencoders (standalone + GTM-guided)
+- "property_predictor" - Model-based molecular property prediction (Chemprop-ready backend)
 
 Testing/Evaluation:
 - "robustness_evaluation" - Analyze robustness test results and metrics

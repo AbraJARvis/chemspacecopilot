@@ -23,6 +23,12 @@ The system uses a **Factory Pattern + Registry** for agent creation.
 | **Peptide WAE** | Peptide generation, latent-space GTM workflows, and DBAASP-backed peptide activity landscapes |
 | **SynPlanner** | Retrosynthetic planning and route visualization for target molecules |
 
+## Additional Available Agent
+
+| Agent | Role |
+|-------|------|
+| **Property Predictor** | Registers predictive models and runs molecular property prediction workflows (Chemprop-ready backend, not wired into the default team yet) |
+
 ## Separate Evaluation Agent
 
 | Agent | Role |

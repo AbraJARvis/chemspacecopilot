@@ -29,6 +29,13 @@ from .chemistry import (
     PeptideWAEToolkit,
     SynPlannerToolkit,
 )
+from .prediction import (
+    AdmetAIBackend,
+    CatalogRecommendation,
+    ChempropBackend,
+    ChempropToolkit,
+    PredictionModelCatalog,
+)
 
 # GTM Toolkit
 from .chemography.gtm import GTMToolkit
@@ -56,6 +63,11 @@ __all__ = [
     "AutoencoderToolkit",
     "PeptideWAEToolkit",
     "SynPlannerToolkit",
+    "ChempropToolkit",
+    "ChempropBackend",
+    "AdmetAIBackend",
+    "PredictionModelCatalog",
+    "CatalogRecommendation",
     "ChemblToolkit",
     "RobustnessAnalysisToolkit",
     # Visualization functions

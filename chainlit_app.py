@@ -188,6 +188,43 @@ def _pretty(x):
         return str(x)
 
 
+def _looks_like_markdown_table_line(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if re.fullmatch(r"\|?[\s:\-]+\|[\s\|:\-]*", stripped):
+        return True
+    return stripped.count("|") >= 2
+
+
+def _strip_smiles_tags(text: str) -> str:
+    return SMI_RX.sub(lambda m: m.group(1), text)
+
+
+def _should_suppress_file_path_line(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+
+    attached_refs = cl.user_session.get("attached_file_refs") or set()
+    normalized_refs = {ref.strip() for ref in attached_refs}
+    normalized_names = {Path(ref).name for ref in normalized_refs if ref.strip()}
+    dequoted = stripped.strip("`")
+
+    if stripped in normalized_refs or dequoted in normalized_names:
+        return True
+
+    for ref in normalized_refs:
+        if ref and ref in stripped:
+            return True
+
+    for name in normalized_names:
+        if name and name in dequoted and "/" not in dequoted:
+            return True
+
+    return False
+
+
 def _process_smiles_in_text(text: str, callback):
     """
     Process SMILES patterns in text and call callback for each part.
@@ -323,6 +360,17 @@ async def _stream_text_to_message(text: str, msg: cl.Message):
         await msg.stream_token(text[pos:])
 
 
+async def _stream_plain_text_to_message(text: str, msg: cl.Message):
+    """Stream text without SMILES expansion."""
+    if not text:
+        return
+
+    if not hasattr(msg, "_sent") or not msg._sent:
+        await msg.send()
+
+    await msg.stream_token(text)
+
+
 async def _image_bubble_streaming(caption: str, src: str) -> cl.Message:
     """Send image bubble and return new streaming message"""
     logger.debug(f"_image_bubble_streaming called with caption='{caption}', src='{src}'")
@@ -390,6 +438,10 @@ def _safe_file_name(name: str) -> str:
 
 
 def _read_file_bytes_from_storage(file_ref: str) -> bytes:
+    cleaned = file_ref.strip().strip("`").strip("\"").strip("'")
+    local_candidate = Path(cleaned).expanduser()
+    if local_candidate.exists():
+        return local_candidate.read_bytes()
     with S3.open(file_ref, "rb") as fh:
         return fh.read()
 
@@ -454,7 +506,10 @@ async def _file_bubble_streaming(file_ref: str) -> cl.Message:
 
     try:
         file_el = await _build_download_file_element(normalized_ref)
-        await cl.Message(content=f"Download `{file_el.name}`", elements=[file_el]).send()
+        await cl.Message(content=f"`{file_el.name}`", elements=[file_el]).send()
+        attached_refs = cl.user_session.get("attached_file_refs") or set()
+        attached_refs.add(normalized_ref)
+        cl.user_session.set("attached_file_refs", attached_refs)
     except Exception as e:
         logger.error(
             "Failed to create downloadable file for %s: %s: %s",
@@ -476,6 +531,23 @@ async def _stream_line_with_elements(
     assistant: cl.Message | None,
     append_newline: bool = True,
 ) -> cl.Message:
+    if "<file>" in line:
+        line = re.sub(r"^\s*[-*•]\s+", "", line)
+        line = re.sub(r"\s+[—-]\s*<file>", " <file>", line)
+
+    if _should_suppress_file_path_line(line):
+        return assistant or await _create_streaming_message()
+
+    if _looks_like_markdown_table_line(line):
+        if assistant is None:
+            assistant = await _create_streaming_message()
+        table_line = _strip_smiles_tags(line)
+        await _stream_plain_text_to_message(
+            table_line + ("\n" if append_newline else ""),
+            assistant,
+        )
+        return assistant
+
     # 1) stand-alone Caption: /path/img.png
     if m := PATH_RX.fullmatch(line.strip()):
         caption, src = m.groups()
@@ -489,9 +561,12 @@ async def _stream_line_with_elements(
     pos = 0
     for m in INLINE_ELEMENT_RX.finditer(line):
         if m.start() > pos:
+            leading_text = line[pos : m.start()]
+            if file_src := m.group(3):
+                leading_text = leading_text.rstrip(" -—:\t")
             if assistant is None:
                 assistant = await _create_streaming_message()
-            await _stream_text_to_message(line[pos : m.start()], assistant)
+            await _stream_text_to_message(leading_text, assistant)
 
         image_alt, image_src, file_src = m.groups()
         if image_src is not None:
