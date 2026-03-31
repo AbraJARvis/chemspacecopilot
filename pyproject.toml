@@ -64,6 +64,10 @@ synplanner = [
     "pubchempy>=1.0.5",
     "CairoSVG>=2.8.2",
 ]
+prediction = [
+    "chemprop>=2.2.0",
+    "admet-ai",
+]
 
 [dependency-groups]
 dev = [

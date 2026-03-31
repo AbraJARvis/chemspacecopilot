@@ -64,6 +64,7 @@ nav:
       - Agents: architecture/agents.md
       - Tools: architecture/tools.md
       - Storage: architecture/storage.md
+      - Prediction: architecture/prediction.md
   - API Reference:
       - Agents: api/agents.md
       - Tools: api/tools.md
