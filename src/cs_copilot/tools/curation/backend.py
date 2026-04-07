@@ -21,6 +21,7 @@ class CurationRequest:
     preferred_smiles_column: Optional[str] = None
     preferred_target_columns: List[str] = field(default_factory=list)
     curation_policy: Optional[str] = None
+    duplicate_conflict_threshold: Optional[float] = None
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -31,6 +32,7 @@ class CurationRequest:
             "preferred_smiles_column": self.preferred_smiles_column,
             "preferred_target_columns": list(self.preferred_target_columns),
             "curation_policy": self.curation_policy,
+            "duplicate_conflict_threshold": self.duplicate_conflict_threshold,
         }
 
 
@@ -72,11 +74,26 @@ class CurationResult:
     task_type: str
     rows_in: int
     rows_out: int
+    retained_columns: List[str] = field(default_factory=list)
     invalid_smiles_removed: int = 0
+    inorganic_rows_removed: int = 0
+    organometallic_rows_removed: int = 0
+    mixture_rows_removed: int = 0
+    salt_or_counterion_rows_processed: int = 0
     duplicate_rows_removed: int = 0
+    duplicate_groups_detected: int = 0
+    duplicate_groups_aggregated: int = 0
+    duplicate_conflicting_groups: int = 0
+    duplicate_conflicting_rows_removed: int = 0
     missing_target_removed: int = 0
+    non_numeric_target_removed: int = 0
+    infinite_target_removed: int = 0
+    constant_target_columns: List[str] = field(default_factory=list)
+    stereochemistry_markers_removed: int = 0
     target_summaries: List[TargetSummary] = field(default_factory=list)
     curation_actions: List[str] = field(default_factory=list)
+    curation_policy: Dict[str, Any] = field(default_factory=dict)
+    target_data_quality: Dict[str, Any] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
     blocking_issues: List[str] = field(default_factory=list)
     report_path: Optional[str] = None
@@ -96,11 +113,26 @@ class CurationResult:
             "rows_in": self.rows_in,
             "rows_out": self.rows_out,
             "rows_removed": self.rows_in - self.rows_out,
+            "retained_columns": list(self.retained_columns),
             "invalid_smiles_removed": self.invalid_smiles_removed,
+            "inorganic_rows_removed": self.inorganic_rows_removed,
+            "organometallic_rows_removed": self.organometallic_rows_removed,
+            "mixture_rows_removed": self.mixture_rows_removed,
+            "salt_or_counterion_rows_processed": self.salt_or_counterion_rows_processed,
             "duplicate_rows_removed": self.duplicate_rows_removed,
+            "duplicate_groups_detected": self.duplicate_groups_detected,
+            "duplicate_groups_aggregated": self.duplicate_groups_aggregated,
+            "duplicate_conflicting_groups": self.duplicate_conflicting_groups,
+            "duplicate_conflicting_rows_removed": self.duplicate_conflicting_rows_removed,
             "missing_target_removed": self.missing_target_removed,
+            "non_numeric_target_removed": self.non_numeric_target_removed,
+            "infinite_target_removed": self.infinite_target_removed,
+            "constant_target_columns": list(self.constant_target_columns),
+            "stereochemistry_markers_removed": self.stereochemistry_markers_removed,
             "target_summaries": [summary.as_dict() for summary in self.target_summaries],
             "curation_actions": list(self.curation_actions),
+            "curation_policy": dict(self.curation_policy),
+            "target_data_quality": dict(self.target_data_quality),
             "warnings": list(self.warnings),
             "blocking_issues": list(self.blocking_issues),
             "report_path": self.report_path,

@@ -20,6 +20,7 @@ from .backend import PredictionModelRecord
 
 
 DEFAULT_MODEL_CATALOG_PATH = Path(__file__).with_name("model_catalog.json")
+DEFAULT_INTERNAL_MODEL_ROOT = Path("data/model_assets/internal").resolve()
 DEFAULT_ALLOWED_STATUSES = ("production", "validated", "experimental")
 STATUS_WEIGHTS = {
     "production": 12,

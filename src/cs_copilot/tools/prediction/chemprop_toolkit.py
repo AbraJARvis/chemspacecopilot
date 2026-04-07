@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -21,7 +23,7 @@ from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
 
 from .admet_ai_backend import AdmetAIBackend
 from .backend import PredictionModelRecord, PredictionTaskSpec
-from .catalog import PredictionModelCatalog
+from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
 from .chemprop_backend import ChempropBackend
 
 
@@ -54,6 +56,10 @@ def _bundle_artifacts(bundle_path: Path, files: List[Path]) -> Path:
     return bundle_path
 
 
+def _relative_posix(path: Path, start: Path) -> str:
+    return path.relative_to(start).as_posix()
+
+
 class ChempropToolkit(Toolkit):
     """Toolkit exposing Chemprop-backed property prediction workflows."""
 
@@ -81,11 +87,283 @@ class ChempropToolkit(Toolkit):
         self.register(self.predict_from_smiles)
         self.register(self.export_prediction_summary)
         self.register(self.prepare_training_dataset)
+        self.register(self.describe_compute_environment)
         self.register(self.train_model)
+
+    def _detect_memory_limit_bytes(self) -> Optional[int]:
+        candidates = [
+            Path("/sys/fs/cgroup/memory.max"),
+            Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+        ]
+        for path in candidates:
+            if not path.exists():
+                continue
+            try:
+                raw = path.read_text().strip()
+                if not raw or raw == "max":
+                    continue
+                value = int(raw)
+                # Ignore absurdly large “no real limit” cgroup values.
+                if value <= 0 or value > 1 << 60:
+                    continue
+                return value
+            except Exception:
+                continue
+        return None
+
+    def describe_compute_environment(self) -> Dict[str, Any]:
+        """Describe the local compute budget used to choose safe training defaults."""
+        cpu_count = os.cpu_count() or 1
+        memory_limit_bytes = self._detect_memory_limit_bytes()
+        memory_gb_total = (
+            round(memory_limit_bytes / (1024**3), 2) if memory_limit_bytes else None
+        )
+        gpu_available = bool(
+            os.getenv("CUDA_VISIBLE_DEVICES")
+            and os.getenv("CUDA_VISIBLE_DEVICES", "").strip() not in {"", "-1"}
+        )
+        execution_env = "docker_local" if Path("/.dockerenv").exists() else "local"
+        profile = self._resolve_training_profile(
+            {
+                "cpu_count": cpu_count,
+                "memory_gb_total": memory_gb_total,
+                "gpu_available": gpu_available,
+                "execution_env": execution_env,
+            }
+        )
+        return {
+            "execution_env": execution_env,
+            "cpu_count": cpu_count,
+            "memory_gb_total": memory_gb_total,
+            "gpu_available": gpu_available,
+            "suggested_profile": profile["profile"],
+            "profile_reason": profile["reason"],
+        }
+
+    def _resolve_training_profile(self, compute_env: Dict[str, Any]) -> Dict[str, Any]:
+        cpu_count = int(compute_env.get("cpu_count") or 1)
+        memory_gb_total = compute_env.get("memory_gb_total")
+        gpu_available = bool(compute_env.get("gpu_available"))
+        execution_env = compute_env.get("execution_env") or "local"
+
+        if not gpu_available and execution_env == "docker_local":
+            if memory_gb_total is None and cpu_count <= 8:
+                return {
+                    "profile": "local_light",
+                    "reason": "CPU-only Docker environment on a modest local machine; defaulting to the safest single-run profile.",
+                }
+            if memory_gb_total is not None and memory_gb_total <= 8.5 and cpu_count <= 8:
+                return {
+                    "profile": "local_light",
+                    "reason": "CPU-only Docker environment with limited RAM; using a conservative single-run configuration.",
+                }
+            if memory_gb_total is not None and memory_gb_total <= 16 and cpu_count <= 12:
+                return {
+                    "profile": "local_standard",
+                    "reason": "CPU-only local environment; using a moderate single-run configuration.",
+                }
+
+        if gpu_available:
+            return {
+                "profile": "heavy_validation",
+                "reason": "GPU detected; heavier validation settings are acceptable.",
+            }
+
+        return {
+            "profile": "local_standard",
+            "reason": "Defaulting to a moderate single-run local profile.",
+        }
+
+    def _training_defaults_for_profile(self, profile: str) -> Dict[str, Any]:
+        if profile == "local_light":
+            return {
+                "epochs": 30,
+                "batch_size": 32,
+                "num_replicates": 1,
+                "ensemble_size": 1,
+                "num_workers": 0,
+                "metric": "rmse",
+                "split_type": "random",
+                "split_sizes": [0.8, 0.1, 0.1],
+            }
+        if profile == "local_standard":
+            return {
+                "epochs": 50,
+                "batch_size": 32,
+                "num_replicates": 1,
+                "ensemble_size": 1,
+                "num_workers": 0,
+                "metric": "rmse",
+                "split_type": "random",
+                "split_sizes": [0.8, 0.1, 0.1],
+            }
+        if profile == "heavy_validation":
+            return {
+                "epochs": 75,
+                "batch_size": 32,
+                "num_replicates": 3,
+                "ensemble_size": 1,
+                "num_workers": 0,
+                "metric": "rmse",
+                "split_type": "random",
+                "split_sizes": [0.8, 0.1, 0.1],
+            }
+        return {
+            "epochs": 50,
+            "batch_size": 32,
+            "num_replicates": 1,
+            "ensemble_size": 1,
+            "num_workers": 0,
+            "metric": "rmse",
+            "split_type": "random",
+            "split_sizes": [0.8, 0.1, 0.1],
+        }
+
+    def _apply_training_profile(
+        self,
+        extra_args: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        requested = dict(extra_args or {})
+        requested_profile = requested.pop("training_profile", None)
+        allow_heavy_compute = bool(requested.pop("allow_heavy_compute", False))
+
+        compute_env = self.describe_compute_environment()
+        resolved = self._resolve_training_profile(compute_env)
+        profile = requested_profile or resolved["profile"]
+
+        # Protect local machines unless heavy compute was explicitly authorized.
+        if not allow_heavy_compute and profile in {"heavy_validation", "benchmark"}:
+            profile = resolved["profile"]
+
+        merged = {
+            **self._training_defaults_for_profile(profile),
+            **requested,
+        }
+
+        if not allow_heavy_compute:
+            if profile == "local_light":
+                merged["epochs"] = min(int(merged.get("epochs", 30)), 30)
+                merged["ensemble_size"] = 1
+                merged["num_replicates"] = 1
+                merged["num_workers"] = 0
+            elif profile == "local_standard":
+                merged["epochs"] = min(int(merged.get("epochs", 50)), 50)
+                merged["ensemble_size"] = min(int(merged.get("ensemble_size", 1)), 1)
+                merged["num_replicates"] = min(int(merged.get("num_replicates", 1)), 1)
+                merged["num_workers"] = 0
+
+        return {
+            "compute_environment": compute_env,
+            "training_profile": profile,
+            "profile_reason": resolved["reason"],
+            "extra_args": merged,
+        }
 
     def describe_backend(self) -> Dict[str, Any]:
         """Describe Chemprop backend availability and version information."""
         return self.backend.describe_environment()
+
+    def _infer_training_run_dir(self, record: PredictionModelRecord) -> Optional[Path]:
+        model_path = Path(record.model_path).expanduser()
+        if not model_path.exists():
+            return None
+        if model_path.parent.name == "model_0":
+            return model_path.parent.parent
+        return model_path.parent
+
+    def _materialize_internal_model(
+        self,
+        *,
+        record: PredictionModelRecord,
+        train_csv: Optional[str] = None,
+        model_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        run_dir = self._infer_training_run_dir(record)
+        if run_dir is None or not run_dir.exists():
+            return {"materialized": False, "reason": "training_run_not_found"}
+
+        resolved_model_id = model_id or record.model_id
+        model_root = DEFAULT_INTERNAL_MODEL_ROOT / resolved_model_id
+        model_dir = model_root / "model"
+        artifacts_dir = model_root / "artifacts"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+        source_model_path = Path(record.model_path).expanduser()
+        copied_files: Dict[str, str] = {}
+
+        if source_model_path.exists():
+            target_model_path = model_dir / source_model_path.name
+            shutil.copy2(source_model_path, target_model_path)
+            copied_files["model_path"] = _relative_posix(target_model_path, model_root)
+        else:
+            return {"materialized": False, "reason": "model_artifact_missing"}
+
+        optional_artifacts = {
+            "config_path": run_dir / "config.toml",
+            "training_summary_path": run_dir / "cs_copilot_training_summary.json",
+            "splits_path": run_dir / "splits.json",
+            "test_predictions_path": run_dir / "model_0" / "test_predictions.csv",
+        }
+
+        for key, source_path in optional_artifacts.items():
+            if source_path.exists():
+                target_path = (
+                    model_dir / source_path.name
+                    if key == "config_path"
+                    else artifacts_dir / source_path.name
+                )
+                shutil.copy2(source_path, target_path)
+                copied_files[key] = _relative_posix(target_path, model_root)
+
+        if train_csv:
+            source_train_csv = Path(train_csv).expanduser()
+            if source_train_csv.exists():
+                target_train_csv = artifacts_dir / source_train_csv.name
+                shutil.copy2(source_train_csv, target_train_csv)
+                copied_files["training_dataset_path"] = _relative_posix(
+                    target_train_csv, model_root
+                )
+
+        metadata = {
+            "model_id": resolved_model_id,
+            "display_name": record.display_name or resolved_model_id,
+            "version": record.version or "1.0",
+            "status": record.status,
+            "owner": record.owner or "chemspacecopilot",
+            "source": record.source or "internal_training",
+            "backend_name": record.backend_name,
+            "task": {
+                "task_type": record.task.task_type,
+                "smiles_columns": list(record.task.smiles_columns),
+                "target_columns": list(record.task.target_columns),
+                "reaction_columns": list(record.task.reaction_columns),
+                "uncertainty_method": record.task.uncertainty_method,
+                "calibration_method": record.task.calibration_method,
+            },
+            "description": record.description or "",
+            "domain_summary": record.domain_summary or "",
+            "strengths": list(record.strengths),
+            "limitations": list(record.limitations),
+            "recommended_for": list(record.recommended_for),
+            "not_recommended_for": list(record.not_recommended_for),
+            "known_metrics": dict(record.known_metrics),
+            "training_data_summary": dict(record.training_data_summary),
+            "inference_profile": dict(record.inference_profile),
+            "selection_hints": dict(record.selection_hints),
+            "tags": dict(record.tags),
+            "artifacts": copied_files,
+        }
+        metadata_path = model_root / "metadata.json"
+        metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+
+        return {
+            "materialized": True,
+            "model_root": str(model_root),
+            "model_path": str(model_root / copied_files["model_path"]),
+            "metadata_path": str(metadata_path),
+            "artifacts": copied_files,
+        }
 
     def describe_backends(self) -> Dict[str, Any]:
         """Describe all configured prediction backends."""
@@ -250,6 +528,7 @@ class ChempropToolkit(Toolkit):
             model_id=model_id,
             backend_name=backend.backend_name,
             model_path=str(validated_path),
+            metadata_path=None,
             task=task,
             description=description,
             tags=tags or {},
@@ -298,10 +577,29 @@ class ChempropToolkit(Toolkit):
             raise ValueError("Agent is required to persist a registered model")
 
         current = self._resolve_record(model_id, agent)
+        prediction_state = _get_prediction_state(agent)
+        training_runs = prediction_state.get("training_runs") or []
+        train_csv = None
+        inferred_run_dir = self._infer_training_run_dir(current)
+        if inferred_run_dir is not None:
+            inferred_output = str(inferred_run_dir.resolve())
+            for run in reversed(training_runs):
+                if str(Path(run.get("output_dir", "")).expanduser().resolve()) == inferred_output:
+                    train_csv = run.get("train_csv")
+                    break
+
+        materialized = self._materialize_internal_model(
+            record=current,
+            train_csv=train_csv,
+            model_id=model_id,
+        )
+        resolved_model_path = materialized.get("model_path", current.model_path)
+        resolved_metadata_path = materialized.get("metadata_path", current.metadata_path)
         persisted_record = PredictionModelRecord(
             model_id=current.model_id,
             backend_name=current.backend_name,
-            model_path=current.model_path,
+            model_path=resolved_model_path,
+            metadata_path=resolved_metadata_path,
             task=current.task,
             display_name=display_name or current.display_name,
             description=description or current.description,
@@ -324,7 +622,6 @@ class ChempropToolkit(Toolkit):
         self.catalog.upsert_model(persisted_record)
         self.catalog = PredictionModelCatalog.load(str(self.catalog.source_path))
 
-        prediction_state = _get_prediction_state(agent)
         prediction_state["registered"][model_id] = persisted_record.as_dict()
 
         return {
@@ -332,6 +629,9 @@ class ChempropToolkit(Toolkit):
             "model_id": persisted_record.model_id,
             "status": persisted_record.status,
             "persisted": True,
+            "materialized": bool(materialized.get("materialized")),
+            "model_root": materialized.get("model_root"),
+            "metadata_path": persisted_record.metadata_path,
             "record": persisted_record.as_dict(),
         }
 
@@ -633,6 +933,7 @@ class ChempropToolkit(Toolkit):
     ) -> Dict[str, Any]:
         """Launch Chemprop training and persist a lightweight training record."""
         resolved_output_dir = str(Path(output_dir).expanduser().resolve())
+        training_policy = self._apply_training_profile(extra_args)
         task = PredictionTaskSpec(
             task_type=task_type,
             smiles_columns=smiles_columns or ["smiles"],
@@ -643,7 +944,7 @@ class ChempropToolkit(Toolkit):
             train_csv=train_csv,
             output_dir=resolved_output_dir,
             task=task,
-            extra_args=extra_args,
+            extra_args=training_policy["extra_args"],
         )
 
         if agent is not None:
@@ -664,6 +965,10 @@ class ChempropToolkit(Toolkit):
             task=task,
         )
         result.update(metric_payload)
+        result["compute_environment"] = training_policy["compute_environment"]
+        result["training_profile"] = training_policy["training_profile"]
+        result["profile_reason"] = training_policy["profile_reason"]
+        result["effective_train_args"] = training_policy["extra_args"]
 
         training_summary_path = Path(resolved_output_dir) / "cs_copilot_training_summary.json"
         training_summary_path.parent.mkdir(parents=True, exist_ok=True)

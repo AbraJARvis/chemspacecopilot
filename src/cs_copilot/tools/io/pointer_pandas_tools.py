@@ -5,6 +5,7 @@ Enhanced PandasTools with pointer-based dataframe management and S3 support.
 """
 
 import logging
+from pathlib import Path
 from typing import Dict, Optional, Union
 from uuid import uuid4
 
@@ -16,6 +17,15 @@ from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
 from cs_copilot.tools.constants import MAX_COL_WIDTH, SAMPLE_COLS, SAMPLE_ROWS
 
 logger = logging.getLogger(__name__)
+
+
+def _looks_like_json_path(path: object) -> bool:
+    if not isinstance(path, str):
+        return False
+    try:
+        return Path(path).suffix.lower() == ".json"
+    except Exception:
+        return False
 
 _OPERATION_ALIASES = {
     "summary": "describe",
@@ -285,6 +295,15 @@ class PointerPandasTools(PandasTools):
                     f"Received function_parameters: {function_parameters}"
                 )
             try:
+                if _looks_like_json_path(path):
+                    with S3.open(path, "r") as fh:
+                        df = pd.read_json(fh)
+                    self.dataframes[dataframe_name] = df
+                    logger.warning(
+                        "create_pandas_dataframe(read_csv=...) received JSON path %s; auto-loaded with read_json instead.",
+                        path,
+                    )
+                    return {"dataframe_name": dataframe_name, "preview": _preview(df)}
                 with S3.open(path, "r") as fh:
                     df = pd.read_csv(fh, **params)
                 self.dataframes[dataframe_name] = df
@@ -300,7 +319,7 @@ class PointerPandasTools(PandasTools):
                 raise ValueError("s3_path parameter is required for from_s3 function")
             try:
                 with S3.open(s3_path, "r") as f:
-                    df = pd.read_csv(f)
+                    df = pd.read_json(f) if _looks_like_json_path(s3_path) else pd.read_csv(f)
                 self.dataframes[dataframe_name] = df
                 logger.info(f"Successfully loaded file from {s3_path} with shape {df.shape}")
                 return {"dataframe_name": dataframe_name, "preview": _preview(df)}
@@ -313,7 +332,7 @@ class PointerPandasTools(PandasTools):
             try:
                 # Use S3.open which now supports s3://, local absolute, and relative
                 with S3.open(file_path, "r") as f:
-                    df = pd.read_csv(f)
+                    df = pd.read_json(f) if _looks_like_json_path(file_path) else pd.read_csv(f)
                 self.dataframes[dataframe_name] = df
                 logger.info(f"Successfully loaded file from {file_path} with shape {df.shape}")
                 return {"dataframe_name": dataframe_name, "preview": _preview(df)}

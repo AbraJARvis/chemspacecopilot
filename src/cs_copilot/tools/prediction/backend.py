@@ -53,6 +53,7 @@ class PredictionModelRecord:
     backend_name: str
     model_path: str
     task: PredictionTaskSpec
+    metadata_path: Optional[str] = None
     display_name: Optional[str] = None
     description: Optional[str] = None
     tags: Dict[str, str] = field(default_factory=dict)
@@ -75,6 +76,7 @@ class PredictionModelRecord:
             "model_id": self.model_id,
             "backend_name": self.backend_name,
             "model_path": self.model_path,
+            "metadata_path": self.metadata_path,
             "display_name": self.display_name or self.model_id,
             "description": self.description or "",
             "version": self.version,
@@ -109,6 +111,7 @@ class PredictionModelRecord:
             model_id=payload["model_id"],
             backend_name=payload["backend_name"],
             model_path=payload["model_path"],
+            metadata_path=payload.get("metadata_path"),
             display_name=payload.get("display_name"),
             description=payload.get("description"),
             tags=payload.get("tags", {}),
