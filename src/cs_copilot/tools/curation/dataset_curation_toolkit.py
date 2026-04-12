@@ -63,6 +63,16 @@ def _count_stereo_markers_removed(original: pd.Series, standardized: pd.Series) 
 
 
 _UNIT_COLUMN_PATTERN = re.compile(r"(?:^|_)(unit|units|uom|measurement_unit|conc_unit)(?:$|_)", re.I)
+_ASSAY_CONTEXT_PATTERNS = {
+    "assay_columns": re.compile(r"(assay|protocol|experiment|screen)", re.I),
+    "ph_columns": re.compile(r"(^|_)(ph|p_h)(_|$)", re.I),
+    "temperature_columns": re.compile(r"(temp|temperature)", re.I),
+    "replicate_columns": re.compile(r"(replicate|replicates|repeat|n_repl|nrep)", re.I),
+    "fit_quality_columns": re.compile(r"(fit_quality|fitscore|fit_score|curve_quality|r2_fit|hill_fit|dose_response_quality)", re.I),
+    "cytotoxicity_columns": re.compile(r"(cytotox|cytotoxicity|cell_viability|viability)", re.I),
+    "interference_columns": re.compile(r"(interference|artifact|fluorescence|quench|signal)", re.I),
+    "time_columns": re.compile(r"(time|incubation)", re.I),
+}
 
 
 def _normalize_unit_value(value: Any) -> Optional[str]:
@@ -181,6 +191,34 @@ def _detect_target_outliers(
         "outliers_flagged_by_target": outlier_counts,
         "outlier_bounds_by_target": outlier_bounds,
         "outlier_policy": "flag_only",
+    }
+
+
+def _detect_measurement_context(df: pd.DataFrame) -> Dict[str, Any]:
+    detected: Dict[str, List[str]] = {}
+    for key, pattern in _ASSAY_CONTEXT_PATTERNS.items():
+        columns = [column for column in df.columns if pattern.search(column)]
+        if columns:
+            detected[key] = columns
+
+    all_detected_columns = sorted({column for cols in detected.values() for column in cols})
+    return {
+        "measurement_quality_available": bool(
+            detected.get("fit_quality_columns")
+            or detected.get("replicate_columns")
+            or detected.get("cytotoxicity_columns")
+            or detected.get("interference_columns")
+        ),
+        "experimental_context_columns_detected": all_detected_columns,
+        "measurement_quality_columns": sorted(
+            {
+                *detected.get("fit_quality_columns", []),
+                *detected.get("replicate_columns", []),
+                *detected.get("cytotoxicity_columns", []),
+                *detected.get("interference_columns", []),
+            }
+        ),
+        "context_column_groups": detected,
     }
 
 
@@ -393,6 +431,7 @@ class DatasetCurationToolkit(Toolkit):
             "target_policy": "coerce_numeric -> remove_non_numeric -> remove_infinite -> remove_missing -> flag_constant_targets",
             "unit_policy": "detect explicit unit columns -> block on unresolved heterogeneous units -> infer unit context only when no explicit unit column exists",
             "outlier_policy": "detect_iqr_1.5 -> flag_only",
+            "measurement_context_policy": "detect assay/context/fit-quality columns -> report availability without filtering rows",
         }
 
         if smiles_column not in working.columns:
@@ -553,6 +592,7 @@ class DatasetCurationToolkit(Toolkit):
             working,
             target_columns=curated_targets,
         )
+        measurement_context = _detect_measurement_context(df)
 
         target_data_quality = {
             "numeric_targets_required": task_type == "regression",
@@ -567,6 +607,7 @@ class DatasetCurationToolkit(Toolkit):
         }
         target_data_quality.update(unit_quality)
         target_data_quality.update(outlier_quality)
+        target_data_quality.update(measurement_context)
 
         if unit_quality.get("unit_conflicts_detected", 0):
             blocking_issues.append(
@@ -576,6 +617,8 @@ class DatasetCurationToolkit(Toolkit):
             actions.append(
                 f"detect target unit context: {unit_quality['target_unit_detected']}"
             )
+        if measurement_context.get("experimental_context_columns_detected"):
+            actions.append("detect experimental context columns")
 
         if invalid_before_drop == 0:
             warnings.append("No invalid SMILES were removed during curation.")
@@ -629,6 +672,16 @@ class DatasetCurationToolkit(Toolkit):
         if outlier_quality.get("outliers_flagged_total", 0):
             warnings.append(
                 f"{outlier_quality['outliers_flagged_total']} potential target outliers were flagged using the IQR rule."
+            )
+        if measurement_context.get("experimental_context_columns_detected"):
+            warnings.append(
+                "Experimental context columns detected: "
+                + ", ".join(measurement_context["experimental_context_columns_detected"])
+                + "."
+            )
+        else:
+            warnings.append(
+                "No explicit experimental context or measurement-quality columns were detected."
             )
 
         target_data_quality["target_ready_for_qsar"] = not bool(

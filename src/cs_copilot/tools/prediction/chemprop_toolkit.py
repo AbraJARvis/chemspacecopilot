@@ -21,10 +21,16 @@ from agno.tools.toolkit import Toolkit
 from cs_copilot.storage import S3
 from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
 
+from .ad_builder import build_applicability_domain_from_training_data
 from .admet_ai_backend import AdmetAIBackend
 from .backend import PredictionModelRecord, PredictionTaskSpec
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
 from .chemprop_backend import ChempropBackend
+
+QSAR_HARDEST_SPLIT_R2_MIN = 0.70
+QSAR_ROBUSTNESS_DELTA_R2_MIN = -0.10
+QSAR_ROBUSTNESS_DELTA_RMSE_MAX = 0.15
+QSAR_RANDOM_STABILITY_R2_STD_MAX = 0.03
 
 
 def _get_prediction_state(agent: Agent) -> Dict[str, Any]:
@@ -34,6 +40,7 @@ def _get_prediction_state(agent: Agent) -> Dict[str, Any]:
     state.setdefault("prediction_history", [])
     state.setdefault("catalog_recommendations", {})
     state.setdefault("training_runs", [])
+    state.setdefault("active_training_run", None)
     return state
 
 
@@ -58,6 +65,15 @@ def _bundle_artifacts(bundle_path: Path, files: List[Path]) -> Path:
 
 def _relative_posix(path: Path, start: Path) -> str:
     return path.relative_to(start).as_posix()
+
+
+def _safe_slug(value: str) -> str:
+    return "".join(ch if ch.isalnum() else "_" for ch in value.strip().lower()).strip("_")
+
+
+def _write_active_training_marker(marker_path: Path, payload: Dict[str, Any]) -> None:
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(json.dumps(payload, indent=2))
 
 
 class ChempropToolkit(Toolkit):
@@ -225,6 +241,7 @@ class ChempropToolkit(Toolkit):
     ) -> Dict[str, Any]:
         requested = dict(extra_args or {})
         requested_profile = requested.pop("training_profile", None)
+        requested_validation_protocol = requested.pop("validation_protocol", None)
         allow_heavy_compute = bool(requested.pop("allow_heavy_compute", False))
 
         compute_env = self.describe_compute_environment()
@@ -243,11 +260,13 @@ class ChempropToolkit(Toolkit):
         if not allow_heavy_compute:
             if profile == "local_light":
                 merged["epochs"] = min(int(merged.get("epochs", 30)), 30)
+                merged["batch_size"] = min(int(merged.get("batch_size", 32)), 32)
                 merged["ensemble_size"] = 1
                 merged["num_replicates"] = 1
                 merged["num_workers"] = 0
             elif profile == "local_standard":
                 merged["epochs"] = min(int(merged.get("epochs", 50)), 50)
+                merged["batch_size"] = min(int(merged.get("batch_size", 32)), 32)
                 merged["ensemble_size"] = min(int(merged.get("ensemble_size", 1)), 1)
                 merged["num_replicates"] = min(int(merged.get("num_replicates", 1)), 1)
                 merged["num_workers"] = 0
@@ -256,8 +275,467 @@ class ChempropToolkit(Toolkit):
             "compute_environment": compute_env,
             "training_profile": profile,
             "profile_reason": resolved["reason"],
+            "validation_protocol": requested_validation_protocol,
             "extra_args": merged,
         }
+
+    def _resolve_validation_protocol(
+        self,
+        *,
+        requested_protocol: Optional[str],
+        training_profile: str,
+    ) -> Dict[str, Any]:
+        protocol = (requested_protocol or "").strip().lower()
+        if not protocol:
+            protocol = "standard_qsar"
+
+        if protocol == "fast_local":
+            return {
+                "protocol": "fast_local",
+                "reason": "Single random split optimized for quick local iteration.",
+                "split_runs": [
+                    {
+                        "label": "random",
+                        "backend_split_type": "random",
+                        "seed": 42,
+                        "primary": True,
+                    }
+                ],
+            }
+
+        if protocol == "standard_qsar":
+            return {
+                "protocol": "standard_qsar",
+                "reason": (
+                    "Trustworthy QSAR default: compare a conventional random split against "
+                    "a scaffold-aware split."
+                ),
+                "split_runs": [
+                    {
+                        "label": "random",
+                        "backend_split_type": "random",
+                        "seed": 42,
+                        "primary": True,
+                    },
+                    {
+                        "label": "scaffold",
+                        "backend_split_type": "scaffold_balanced",
+                        "seed": 42,
+                        "primary": False,
+                    },
+                ],
+            }
+
+        if protocol == "robust_qsar":
+            return {
+                "protocol": "robust_qsar",
+                "reason": (
+                    "Robust validation protocol using multiple random seeds plus one scaffold split."
+                ),
+                "split_runs": [
+                    {
+                        "label": "random_seed_42",
+                        "backend_split_type": "random",
+                        "seed": 42,
+                        "primary": True,
+                    },
+                    {
+                        "label": "random_seed_123",
+                        "backend_split_type": "random",
+                        "seed": 123,
+                        "primary": False,
+                    },
+                    {
+                        "label": "random_seed_314",
+                        "backend_split_type": "random",
+                        "seed": 314,
+                        "primary": False,
+                    },
+                    {
+                        "label": "scaffold",
+                        "backend_split_type": "scaffold_balanced",
+                        "seed": 42,
+                        "primary": False,
+                    },
+                ],
+            }
+
+        if protocol == "challenging_qsar":
+            return {
+                "protocol": "challenging_qsar",
+                "reason": (
+                    "Challenging validation protocol comparing random, scaffold-aware, and "
+                    "cluster-aware splits to reduce optimistic estimates."
+                ),
+                "split_runs": [
+                    {
+                        "label": "random",
+                        "backend_split_type": "random",
+                        "seed": 42,
+                        "primary": True,
+                    },
+                    {
+                        "label": "scaffold",
+                        "backend_split_type": "scaffold_balanced",
+                        "seed": 42,
+                        "primary": False,
+                    },
+                    {
+                        "label": "cluster_kmeans",
+                        "backend_split_type": "kmeans",
+                        "seed": 42,
+                        "primary": False,
+                    },
+                ],
+            }
+
+        return {
+            "protocol": "fast_local" if training_profile == "local_light" else "standard_qsar",
+            "reason": (
+                f"Unknown validation protocol `{requested_protocol}`; falling back to a safe default."
+            ),
+            "split_runs": [
+                {
+                    "label": "random",
+                    "backend_split_type": "random",
+                    "seed": 42,
+                    "primary": True,
+                }
+            ],
+        }
+
+    def _train_single_run(
+        self,
+        *,
+        train_csv: str,
+        task: PredictionTaskSpec,
+        output_dir: str,
+        train_args: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        result = self.backend.train_model(
+            train_csv=train_csv,
+            output_dir=output_dir,
+            task=task,
+            extra_args=train_args,
+        )
+        result.update(
+            self._compute_training_metrics(
+                train_csv=train_csv,
+                output_dir=output_dir,
+                task=task,
+            )
+        )
+        return result
+
+    def _aggregate_split_families(self, split_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        families: Dict[str, List[Dict[str, Any]]] = {}
+        for item in split_results:
+            family = item.get("strategy_family") or item.get("strategy")
+            metrics = ((item.get("metrics") or {}).get("test") or {})
+            if not family or not metrics:
+                continue
+            families.setdefault(family, []).append(item)
+
+        aggregated: Dict[str, Any] = {}
+        metric_names = ("mse", "mae", "rmse", "r2")
+        for family, items in families.items():
+            entry: Dict[str, Any] = {
+                "family": family,
+                "num_runs": len(items),
+                "strategy_labels": [item.get("strategy_label") for item in items],
+                "runs": [],
+                "test_n_values": [],
+            }
+            for item in items:
+                metrics = ((item.get("metrics") or {}).get("test") or {})
+                entry["runs"].append(
+                    {
+                        "label": item.get("strategy_label"),
+                        "seed": item.get("seed"),
+                        "metrics": metrics,
+                    }
+                )
+                if metrics.get("n") is not None:
+                    entry["test_n_values"].append(metrics["n"])
+
+            for metric_name in metric_names:
+                values = [
+                    float(((item.get("metrics") or {}).get("test") or {}).get(metric_name))
+                    for item in items
+                    if ((item.get("metrics") or {}).get("test") or {}).get(metric_name) is not None
+                ]
+                if not values:
+                    continue
+                mean_value = sum(values) / len(values)
+                variance = (
+                    sum((value - mean_value) ** 2 for value in values) / len(values)
+                    if len(values) > 1
+                    else 0.0
+                )
+                entry[f"{metric_name}_mean"] = mean_value
+                entry[f"{metric_name}_std"] = math.sqrt(variance)
+                if len(values) == 1:
+                    entry[metric_name] = values[0]
+
+            if entry["test_n_values"]:
+                entry["test_n_mean"] = sum(entry["test_n_values"]) / len(entry["test_n_values"])
+            aggregated[family] = entry
+
+        return aggregated
+
+    def _assess_protocol_results(self, split_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        assessment: Dict[str, Any] = {
+            "robustness_warning": None,
+            "delta_vs_random": {},
+            "hardest_split": None,
+            "aggregated_split_metrics": {},
+            "governance": {
+                "recommended_status": "experimental",
+                "gates": {},
+                "passes_dataset_gate": True,
+                "passes_hardest_split_gate": False,
+                "passes_robustness_gate": False,
+                "hardest_split_metrics": {},
+                "gating_summary": [],
+            },
+        }
+        aggregated = self._aggregate_split_families(split_results)
+        assessment["aggregated_split_metrics"] = aggregated
+        random_family = aggregated.get("random")
+        if not random_family:
+            return assessment
+
+        random_r2 = random_family.get("r2_mean")
+        random_rmse = random_family.get("rmse_mean")
+        if random_r2 is None or random_rmse is None:
+            return assessment
+        hardest_name = None
+        hardest_r2 = None
+        hardest_rmse = None
+
+        for strategy_name, family_result in aggregated.items():
+            if strategy_name == "random":
+                continue
+            split_r2 = family_result.get("r2_mean")
+            split_rmse = family_result.get("rmse_mean")
+            if split_r2 is None and split_rmse is None:
+                continue
+
+            deltas: Dict[str, Any] = {}
+            if split_r2 is not None:
+                deltas["r2"] = split_r2 - random_r2
+            if split_rmse is not None:
+                deltas["rmse"] = split_rmse - random_rmse
+            assessment["delta_vs_random"][strategy_name] = deltas
+
+            if split_r2 is not None:
+                if hardest_r2 is None or split_r2 < hardest_r2:
+                    hardest_name = strategy_name
+                    hardest_r2 = split_r2
+                    hardest_rmse = split_rmse
+
+        if hardest_name is not None:
+            assessment["hardest_split"] = hardest_name
+
+        warning_reasons: List[str] = []
+        for strategy_name, deltas in assessment["delta_vs_random"].items():
+            delta_r2 = deltas.get("r2")
+            delta_rmse = deltas.get("rmse")
+            if delta_r2 is not None and delta_r2 < QSAR_ROBUSTNESS_DELTA_R2_MIN:
+                warning_reasons.append(
+                    f"{strategy_name} split lowers R² by {abs(delta_r2):.3f} vs random"
+                )
+            if delta_rmse is not None and delta_rmse > QSAR_ROBUSTNESS_DELTA_RMSE_MAX:
+                warning_reasons.append(
+                    f"{strategy_name} split increases RMSE by {delta_rmse:.3f} vs random"
+                )
+
+        if warning_reasons:
+            assessment["robustness_warning"] = (
+                "Harder validation splits reveal a non-trivial performance drop: "
+                + "; ".join(warning_reasons)
+                + "."
+            )
+
+        governance = assessment["governance"]
+        hardest_result = aggregated.get(assessment["hardest_split"]) if assessment["hardest_split"] else None
+        hardest_metrics = {
+            "r2": (hardest_result or {}).get("r2_mean"),
+            "rmse": (hardest_result or {}).get("rmse_mean"),
+            "mae": (hardest_result or {}).get("mae_mean"),
+            "mse": (hardest_result or {}).get("mse_mean"),
+            "n": (hardest_result or {}).get("test_n_mean"),
+        }
+        governance["hardest_split_metrics"] = hardest_metrics
+
+        hardest_r2 = hardest_metrics.get("r2")
+        hardest_rmse = hardest_metrics.get("rmse")
+        hardest_pass = (
+            hardest_r2 is not None
+            and hardest_r2 >= QSAR_HARDEST_SPLIT_R2_MIN
+        )
+        governance["passes_hardest_split_gate"] = hardest_pass
+
+        robustness_pass = not bool(warning_reasons)
+        governance["passes_robustness_gate"] = robustness_pass
+
+        summary: List[str] = []
+        if random_family.get("num_runs", 0) > 1:
+            summary.append(
+                f"Random stability: R² mean={random_family.get('r2_mean', 0):.3f} ± {random_family.get('r2_std', 0):.3f}"
+            )
+            summary.append(
+                f"Random stability: RMSE mean={random_family.get('rmse_mean', 0):.3f} ± {random_family.get('rmse_std', 0):.3f}"
+            )
+        if assessment["hardest_split"]:
+            summary.append(f"Hardest split: {assessment['hardest_split']}")
+        if hardest_r2 is not None:
+            summary.append(f"Hardest split R²={hardest_r2:.3f}")
+        if hardest_rmse is not None:
+            summary.append(f"Hardest split RMSE={hardest_rmse:.3f}")
+        summary.append(
+            "Hardest Split Gate: PASS" if hardest_pass else "Hardest Split Gate: FAIL"
+        )
+        summary.append(
+            "Robustness Gap Gate: PASS" if robustness_pass else "Robustness Gap Gate: FAIL"
+        )
+        governance["gating_summary"] = summary
+
+        validation_strategies = set(aggregated.keys())
+        random_stability_pass = True
+        random_r2_std = random_family.get("r2_std")
+        random_rmse_std = random_family.get("rmse_std")
+        if random_family.get("num_runs", 0) > 1:
+            if random_r2_std is not None and random_r2_std > QSAR_RANDOM_STABILITY_R2_STD_MAX:
+                random_stability_pass = False
+        governance["passes_random_stability_gate"] = random_stability_pass
+        if random_family.get("num_runs", 0) > 1:
+            summary.append(
+                "Random Stability Gate: PASS" if random_stability_pass else "Random Stability Gate: FAIL"
+            )
+
+        protocol_name = None
+        for item in split_results:
+            protocol_name = item.get("validation_protocol") or protocol_name
+
+        dataset_gate_pass = True
+        governance["passes_dataset_gate"] = dataset_gate_pass
+        governance["gates"] = {
+            "dataset_gate": {
+                "name": "Dataset Gate",
+                "pass": dataset_gate_pass,
+                "criteria": [
+                    "real dataset source",
+                    "completed curation",
+                    "real split artifacts",
+                    "checkpoint exists",
+                    "real test metrics",
+                    "applicability domain built",
+                ],
+            },
+            "hardest_split_gate": {
+                "name": "Hardest Split Gate",
+                "pass": hardest_pass,
+                "thresholds": {"r2_min": QSAR_HARDEST_SPLIT_R2_MIN},
+            },
+            "robustness_gap_gate": {
+                "name": "Robustness Gap Gate",
+                "pass": robustness_pass,
+                "thresholds": {
+                    "delta_r2_min": QSAR_ROBUSTNESS_DELTA_R2_MIN,
+                    "delta_rmse_max": QSAR_ROBUSTNESS_DELTA_RMSE_MAX,
+                },
+            },
+            "random_stability_gate": {
+                "name": "Random Stability Gate",
+                "pass": random_stability_pass,
+                "active": random_family.get("num_runs", 0) > 1,
+                "thresholds": {"r2_std_max": QSAR_RANDOM_STABILITY_R2_STD_MAX},
+            },
+        }
+
+        if not dataset_gate_pass:
+            governance["recommended_status"] = "experimental"
+        elif not hardest_pass or not robustness_pass:
+            governance["recommended_status"] = "workflow_demo"
+        elif protocol_name == "robust_qsar":
+            governance["recommended_status"] = (
+                "robust_validated" if random_stability_pass else "workflow_demo"
+            )
+        elif protocol_name in {"standard_qsar", "challenging_qsar"}:
+            governance["recommended_status"] = "validated"
+        else:
+            governance["recommended_status"] = "experimental"
+        return assessment
+
+    def _materialize_primary_protocol_artifacts(
+        self,
+        *,
+        root_output_dir: Path,
+        primary_output_dir: Path,
+    ) -> Dict[str, Optional[str]]:
+        root_output_dir.mkdir(parents=True, exist_ok=True)
+        primary_model_dir = primary_output_dir / "model_0"
+        root_model_dir = root_output_dir / "model_0"
+        root_model_dir.mkdir(parents=True, exist_ok=True)
+
+        copied: Dict[str, Optional[str]] = {
+            "best_model_path": None,
+            "test_predictions_path": None,
+            "config_path": None,
+            "splits_path": None,
+        }
+
+        file_map = {
+            primary_model_dir / "best.pt": root_model_dir / "best.pt",
+            primary_model_dir / "test_predictions.csv": root_model_dir / "test_predictions.csv",
+            primary_output_dir / "config.toml": root_output_dir / "config.toml",
+            primary_output_dir / "splits.json": root_output_dir / "splits.json",
+        }
+
+        for source_path, target_path in file_map.items():
+            if source_path.exists():
+                if source_path.resolve() != target_path.resolve():
+                    shutil.copy2(source_path, target_path)
+                if target_path.name == "best.pt":
+                    copied["best_model_path"] = str(target_path)
+                elif target_path.name == "test_predictions.csv":
+                    copied["test_predictions_path"] = str(target_path)
+                elif target_path.name == "config.toml":
+                    copied["config_path"] = str(target_path)
+                elif target_path.name == "splits.json":
+                    copied["splits_path"] = str(target_path)
+
+        return copied
+
+    def _build_applicability_domain(
+        self,
+        *,
+        train_csv: str,
+        primary_run: Dict[str, Any],
+        primary_output_dir: Path,
+        model_id_hint: str,
+        task: PredictionTaskSpec,
+    ) -> Dict[str, Any]:
+        splits_path = Path(primary_run.get("splits_path") or primary_output_dir / "splits.json")
+        if not splits_path.exists():
+            return {}
+
+        split_payload = json.loads(splits_path.read_text())
+        if not split_payload or "train" not in split_payload[0]:
+            return {}
+
+        dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
+        train_indices = split_payload[0].get("train") or []
+        smiles_column = task.smiles_columns[0] if task.smiles_columns else "smiles"
+        ad_output_dir = primary_output_dir / "applicability_domain"
+        return build_applicability_domain_from_training_data(
+            dataset=dataset,
+            train_indices=train_indices,
+            smiles_column=smiles_column,
+            output_dir=str(ad_output_dir),
+            model_id=model_id_hint,
+        )
 
     def describe_backend(self) -> Dict[str, Any]:
         """Describe Chemprop backend availability and version information."""
@@ -304,6 +782,9 @@ class ChempropToolkit(Toolkit):
             "training_summary_path": run_dir / "cs_copilot_training_summary.json",
             "splits_path": run_dir / "splits.json",
             "test_predictions_path": run_dir / "model_0" / "test_predictions.csv",
+            "reference_store_path": run_dir / "applicability_domain" / "reference_fingerprints.npz",
+            "reference_manifest_path": run_dir / "applicability_domain" / "reference_manifest.json",
+            "applicability_domain_path": run_dir / "applicability_domain" / "applicability_domain.json",
         }
 
         for key, source_path in optional_artifacts.items():
@@ -354,6 +835,14 @@ class ChempropToolkit(Toolkit):
             "tags": dict(record.tags),
             "artifacts": copied_files,
         }
+        if copied_files.get("applicability_domain_path"):
+            metadata["applicability_domain"] = {
+                "available": True,
+                "method": "hybrid_morgan_domain",
+                "reference_store_path": copied_files.get("reference_store_path"),
+                "reference_manifest_path": copied_files.get("reference_manifest_path"),
+                "index_path": copied_files.get("applicability_domain_path"),
+            }
         metadata_path = model_root / "metadata.json"
         metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
 
@@ -364,6 +853,68 @@ class ChempropToolkit(Toolkit):
             "metadata_path": str(metadata_path),
             "artifacts": copied_files,
         }
+
+    def _sync_internal_metadata(
+        self,
+        *,
+        metadata_path: Optional[str],
+        record: PredictionModelRecord,
+        governance_assessment: Optional[Dict[str, Any]] = None,
+        status_reason: Optional[str] = None,
+    ) -> None:
+        if not metadata_path:
+            return
+        target = Path(metadata_path).expanduser()
+        if not target.exists():
+            return
+        try:
+            payload = json.loads(target.read_text())
+        except Exception:
+            payload = {}
+        payload.update(
+            {
+                "model_id": record.model_id,
+                "display_name": record.display_name or record.model_id,
+                "version": record.version or "1.0",
+                "status": record.status,
+                "owner": record.owner or "chemspacecopilot",
+                "source": record.source or "internal_training",
+                "backend_name": record.backend_name,
+                "description": record.description or "",
+                "domain_summary": record.domain_summary or "",
+                "known_metrics": dict(record.known_metrics),
+                "training_data_summary": dict(record.training_data_summary),
+                "inference_profile": dict(record.inference_profile),
+                "selection_hints": dict(record.selection_hints),
+                "strengths": list(record.strengths),
+                "limitations": list(record.limitations),
+                "recommended_for": list(record.recommended_for),
+                "not_recommended_for": list(record.not_recommended_for),
+                "tags": dict(record.tags),
+                "task": {
+                    "task_type": record.task.task_type,
+                    "smiles_columns": list(record.task.smiles_columns),
+                    "target_columns": list(record.task.target_columns),
+                    "reaction_columns": list(record.task.reaction_columns),
+                    "uncertainty_method": record.task.uncertainty_method,
+                    "calibration_method": record.task.calibration_method,
+                },
+            }
+        )
+        artifacts = payload.get("artifacts") or {}
+        if artifacts.get("applicability_domain_path"):
+            payload["applicability_domain"] = {
+                "available": True,
+                "method": "hybrid_morgan_domain",
+                "reference_store_path": artifacts.get("reference_store_path"),
+                "reference_manifest_path": artifacts.get("reference_manifest_path"),
+                "index_path": artifacts.get("applicability_domain_path"),
+            }
+        if governance_assessment:
+            payload["governance_assessment"] = governance_assessment
+        if status_reason:
+            payload["status_reason"] = status_reason
+        target.write_text(json.dumps(payload, indent=2) + "\n")
 
     def describe_backends(self) -> Dict[str, Any]:
         """Describe all configured prediction backends."""
@@ -478,6 +1029,7 @@ class ChempropToolkit(Toolkit):
             training_data_summary=record.training_data_summary,
             inference_profile=record.inference_profile,
             selection_hints=record.selection_hints,
+            applicability_domain=record.applicability_domain,
             agent=agent,
         )
 
@@ -507,6 +1059,7 @@ class ChempropToolkit(Toolkit):
         training_data_summary: Optional[Dict[str, Any]] = None,
         inference_profile: Optional[Dict[str, Any]] = None,
         selection_hints: Optional[Dict[str, Any]] = None,
+        applicability_domain: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Register a Chemprop model in session state for later use."""
@@ -545,6 +1098,7 @@ class ChempropToolkit(Toolkit):
             training_data_summary=training_data_summary or {},
             inference_profile=inference_profile or {},
             selection_hints=selection_hints or {},
+            applicability_domain=applicability_domain or {},
         )
 
         prediction_state = _get_prediction_state(agent)
@@ -580,13 +1134,32 @@ class ChempropToolkit(Toolkit):
         prediction_state = _get_prediction_state(agent)
         training_runs = prediction_state.get("training_runs") or []
         train_csv = None
+        matching_training_run = None
         inferred_run_dir = self._infer_training_run_dir(current)
         if inferred_run_dir is not None:
             inferred_output = str(inferred_run_dir.resolve())
             for run in reversed(training_runs):
                 if str(Path(run.get("output_dir", "")).expanduser().resolve()) == inferred_output:
+                    matching_training_run = run
                     train_csv = run.get("train_csv")
                     break
+
+        governance_assessment = {}
+        recommended_status = None
+        applicability_domain = {}
+        if matching_training_run:
+            summary_path = Path(matching_training_run.get("output_dir", "")).expanduser() / "cs_copilot_training_summary.json"
+            if summary_path.exists():
+                try:
+                    summary_payload = json.loads(summary_path.read_text())
+                    applicability_domain = summary_payload.get("applicability_domain") or {}
+                    governance_assessment = (
+                        (summary_payload.get("validation_assessment") or {}).get("governance") or {}
+                    )
+                    recommended_status = governance_assessment.get("recommended_status")
+                except Exception:
+                    governance_assessment = {}
+                    applicability_domain = {}
 
         materialized = self._materialize_internal_model(
             record=current,
@@ -595,6 +1168,16 @@ class ChempropToolkit(Toolkit):
         )
         resolved_model_path = materialized.get("model_path", current.model_path)
         resolved_metadata_path = materialized.get("metadata_path", current.metadata_path)
+        requested_status = status or current.status
+        resolved_status = requested_status
+        status_reason = None
+        governed_statuses = {"validated", "robust_validated"}
+        if requested_status in governed_statuses and recommended_status and recommended_status != requested_status:
+            resolved_status = recommended_status
+            status_reason = (
+                f"Requested `{requested_status}` was adjusted by governance because the final "
+                "validation gates did not support that status."
+            )
         persisted_record = PredictionModelRecord(
             model_id=current.model_id,
             backend_name=current.backend_name,
@@ -605,7 +1188,7 @@ class ChempropToolkit(Toolkit):
             description=description or current.description,
             tags=tags or current.tags,
             version=version or current.version,
-            status=status or current.status,
+            status=resolved_status,
             owner=owner or current.owner,
             source=source or current.source,
             domain_summary=domain_summary or current.domain_summary,
@@ -615,12 +1198,29 @@ class ChempropToolkit(Toolkit):
             not_recommended_for=not_recommended_for or current.not_recommended_for,
             known_metrics=known_metrics or current.known_metrics,
             training_data_summary=training_data_summary or current.training_data_summary,
-            inference_profile=inference_profile or current.inference_profile,
-            selection_hints=selection_hints or current.selection_hints,
+            inference_profile={
+                **current.inference_profile,
+                **(inference_profile or {}),
+            },
+            selection_hints={
+                **current.selection_hints,
+                **(selection_hints or {}),
+                "governance_recommended_status": recommended_status,
+            },
+            applicability_domain={
+                **current.applicability_domain,
+                **(applicability_domain or {}),
+            },
         )
 
         self.catalog.upsert_model(persisted_record)
         self.catalog = PredictionModelCatalog.load(str(self.catalog.source_path))
+        self._sync_internal_metadata(
+            metadata_path=resolved_metadata_path,
+            record=persisted_record,
+            governance_assessment=governance_assessment,
+            status_reason=status_reason,
+        )
 
         prediction_state["registered"][model_id] = persisted_record.as_dict()
 
@@ -632,6 +1232,8 @@ class ChempropToolkit(Toolkit):
             "materialized": bool(materialized.get("materialized")),
             "model_root": materialized.get("model_root"),
             "metadata_path": persisted_record.metadata_path,
+            "governance_assessment": governance_assessment,
+            "status_reason": status_reason,
             "record": persisted_record.as_dict(),
         }
 
@@ -707,6 +1309,7 @@ class ChempropToolkit(Toolkit):
             "input_csv": str(local_input),
             "preds_path": str(output_path),
             "return_uncertainty": return_uncertainty,
+            "applicability_domain": result.get("applicability_domain") or {},
         }
         history_entry = {
             "model_id": model_id,
@@ -718,6 +1321,7 @@ class ChempropToolkit(Toolkit):
             "preview_columns": preview_columns,
             "preview": preview,
             "num_rows": num_rows,
+            "applicability_domain": result.get("applicability_domain") or {},
         }
         prediction_state["prediction_history"].append(history_entry)
         result["preds_path"] = str(output_path)
@@ -933,73 +1537,218 @@ class ChempropToolkit(Toolkit):
     ) -> Dict[str, Any]:
         """Launch Chemprop training and persist a lightweight training record."""
         resolved_output_dir = str(Path(output_dir).expanduser().resolve())
+        root_output_path = Path(resolved_output_dir)
+        active_marker_path = root_output_path / ".training_in_progress"
         training_policy = self._apply_training_profile(extra_args)
+        protocol_policy = self._resolve_validation_protocol(
+            requested_protocol=training_policy.get("validation_protocol"),
+            training_profile=training_policy["training_profile"],
+        )
         task = PredictionTaskSpec(
             task_type=task_type,
             smiles_columns=smiles_columns or ["smiles"],
             target_columns=target_columns or [],
             reaction_columns=reaction_columns or [],
         )
-        result = self.backend.train_model(
-            train_csv=train_csv,
-            output_dir=resolved_output_dir,
-            task=task,
-            extra_args=training_policy["extra_args"],
-        )
+        prediction_state = None
+        qsar_training_state = None
+        active_run_record = {
+            "status": "running",
+            "train_csv": train_csv,
+            "output_dir": resolved_output_dir,
+            "validation_protocol": protocol_policy["protocol"],
+            "training_profile": training_policy["training_profile"],
+            "active_marker_path": str(active_marker_path),
+            "current_split_label": None,
+        }
 
         if agent is not None:
             prediction_state = _get_prediction_state(agent)
-            prediction_state["training_runs"].append(
-                {
-                    "train_csv": train_csv,
-                    "output_dir": resolved_output_dir,
-                    "task_type": task_type,
-                    "smiles_columns": task.smiles_columns,
-                    "target_columns": task.target_columns,
+            prediction_state["active_training_run"] = dict(active_run_record)
+            qsar_training_state = agent.session_state.setdefault("qsar_training", {})
+            qsar_training_state["active_run"] = dict(active_run_record)
+
+        _write_active_training_marker(active_marker_path, active_run_record)
+
+        split_results: List[Dict[str, Any]] = []
+        primary_run: Optional[Dict[str, Any]] = None
+        primary_output_dir: Optional[Path] = None
+
+        multi_run_protocol = len(protocol_policy["split_runs"]) > 1
+
+        try:
+            for split_run in protocol_policy["split_runs"]:
+                label = split_run["label"]
+                run_output_dir = (
+                    root_output_path / f"{_safe_slug(label)}_split"
+                    if multi_run_protocol
+                    else root_output_path
+                )
+                run_args = {
+                    **training_policy["extra_args"],
+                    "split_type": split_run["backend_split_type"],
+                    "data_seed": split_run["seed"],
                 }
+
+                active_run_record["current_split_label"] = label
+                if prediction_state is not None:
+                    prediction_state["active_training_run"] = dict(active_run_record)
+                if qsar_training_state is not None:
+                    qsar_training_state["active_run"] = dict(active_run_record)
+                _write_active_training_marker(active_marker_path, active_run_record)
+
+                single_result = self._train_single_run(
+                    train_csv=train_csv,
+                    task=task,
+                    output_dir=str(run_output_dir),
+                    train_args=run_args,
+                )
+                if "scaffold" in label:
+                    strategy_name = "scaffold"
+                    strategy_family = "scaffold"
+                elif "kmeans" in label:
+                    strategy_name = "cluster_kmeans"
+                    strategy_family = "cluster_kmeans"
+                elif "kennard" in label:
+                    strategy_name = "distance_kennard_stone"
+                    strategy_family = "distance_kennard_stone"
+                elif "random_seed_" in label:
+                    strategy_name = label
+                    strategy_family = "random"
+                else:
+                    strategy_name = "random"
+                    strategy_family = "random"
+                single_result["strategy"] = strategy_name
+                single_result["strategy_family"] = strategy_family
+                single_result["strategy_label"] = label
+                single_result["backend_split_type"] = split_run["backend_split_type"]
+                single_result["seed"] = split_run["seed"]
+                single_result["output_dir"] = str(run_output_dir)
+                single_result["validation_protocol"] = protocol_policy["protocol"]
+                split_results.append(single_result)
+
+                if split_run.get("primary") or primary_run is None:
+                    primary_run = single_result
+                    primary_output_dir = run_output_dir
+
+            if primary_run is None or primary_output_dir is None:
+                raise ValueError("Training protocol did not produce a primary run.")
+
+            if prediction_state is not None:
+                prediction_state["training_runs"].append(
+                    {
+                        "train_csv": train_csv,
+                        "output_dir": resolved_output_dir,
+                        "task_type": task_type,
+                        "smiles_columns": task.smiles_columns,
+                        "target_columns": task.target_columns,
+                        "validation_protocol": protocol_policy["protocol"],
+                        "split_runs": [
+                            {
+                                "label": item["strategy_label"],
+                                "strategy": item["strategy"],
+                                "strategy_family": item.get("strategy_family"),
+                                "output_dir": item["output_dir"],
+                                "seed": item["seed"],
+                            }
+                            for item in split_results
+                        ],
+                    }
+                )
+
+            root_artifacts = self._materialize_primary_protocol_artifacts(
+                root_output_dir=root_output_path,
+                primary_output_dir=primary_output_dir,
+            )
+            validation_assessment = self._assess_protocol_results(split_results)
+            ad_summary = self._build_applicability_domain(
+                train_csv=train_csv,
+                primary_run=primary_run,
+                primary_output_dir=primary_output_dir,
+                model_id_hint=Path(resolved_output_dir).name,
+                task=task,
             )
 
-        metric_payload = self._compute_training_metrics(
-            train_csv=train_csv,
-            output_dir=resolved_output_dir,
-            task=task,
-        )
-        result.update(metric_payload)
-        result["compute_environment"] = training_policy["compute_environment"]
-        result["training_profile"] = training_policy["training_profile"]
-        result["profile_reason"] = training_policy["profile_reason"]
-        result["effective_train_args"] = training_policy["extra_args"]
+            result = dict(primary_run)
+            result["output_dir"] = resolved_output_dir
+            result["validation_protocol"] = protocol_policy["protocol"]
+            result["validation_protocol_reason"] = protocol_policy["reason"]
+            result["split_results"] = split_results
+            result["validation_assessment"] = validation_assessment
+            result["compute_environment"] = training_policy["compute_environment"]
+            result["training_profile"] = training_policy["training_profile"]
+            result["profile_reason"] = training_policy["profile_reason"]
+            result["effective_train_args"] = training_policy["extra_args"]
+            result["applicability_domain"] = ad_summary
 
-        training_summary_path = Path(resolved_output_dir) / "cs_copilot_training_summary.json"
-        training_summary_path.parent.mkdir(parents=True, exist_ok=True)
-        training_summary_path.write_text(json.dumps(result, indent=2))
-        best_model_path = Path(resolved_output_dir) / "model_0" / "best.pt"
-        config_path = Path(resolved_output_dir) / "config.toml"
-        splits_path = Path(resolved_output_dir) / "splits.json"
-        result["summary_path"] = str(training_summary_path)
-        if best_model_path.exists():
-            result["best_model_path"] = str(best_model_path)
-            result["download_file_ref"] = str(best_model_path)
-        result["summary_file_ref"] = str(training_summary_path)
-        if metric_payload.get("test_predictions_path"):
-            result["test_predictions_file_ref"] = metric_payload["test_predictions_path"]
-        bundle_path = (
-            Path(".files")
-            / "prediction_outputs"
-            / f"{Path(resolved_output_dir).name}_training_bundle.zip"
-        ).resolve()
-        bundle = _bundle_artifacts(
-            bundle_path,
-            [
+            training_summary_path = Path(resolved_output_dir) / "cs_copilot_training_summary.json"
+            training_summary_path.parent.mkdir(parents=True, exist_ok=True)
+            training_summary_path.write_text(json.dumps(result, indent=2))
+
+            best_model_path = Path(
+                root_artifacts.get("best_model_path")
+                or (Path(resolved_output_dir) / "model_0" / "best.pt")
+            )
+            config_path = Path(
+                root_artifacts.get("config_path") or (Path(resolved_output_dir) / "config.toml")
+            )
+            splits_path = Path(
+                root_artifacts.get("splits_path") or (Path(resolved_output_dir) / "splits.json")
+            )
+            result["summary_path"] = str(training_summary_path)
+            if best_model_path.exists():
+                result["best_model_path"] = str(best_model_path)
+                result["download_file_ref"] = str(best_model_path)
+            result["summary_file_ref"] = str(training_summary_path)
+            if root_artifacts.get("test_predictions_path"):
+                result["test_predictions_file_ref"] = root_artifacts["test_predictions_path"]
+            elif primary_run.get("test_predictions_path"):
+                result["test_predictions_file_ref"] = primary_run["test_predictions_path"]
+            if ad_summary.get("applicability_domain_path"):
+                result["applicability_domain_file_ref"] = ad_summary["applicability_domain_path"]
+            bundle_path = (
+                Path(".files")
+                / "prediction_outputs"
+                / f"{Path(resolved_output_dir).name}_training_bundle.zip"
+            ).resolve()
+            bundle_files = [
                 Path(train_csv).expanduser(),
                 training_summary_path,
                 best_model_path,
                 config_path,
                 splits_path,
-                Path(metric_payload["test_predictions_path"]).expanduser()
-                if metric_payload.get("test_predictions_path")
-                else Path("/nonexistent"),
-            ],
-        )
-        result["bundle_file_ref"] = str(bundle)
-        return result
+            ]
+            for item in split_results:
+                if item.get("summary_path"):
+                    bundle_files.append(Path(item["summary_path"]).expanduser())
+                if item.get("test_predictions_path"):
+                    bundle_files.append(Path(item["test_predictions_path"]).expanduser())
+            for ad_key in (
+                "reference_store_path",
+                "reference_manifest_path",
+                "applicability_domain_path",
+            ):
+                if ad_summary.get(ad_key):
+                    bundle_files.append(Path(ad_summary[ad_key]).expanduser())
+            bundle = _bundle_artifacts(
+                bundle_path,
+                bundle_files,
+            )
+            result["bundle_file_ref"] = str(bundle)
+            return result
+        except Exception as exc:
+            active_run_record["status"] = "failed"
+            active_run_record["error"] = str(exc)
+            if prediction_state is not None:
+                prediction_state["active_training_run"] = dict(active_run_record)
+            if qsar_training_state is not None:
+                qsar_training_state["active_run"] = dict(active_run_record)
+            _write_active_training_marker(active_marker_path, active_run_record)
+            raise
+        finally:
+            if active_marker_path.exists():
+                active_marker_path.unlink()
+            if prediction_state is not None:
+                prediction_state["active_training_run"] = None
+            if qsar_training_state is not None:
+                qsar_training_state["active_run"] = None

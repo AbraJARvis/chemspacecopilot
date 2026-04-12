@@ -21,9 +21,10 @@ from .backend import PredictionModelRecord
 
 DEFAULT_MODEL_CATALOG_PATH = Path(__file__).with_name("model_catalog.json")
 DEFAULT_INTERNAL_MODEL_ROOT = Path("data/model_assets/internal").resolve()
-DEFAULT_ALLOWED_STATUSES = ("production", "validated", "experimental")
+DEFAULT_ALLOWED_STATUSES = ("production", "robust_validated", "validated", "experimental")
 STATUS_WEIGHTS = {
     "production": 12,
+    "robust_validated": 10,
     "validated": 8,
     "experimental": 4,
     "workflow_demo": -12,
@@ -221,6 +222,7 @@ class PredictionModelCatalog:
                     record.recommended_for,
                     record.training_data_summary,
                     record.selection_hints,
+                    record.applicability_domain,
                 ]
             )
             if normalized_domain:
