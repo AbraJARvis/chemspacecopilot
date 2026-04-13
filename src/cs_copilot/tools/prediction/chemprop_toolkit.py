@@ -10,9 +10,11 @@ import json
 import math
 import os
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zipfile import ZIP_DEFLATED, ZipFile
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from agno.agent import Agent
@@ -22,7 +24,6 @@ from cs_copilot.storage import S3
 from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
 
 from .ad_builder import build_applicability_domain_from_training_data
-from .admet_ai_backend import AdmetAIBackend
 from .backend import PredictionModelRecord, PredictionTaskSpec
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
 from .chemprop_backend import ChempropBackend
@@ -31,6 +32,20 @@ QSAR_HARDEST_SPLIT_R2_MIN = 0.70
 QSAR_ROBUSTNESS_DELTA_R2_MIN = -0.10
 QSAR_ROBUSTNESS_DELTA_RMSE_MAX = 0.15
 QSAR_RANDOM_STABILITY_R2_STD_MAX = 0.03
+PROJECT_TIMEZONE = ZoneInfo("Europe/Paris")
+
+
+def _project_now() -> datetime:
+    return datetime.now(PROJECT_TIMEZONE)
+
+
+def _coerce_project_timezone(value: Optional[str]) -> datetime:
+    if not value:
+        return _project_now()
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=PROJECT_TIMEZONE)
+    return parsed.astimezone(PROJECT_TIMEZONE)
 
 
 def _get_prediction_state(agent: Agent) -> Dict[str, Any]:
@@ -71,6 +86,75 @@ def _safe_slug(value: str) -> str:
     return "".join(ch if ch.isalnum() else "_" for ch in value.strip().lower()).strip("_")
 
 
+def _safe_display_token(value: str) -> str:
+    token = value.replace("_", " ").strip()
+    return " ".join(part.capitalize() for part in token.split())
+
+
+def _extract_endpoint_and_dataset(train_csv: Optional[str], fallback_model_id: str) -> tuple[str, str]:
+    source = Path(train_csv or fallback_model_id).stem.lower()
+    for suffix in ("_curated", "_cleaned", "_dataset", "_training"):
+        if source.endswith(suffix):
+            source = source[: -len(suffix)]
+            break
+    parts = [part for part in source.split("_") if part]
+    if len(parts) >= 2:
+        endpoint = parts[0]
+        dataset = "_".join(parts[1:])
+    elif len(parts) == 1:
+        endpoint = parts[0]
+        dataset = "dataset"
+    else:
+        endpoint = _safe_slug(fallback_model_id) or "endpoint"
+        dataset = "dataset"
+    return _safe_slug(endpoint) or "endpoint", _safe_slug(dataset) or "dataset"
+
+
+def _canonical_model_id(
+    *,
+    endpoint: str,
+    dataset: str,
+    protocol: str,
+    backend: str,
+    version: str,
+    trained_at: datetime,
+) -> str:
+    version_token = version if str(version).startswith("v") else f"v{version}"
+    date_token = trained_at.strftime("%d%m%Y")
+    time_token = trained_at.strftime("%H%M%S")
+    return "_".join(
+        [
+            _safe_slug(endpoint),
+            _safe_slug(dataset),
+            _safe_slug(protocol),
+            _safe_slug(backend),
+            _safe_slug(version_token),
+            date_token,
+            time_token,
+        ]
+    )
+
+
+def _canonical_display_name(
+    *,
+    endpoint: str,
+    dataset: str,
+    protocol: str,
+    backend: str,
+    version: str,
+) -> str:
+    version_token = version if str(version).startswith("v") else f"v{version}"
+    return " ".join(
+        [
+            _safe_display_token(endpoint),
+            _safe_display_token(dataset),
+            _safe_display_token(protocol),
+            _safe_display_token(backend),
+            version_token,
+        ]
+    ).strip()
+
+
 def _write_active_training_marker(marker_path: Path, payload: Dict[str, Any]) -> None:
     marker_path.parent.mkdir(parents=True, exist_ok=True)
     marker_path.write_text(json.dumps(payload, indent=2))
@@ -84,10 +168,10 @@ class ChempropToolkit(Toolkit):
         primary_backend = backend or ChempropBackend()
         self.backends = {
             primary_backend.backend_name: primary_backend,
-            "admet_ai": AdmetAIBackend(),
         }
         self.backend = primary_backend
         self.catalog = PredictionModelCatalog.load()
+        self.catalog.refresh_from_internal_store(persist=True)
         self.register(self.describe_backend)
         self.register(self.describe_backends)
         self.register(self.describe_catalog)
@@ -755,6 +839,7 @@ class ChempropToolkit(Toolkit):
         record: PredictionModelRecord,
         train_csv: Optional[str] = None,
         model_id: Optional[str] = None,
+        source_artifacts: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         run_dir = self._infer_training_run_dir(record)
         if run_dir is None or not run_dir.exists():
@@ -786,6 +871,20 @@ class ChempropToolkit(Toolkit):
             "reference_manifest_path": run_dir / "applicability_domain" / "reference_manifest.json",
             "applicability_domain_path": run_dir / "applicability_domain" / "applicability_domain.json",
         }
+
+        if source_artifacts:
+            for key in (
+                "config_path",
+                "training_summary_path",
+                "splits_path",
+                "test_predictions_path",
+                "reference_store_path",
+                "reference_manifest_path",
+                "applicability_domain_path",
+            ):
+                raw_path = source_artifacts.get(key)
+                if raw_path:
+                    optional_artifacts[key] = Path(str(raw_path)).expanduser()
 
         for key, source_path in optional_artifacts.items():
             if source_path.exists():
@@ -884,6 +983,9 @@ class ChempropToolkit(Toolkit):
                 "domain_summary": record.domain_summary or "",
                 "known_metrics": dict(record.known_metrics),
                 "training_data_summary": dict(record.training_data_summary),
+                "trained_at": (record.training_data_summary or {}).get("trained_at"),
+                "trained_date": (record.training_data_summary or {}).get("trained_date"),
+                "trained_time": (record.training_data_summary or {}).get("trained_time"),
                 "inference_profile": dict(record.inference_profile),
                 "selection_hints": dict(record.selection_hints),
                 "strengths": list(record.strengths),
@@ -931,6 +1033,7 @@ class ChempropToolkit(Toolkit):
 
     def describe_catalog(self) -> Dict[str, Any]:
         """Describe the persistent model catalog configured for prediction."""
+        self.catalog.refresh_from_internal_store(persist=True)
         return {
             "catalog_path": str(self.catalog.source_path),
             "num_models": len(self.catalog.list_models()),
@@ -951,6 +1054,7 @@ class ChempropToolkit(Toolkit):
         include_unavailable_paths: bool = False,
     ) -> List[Dict[str, Any]]:
         """List models from the persistent catalog with runtime annotations."""
+        self.catalog.refresh_from_internal_store(persist=True)
         available_backends = [
             name for name, backend in self.backends.items() if backend.is_available()
         ]
@@ -978,6 +1082,7 @@ class ChempropToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Recommend the best catalog model for a requested task."""
+        self.catalog.refresh_from_internal_store(persist=True)
         recommendation = self.catalog.recommend(
             task_type=task_type,
             target_hint=target_hint,
@@ -1003,6 +1108,7 @@ class ChempropToolkit(Toolkit):
         if agent is None:
             raise ValueError("Agent is required to register a catalog model")
 
+        self.catalog.refresh_from_internal_store(persist=True)
         record = self.catalog.get_model(model_id)
         return self.register_model(
             model_id=record.model_id,
@@ -1147,6 +1253,8 @@ class ChempropToolkit(Toolkit):
         governance_assessment = {}
         recommended_status = None
         applicability_domain = {}
+        summary_payload: Dict[str, Any] = {}
+        summary_path: Optional[Path] = None
         if matching_training_run:
             summary_path = Path(matching_training_run.get("output_dir", "")).expanduser() / "cs_copilot_training_summary.json"
             if summary_path.exists():
@@ -1160,11 +1268,53 @@ class ChempropToolkit(Toolkit):
                 except Exception:
                     governance_assessment = {}
                     applicability_domain = {}
+                    summary_payload = {}
+
+        resolved_version = version or current.version or "1"
+        trained_at_raw = summary_payload.get("trained_at")
+        try:
+            trained_at = _coerce_project_timezone(trained_at_raw)
+        except Exception:
+            trained_at = _project_now()
+        train_csv_for_name = train_csv or summary_payload.get("train_csv") or current.source
+        endpoint_name, dataset_name = _extract_endpoint_and_dataset(train_csv_for_name, current.model_id)
+        protocol_name = (
+            summary_payload.get("validation_protocol")
+            or matching_training_run.get("validation_protocol")
+            if matching_training_run
+            else "protocol"
+        )
+        canonical_model_id = _canonical_model_id(
+            endpoint=endpoint_name,
+            dataset=dataset_name,
+            protocol=str(protocol_name or "protocol"),
+            backend=current.backend_name,
+            version=str(resolved_version),
+            trained_at=trained_at,
+        )
+        canonical_display_name = _canonical_display_name(
+            endpoint=endpoint_name,
+            dataset=dataset_name,
+            protocol=str(protocol_name or "protocol"),
+            backend=current.backend_name,
+            version=str(resolved_version),
+        )
+
+        source_artifacts = {
+            "training_summary_path": str(summary_path) if matching_training_run and summary_path.exists() else None,
+            "config_path": summary_payload.get("config_path"),
+            "splits_path": summary_payload.get("splits_path"),
+            "test_predictions_path": summary_payload.get("test_predictions_path"),
+            "reference_store_path": applicability_domain.get("reference_store_path"),
+            "reference_manifest_path": applicability_domain.get("reference_manifest_path"),
+            "applicability_domain_path": applicability_domain.get("applicability_domain_path"),
+        }
 
         materialized = self._materialize_internal_model(
             record=current,
             train_csv=train_csv,
-            model_id=model_id,
+            model_id=canonical_model_id,
+            source_artifacts=source_artifacts,
         )
         resolved_model_path = materialized.get("model_path", current.model_path)
         resolved_metadata_path = materialized.get("metadata_path", current.metadata_path)
@@ -1179,15 +1329,15 @@ class ChempropToolkit(Toolkit):
                 "validation gates did not support that status."
             )
         persisted_record = PredictionModelRecord(
-            model_id=current.model_id,
+            model_id=canonical_model_id,
             backend_name=current.backend_name,
             model_path=resolved_model_path,
             metadata_path=resolved_metadata_path,
             task=current.task,
-            display_name=display_name or current.display_name,
+            display_name=display_name or canonical_display_name,
             description=description or current.description,
             tags=tags or current.tags,
-            version=version or current.version,
+            version=resolved_version,
             status=resolved_status,
             owner=owner or current.owner,
             source=source or current.source,
@@ -1197,7 +1347,16 @@ class ChempropToolkit(Toolkit):
             recommended_for=recommended_for or current.recommended_for,
             not_recommended_for=not_recommended_for or current.not_recommended_for,
             known_metrics=known_metrics or current.known_metrics,
-            training_data_summary=training_data_summary or current.training_data_summary,
+            training_data_summary={
+                **current.training_data_summary,
+                **(training_data_summary or {}),
+                "trained_at": trained_at.isoformat(),
+                "trained_date": trained_at.strftime("%d/%m/%Y"),
+                "trained_time": trained_at.strftime("%H:%M:%S"),
+                "endpoint_name": endpoint_name,
+                "dataset_name": dataset_name,
+                "validation_protocol": str(protocol_name or "protocol"),
+            },
             inference_profile={
                 **current.inference_profile,
                 **(inference_profile or {}),
@@ -1222,7 +1381,8 @@ class ChempropToolkit(Toolkit):
             status_reason=status_reason,
         )
 
-        prediction_state["registered"][model_id] = persisted_record.as_dict()
+        prediction_state["registered"].pop(model_id, None)
+        prediction_state["registered"][canonical_model_id] = persisted_record.as_dict()
 
         return {
             "catalog_path": str(self.catalog.source_path),
@@ -1310,6 +1470,7 @@ class ChempropToolkit(Toolkit):
             "preds_path": str(output_path),
             "return_uncertainty": return_uncertainty,
             "applicability_domain": result.get("applicability_domain") or {},
+            "applicability_domain_columns": result.get("applicability_domain_columns") or [],
         }
         history_entry = {
             "model_id": model_id,
@@ -1322,6 +1483,7 @@ class ChempropToolkit(Toolkit):
             "preview": preview,
             "num_rows": num_rows,
             "applicability_domain": result.get("applicability_domain") or {},
+            "applicability_domain_columns": result.get("applicability_domain_columns") or [],
         }
         prediction_state["prediction_history"].append(history_entry)
         result["preds_path"] = str(output_path)
@@ -1539,6 +1701,7 @@ class ChempropToolkit(Toolkit):
         resolved_output_dir = str(Path(output_dir).expanduser().resolve())
         root_output_path = Path(resolved_output_dir)
         active_marker_path = root_output_path / ".training_in_progress"
+        trained_at = _project_now()
         training_policy = self._apply_training_profile(extra_args)
         protocol_policy = self._resolve_validation_protocol(
             requested_protocol=training_policy.get("validation_protocol"),
@@ -1558,6 +1721,7 @@ class ChempropToolkit(Toolkit):
             "output_dir": resolved_output_dir,
             "validation_protocol": protocol_policy["protocol"],
             "training_profile": training_policy["training_profile"],
+            "created_at": trained_at.isoformat(),
             "active_marker_path": str(active_marker_path),
             "current_split_label": None,
         }
@@ -1680,6 +1844,9 @@ class ChempropToolkit(Toolkit):
             result["profile_reason"] = training_policy["profile_reason"]
             result["effective_train_args"] = training_policy["extra_args"]
             result["applicability_domain"] = ad_summary
+            result["trained_at"] = trained_at.isoformat()
+            result["trained_date"] = trained_at.strftime("%d/%m/%Y")
+            result["trained_time"] = trained_at.strftime("%H:%M:%S")
 
             training_summary_path = Path(resolved_output_dir) / "cs_copilot_training_summary.json"
             training_summary_path.parent.mkdir(parents=True, exist_ok=True)

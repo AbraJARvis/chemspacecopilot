@@ -31,7 +31,6 @@ from .chemistry import (
 )
 from .curation import DatasetCurationToolkit
 from .prediction import (
-    AdmetAIBackend,
     CatalogRecommendation,
     ChempropBackend,
     ChempropToolkit,
@@ -49,6 +48,7 @@ from .databases.chembl import ChemblToolkit
 # Import all the main classes and functions for the public API
 from .io.pointer_pandas_tools import PointerPandasTools
 from .io.session_toolkit import SessionToolkit
+from .reporting import QSARReportingToolkit
 
 # Backwards compatibility alias
 from .io.utils import image_to_base64, safe_file_operation, validate_positive_int
@@ -58,6 +58,7 @@ __all__ = [
     # Classes
     "PointerPandasTools",
     "SessionToolkit",
+    "QSARReportingToolkit",
     "GTMToolkit",
     "BaseChemistryToolkit",
     "ChemicalSimilarityToolkit",
@@ -67,7 +68,6 @@ __all__ = [
     "SynPlannerToolkit",
     "ChempropToolkit",
     "ChempropBackend",
-    "AdmetAIBackend",
     "PredictionModelCatalog",
     "CatalogRecommendation",
     "ChemblToolkit",

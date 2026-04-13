@@ -21,7 +21,7 @@ from .backend import PredictionModelRecord
 
 DEFAULT_MODEL_CATALOG_PATH = Path(__file__).with_name("model_catalog.json")
 DEFAULT_INTERNAL_MODEL_ROOT = Path("data/model_assets/internal").resolve()
-DEFAULT_ALLOWED_STATUSES = ("production", "robust_validated", "validated", "experimental")
+DEFAULT_ALLOWED_STATUSES = ("production", "robust_validated", "validated")
 STATUS_WEIGHTS = {
     "production": 12,
     "robust_validated": 10,
@@ -48,6 +48,82 @@ def _flatten_text(values: Iterable[Any]) -> str:
         else:
             parts.append(str(value))
     return " ".join(parts).lower()
+
+
+def _record_from_internal_metadata(metadata_path: Path) -> Optional[PredictionModelRecord]:
+    try:
+        payload = json.loads(metadata_path.read_text())
+    except Exception:
+        return None
+
+    model_id = payload.get("model_id")
+    backend_name = payload.get("backend_name")
+    task_payload = payload.get("task", {}) or {}
+    model_path = (
+        (payload.get("artifacts", {}) or {}).get("model_path")
+        or payload.get("model_path")
+    )
+    if not (model_id and backend_name and model_path):
+        return None
+
+    model_root = metadata_path.parent
+    resolved_model_path = str((model_root / model_path).resolve())
+    training_data_summary = dict(payload.get("training_data", {}) or {})
+    for key in ("trained_at", "trained_date", "trained_time", "validation_protocol"):
+        if payload.get(key) is not None:
+            training_data_summary[key] = payload.get(key)
+
+    applicability_domain = dict(payload.get("applicability_domain", {}) or {})
+
+    return PredictionModelRecord(
+        model_id=model_id,
+        backend_name=backend_name,
+        model_path=resolved_model_path,
+        metadata_path=str(metadata_path.resolve()),
+        display_name=payload.get("display_name"),
+        description=payload.get("description"),
+        tags=dict(payload.get("tags", {}) or {}),
+        version=payload.get("version"),
+        status=payload.get("status", "experimental"),
+        owner=payload.get("owner"),
+        source=payload.get("source"),
+        domain_summary=payload.get("domain_summary"),
+        strengths=list(payload.get("strengths", []) or []),
+        limitations=list(payload.get("limitations", []) or []),
+        recommended_for=list(payload.get("recommended_for", []) or []),
+        not_recommended_for=list(payload.get("not_recommended_for", []) or []),
+        known_metrics=dict(payload.get("known_metrics", {}) or payload.get("metrics", {}) or {}),
+        training_data_summary=training_data_summary,
+        inference_profile=dict(payload.get("inference_profile", {}) or {}),
+        selection_hints=dict(payload.get("selection_hints", {}) or {}),
+        applicability_domain=applicability_domain,
+        task=PredictionModelRecord.from_dict(
+            {
+                "model_id": model_id,
+                "backend_name": backend_name,
+                "model_path": resolved_model_path,
+                "task": {
+                    "task_type": task_payload.get("task_type", "regression"),
+                    "smiles_columns": task_payload.get("smiles_columns", ["smiles"]),
+                    "target_columns": task_payload.get("target_columns", []),
+                    "reaction_columns": task_payload.get("reaction_columns", []),
+                    "uncertainty_method": task_payload.get("uncertainty_method"),
+                    "calibration_method": task_payload.get("calibration_method"),
+                },
+            }
+        ).task,
+    )
+
+
+def _discover_internal_records(root: Path) -> List[PredictionModelRecord]:
+    if not root.exists():
+        return []
+    records: List[PredictionModelRecord] = []
+    for metadata_path in sorted(root.glob("*/metadata.json")):
+        record = _record_from_internal_metadata(metadata_path)
+        if record is not None:
+            records.append(record)
+    return records
 
 
 @dataclass
@@ -98,11 +174,34 @@ class PredictionModelCatalog:
             PredictionModelRecord.from_dict(record_payload)
             for record_payload in payload.get("models", [])
         ]
+        discovered_records = _discover_internal_records(DEFAULT_INTERNAL_MODEL_ROOT)
+        if discovered_records:
+            indexed = {record.model_id: record for record in records}
+            for record in discovered_records:
+                indexed[record.model_id] = record
+            records = sorted(indexed.values(), key=lambda item: item.model_id)
         return cls(
             records=records,
             source_path=source_path,
             schema_version=int(payload.get("schema_version", 1)),
         )
+
+    def refresh_from_internal_store(self, persist: bool = False) -> int:
+        discovered_records = _discover_internal_records(DEFAULT_INTERNAL_MODEL_ROOT)
+        if not discovered_records:
+            return 0
+        indexed = {record.model_id: record for record in self.records}
+        updated = 0
+        for record in discovered_records:
+            existing = indexed.get(record.model_id)
+            if existing is None or existing.as_dict() != record.as_dict():
+                indexed[record.model_id] = record
+                updated += 1
+        if updated:
+            self.records = sorted(indexed.values(), key=lambda item: item.model_id)
+            if persist:
+                self.save()
+        return updated
 
     def save(self) -> None:
         payload = {

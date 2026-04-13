@@ -10,7 +10,6 @@ from .backend import (
     PredictionTaskSpec,
 )
 from .catalog import CatalogRecommendation, PredictionModelCatalog
-from .admet_ai_backend import AdmetAIBackend
 from .chemprop_backend import ChempropBackend
 from .chemprop_toolkit import ChempropToolkit
 
@@ -24,7 +23,6 @@ __all__ = [
     "PredictionModelRecord",
     "PredictionModelCatalog",
     "CatalogRecommendation",
-    "AdmetAIBackend",
     "ChempropBackend",
     "ChempropToolkit",
 ]

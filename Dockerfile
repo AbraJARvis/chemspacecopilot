@@ -32,7 +32,7 @@ COPY pyproject.toml uv.lock README.md ./
 # agent so we can validate the backend inside the app container without making
 # the base project dependency graph mandatory for every environment.
 RUN uv sync --frozen --no-dev \
-    && uv pip install --python /app/.venv/bin/python "chemprop>=2.2.0" "admet-ai"
+    && uv pip install --python /app/.venv/bin/python "chemprop>=2.2.0"
 
 # Application source
 COPY . .
