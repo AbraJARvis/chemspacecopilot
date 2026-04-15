@@ -23,6 +23,7 @@ from cs_copilot.agents.teams import get_cs_copilot_agent_team, get_qsar_agent_te
 from cs_copilot.model_config import _is_retriable, arun_with_retry, load_model_from_config
 from cs_copilot.storage import S3
 from cs_copilot.tools.io.formatting import smiles_to_png_bytes
+from cs_copilot.tools.reporting.qsar_latex import escape_latex
 
 load_dotenv()
 
@@ -232,6 +233,17 @@ def _extract_qsar_final_report(full_content: str) -> str:
         return full_content[handoff_idx:].strip()
 
     return full_content.strip()
+
+
+def _store_latest_qsar_report(full_content: str) -> str:
+    """Persist the latest QSAR report text for later export, with safe fallbacks."""
+    final_report = _extract_qsar_final_report(full_content)
+    cleaned = final_report.strip() if final_report else ""
+    if not cleaned:
+        cleaned = (full_content or "").strip()
+    if cleaned:
+        cl.user_session.set("last_qsar_report_markdown", cleaned)
+    return cleaned
 
 
 def _looks_like_markdown_table_line(text: str) -> bool:
@@ -572,6 +584,278 @@ async def _file_bubble_streaming(file_ref: str) -> cl.Message:
     return await _create_streaming_message()
 
 
+def _find_prediction_export_agent(agent_like):
+    """Find an agent-like object carrying prediction history in session state."""
+    if agent_like is None:
+        return None
+
+    state = getattr(agent_like, "session_state", None) or {}
+    prediction_state = state.get("prediction_models", {}) if isinstance(state, dict) else {}
+    history = prediction_state.get("prediction_history") or []
+    if history:
+        return agent_like
+
+    for member in getattr(agent_like, "members", []) or []:
+        resolved = _find_prediction_export_agent(member)
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def _markdown_report_to_latex(report_text: str, title: str = "Rapport QSAR") -> str:
+    """Convert a markdown-like QSAR report into a styled LaTeX document."""
+    lines = report_text.splitlines()
+    body: list[str] = []
+    in_list = False
+    in_enum = False
+    table_buffer: list[str] = []
+    extracted_title = title
+    intro_paragraph = ""
+
+    def close_list():
+        nonlocal in_list, in_enum
+        if in_list:
+            body.append(r"\end{itemize}")
+            in_list = False
+        if in_enum:
+            body.append(r"\end{enumerate}")
+            in_enum = False
+
+    def _convert_inline(text: str) -> str:
+        placeholders: list[str] = []
+
+        def _store(value: str) -> str:
+            placeholders.append(value)
+            return f"@@PLACEHOLDER_{len(placeholders) - 1}@@"
+
+        converted = text
+        converted = re.sub(
+            r"<file>(.*?)</file>",
+            lambda m: _store(r"\texttt{" + escape_latex(m.group(1).strip()) + "}"),
+            converted,
+        )
+        converted = re.sub(
+            r"`([^`]+)`",
+            lambda m: _store(r"\texttt{" + escape_latex(m.group(1)) + "}"),
+            converted,
+        )
+        converted = re.sub(
+            r"\*\*([^*]+)\*\*",
+            lambda m: _store(r"\textbf{" + escape_latex(m.group(1)) + "}"),
+            converted,
+        )
+        converted = re.sub(
+            r"\*([^*]+)\*",
+            lambda m: _store(r"\emph{" + escape_latex(m.group(1)) + "}"),
+            converted,
+        )
+        converted = escape_latex(converted)
+        for index, value in enumerate(placeholders):
+            converted = converted.replace(escape_latex(f"@@PLACEHOLDER_{index}@@"), value)
+        return converted
+
+    def flush_table():
+        nonlocal table_buffer
+        if not table_buffer:
+            return
+        parsed_rows = []
+        for raw in table_buffer:
+            stripped = raw.strip().strip("|")
+            cells = [cell.strip() for cell in stripped.split("|")]
+            parsed_rows.append(cells)
+        table_buffer = []
+        if len(parsed_rows) < 2:
+            for row in parsed_rows:
+                body.append(" ".join(_convert_inline(cell) for cell in row))
+            return
+        header = parsed_rows[0]
+        data_rows = [row for row in parsed_rows[2:] if any(cell for cell in row)]
+        col_count = max(len(header), max((len(r) for r in data_rows), default=0), 1)
+        widths = {
+            1: "X",
+            2: ">{\\raggedright\\arraybackslash}p{0.30\\textwidth}X",
+            3: ">{\\raggedright\\arraybackslash}p{0.22\\textwidth}>{\\raggedright\\arraybackslash}p{0.22\\textwidth}X",
+            4: ">{\\raggedright\\arraybackslash}p{0.22\\textwidth}>{\\raggedright\\arraybackslash}p{0.22\\textwidth}>{\\raggedright\\arraybackslash}p{0.22\\textwidth}X",
+        }
+        colspec = widths.get(
+            col_count,
+            " ".join([">{\\raggedright\\arraybackslash}p{0.15\\textwidth}"] * (col_count - 1))
+            + " X",
+        )
+        body.append(r"\renewcommand{\arraystretch}{1.2}")
+        body.append(r"\rowcolors{2}{prismgray}{white}")
+        body.append(r"\begin{tabularx}{\textwidth}{" + colspec + "}")
+        body.append(r"\toprule")
+        body.append(r"\rowcolor{prismblue!15}")
+        padded_header = header + [""] * (col_count - len(header))
+        body.append(" & ".join(_convert_inline(cell) for cell in padded_header[:col_count]) + r" \\")
+        body.append(r"\midrule")
+        for row in data_rows:
+            padded = row + [""] * (col_count - len(row))
+            body.append(" & ".join(_convert_inline(cell) for cell in padded[:col_count]) + r" \\")
+        body.append(r"\bottomrule")
+        body.append(r"\end{tabularx}")
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            flush_table()
+            close_list()
+            body.append("")
+            continue
+
+        if _looks_like_markdown_table_line(line):
+            close_list()
+            table_buffer.append(line)
+            continue
+        flush_table()
+
+        if line.startswith("# "):
+            close_list()
+            heading = line[2:].strip()
+            if extracted_title == title:
+                extracted_title = heading
+            else:
+                body.append(r"\section*{" + _convert_inline(heading) + "}")
+            continue
+        if line.startswith("## "):
+            close_list()
+            heading = line[3:].strip()
+            if not body and not intro_paragraph:
+                extracted_title = heading
+            else:
+                body.append(r"\section*{" + _convert_inline(heading) + "}")
+            continue
+        normalized_heading = line
+        if normalized_heading.startswith(r"\#"):
+            normalized_heading = normalized_heading.replace(r"\#", "#")
+
+        if normalized_heading.startswith("### "):
+            close_list()
+            body.append(r"\subsection*{" + _convert_inline(normalized_heading[4:].strip()) + "}")
+            continue
+        if normalized_heading.startswith("#### "):
+            close_list()
+            body.append(r"\subsubsection*{" + _convert_inline(normalized_heading[5:].strip()) + "}")
+            continue
+        if line.startswith("- ") or line.startswith("* "):
+            if in_enum:
+                body.append(r"\end{enumerate}")
+                in_enum = False
+            if not in_list:
+                body.append(r"\begin{itemize}")
+                in_list = True
+            body.append(r"\item " + _convert_inline(line[2:].strip()))
+            continue
+        if re.match(r"^\d+\.\s+", line):
+            if in_list:
+                body.append(r"\end{itemize}")
+                in_list = False
+            if not in_enum:
+                body.append(r"\begin{enumerate}")
+                in_enum = True
+            item_text = re.sub(r"^\d+\.\s+", "", line)
+            body.append(r"\item " + _convert_inline(item_text.strip()))
+            continue
+
+        close_list()
+        converted_line = _convert_inline(line)
+        if not intro_paragraph and not body:
+            intro_paragraph = converted_line
+        else:
+            body.append(converted_line)
+
+    flush_table()
+    close_list()
+
+    document_title = extracted_title or title
+
+    return "\n".join(
+        [
+            r"\documentclass[11pt,a4paper]{article}",
+            r"\usepackage[utf8]{inputenc}",
+            r"\usepackage[T1]{fontenc}",
+            r"\usepackage[french]{babel}",
+            r"\usepackage{geometry}",
+            r"\usepackage{booktabs}",
+            r"\usepackage[table]{xcolor}",
+            r"\usepackage{array}",
+            r"\usepackage{tabularx}",
+            r"\usepackage{enumitem}",
+            r"\usepackage{hyperref}",
+            r"\usepackage{titlesec}",
+            r"\usepackage[most]{tcolorbox}",
+            r"\geometry{margin=2.5cm}",
+            r"\setlength{\parindent}{0pt}",
+            r"\setlength{\parskip}{0.6em}",
+            r"\definecolor{prismblue}{RGB}{34,79,117}",
+            r"\definecolor{prismgray}{RGB}{245,247,250}",
+            r"\definecolor{prismline}{RGB}{210,216,224}",
+            r"\definecolor{prismlightblue}{RGB}{234,242,249}",
+            r"\hypersetup{hidelinks}",
+            r"\titleformat{name=\section,numberless}{\Large\bfseries\color{prismblue}}{}{0pt}{}",
+            r"\tcbset{enhanced,boxrule=0.8pt,arc=2mm,left=4mm,right=4mm,top=2.5mm,bottom=2.5mm}",
+            r"\begin{document}",
+            r"\begin{tcolorbox}[colback=prismblue,colframe=prismblue,boxrule=0pt,arc=0mm]",
+            r"{\color{white}\bfseries\LARGE Rapport QSAR}\hfill {\color{white}\large ChemSpaceCopilot}",
+            "",
+            r"{\color{white!90}\large " + _convert_inline(extracted_title) + "}",
+            r"\end{tcolorbox}",
+            "",
+            (
+                r"\begin{tcolorbox}[colback=prismlightblue,colframe=prismblue,title=Synthese rapide,fonttitle=\bfseries]"
+                + "\n"
+                + intro_paragraph
+                + "\n"
+                + r"\end{tcolorbox}"
+                if intro_paragraph
+                else ""
+            ),
+            r"\title{" + _convert_inline(document_title) + "}",
+            r"\author{ChemSpaceCopilot}",
+            r"\date{}",
+            *body,
+            r"\end{document}",
+            "",
+        ]
+    )
+
+
+async def _handle_latex_shortcut(session_agent) -> bool:
+    """Handle `@Latex` as a direct export command for the latest prediction."""
+    last_report = cl.user_session.get("last_qsar_report_markdown")
+    if not last_report:
+        await cl.Message(
+            content="Aucun rapport QSAR final n'est disponible pour generer un fichier LaTeX.",
+            author="assistant",
+        ).send()
+        return True
+
+    try:
+        reports_dir = (Path(".files") / "qsar_reports").resolve()
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        basename = "latest_qsar_report"
+        tex_path = reports_dir / f"{basename}.tex"
+        source_path = reports_dir / f"{basename}.md"
+
+        source_path.write_text(last_report, encoding="utf-8")
+        tex_path.write_text(
+            _markdown_report_to_latex(last_report, title="Rapport QSAR"),
+            encoding="utf-8",
+        )
+
+        await cl.Message(content="Export LaTeX genere.", author="assistant").send()
+        await _file_bubble_streaming(str(tex_path))
+        await _file_bubble_streaming(str(source_path))
+    except Exception as e:
+        logger.error("LaTeX shortcut export failed: %s: %s", type(e).__name__, e, exc_info=True)
+        await cl.Message(
+            content=f"Echec de l'export LaTeX : {type(e).__name__}: {e}",
+            author="assistant",
+        ).send()
+    return True
+
+
 async def _stream_line_with_elements(
     line: str,
     assistant: cl.Message | None,
@@ -835,7 +1119,7 @@ async def relay(stream):
         assistant = await _stream_line_with_elements(buf, assistant, append_newline=False)
 
     if qsar_mode:
-        final_report = _extract_qsar_final_report(full_content)
+        final_report = _store_latest_qsar_report(full_content)
         if qsar_progress_msg is not None:
             qsar_progress_msg.content = "Workflow QSAR terminé."
             await qsar_progress_msg.update()
@@ -891,6 +1175,10 @@ async def main(user_msg: cl.Message):
                 show_members_responses=False,
             )
             cl.user_session.set("agent", session_agent)
+
+        if user_msg.content.strip() == "@Latex":
+            await _handle_latex_shortcut(session_agent)
+            return
 
         # Handle file uploads if present
         # Debug: Check multiple possible locations for files

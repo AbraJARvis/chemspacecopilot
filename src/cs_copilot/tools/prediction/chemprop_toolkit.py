@@ -27,6 +27,7 @@ from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionModelRecord, PredictionTaskSpec
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
 from .chemprop_backend import ChempropBackend
+from .qsar_plots import build_qsar_training_plots
 
 QSAR_HARDEST_SPLIT_R2_MIN = 0.70
 QSAR_ROBUSTNESS_DELTA_R2_MIN = -0.10
@@ -871,6 +872,7 @@ class ChempropToolkit(Toolkit):
             "reference_manifest_path": run_dir / "applicability_domain" / "reference_manifest.json",
             "applicability_domain_path": run_dir / "applicability_domain" / "applicability_domain.json",
         }
+        plot_sources: Dict[str, Path] = {}
 
         if source_artifacts:
             for key in (
@@ -885,6 +887,9 @@ class ChempropToolkit(Toolkit):
                 raw_path = source_artifacts.get(key)
                 if raw_path:
                     optional_artifacts[key] = Path(str(raw_path)).expanduser()
+            for plot_name, raw_path in (source_artifacts.get("plot_artifacts") or {}).items():
+                if raw_path:
+                    plot_sources[plot_name] = Path(str(raw_path)).expanduser()
 
         for key, source_path in optional_artifacts.items():
             if source_path.exists():
@@ -895,6 +900,19 @@ class ChempropToolkit(Toolkit):
                 )
                 shutil.copy2(source_path, target_path)
                 copied_files[key] = _relative_posix(target_path, model_root)
+
+        copied_plot_artifacts: Dict[str, str] = {}
+        if plot_sources:
+            plots_dir = artifacts_dir / "plots"
+            plots_dir.mkdir(parents=True, exist_ok=True)
+            for plot_name, source_path in plot_sources.items():
+                if not source_path.exists():
+                    continue
+                target_path = plots_dir / source_path.name
+                shutil.copy2(source_path, target_path)
+                copied_plot_artifacts[plot_name] = _relative_posix(target_path, model_root)
+            if copied_plot_artifacts:
+                copied_files["plot_artifacts"] = copied_plot_artifacts
 
         if train_csv:
             source_train_csv = Path(train_csv).expanduser()
@@ -942,6 +960,8 @@ class ChempropToolkit(Toolkit):
                 "reference_manifest_path": copied_files.get("reference_manifest_path"),
                 "index_path": copied_files.get("applicability_domain_path"),
             }
+        if copied_plot_artifacts:
+            metadata["plot_artifacts"] = copied_plot_artifacts
         metadata_path = model_root / "metadata.json"
         metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
 
@@ -1012,6 +1032,8 @@ class ChempropToolkit(Toolkit):
                 "reference_manifest_path": artifacts.get("reference_manifest_path"),
                 "index_path": artifacts.get("applicability_domain_path"),
             }
+        if artifacts.get("plot_artifacts"):
+            payload["plot_artifacts"] = artifacts.get("plot_artifacts")
         if governance_assessment:
             payload["governance_assessment"] = governance_assessment
         if status_reason:
@@ -1308,6 +1330,7 @@ class ChempropToolkit(Toolkit):
             "reference_store_path": applicability_domain.get("reference_store_path"),
             "reference_manifest_path": applicability_domain.get("reference_manifest_path"),
             "applicability_domain_path": applicability_domain.get("applicability_domain_path"),
+            "plot_artifacts": summary_payload.get("plot_artifacts") or {},
         }
 
         materialized = self._materialize_internal_model(
@@ -1832,6 +1855,20 @@ class ChempropToolkit(Toolkit):
                 model_id_hint=Path(resolved_output_dir).name,
                 task=task,
             )
+            plot_artifacts: Dict[str, str] = {}
+            target_column = task.target_columns[0] if task.target_columns else None
+            if target_column:
+                plots_output_dir = root_output_path / "artifacts" / "plots"
+                try:
+                    plot_artifacts = build_qsar_training_plots(
+                        train_csv=train_csv,
+                        split_results=split_results,
+                        primary_run=primary_run,
+                        output_dir=str(plots_output_dir),
+                        target_column=target_column,
+                    )
+                except Exception:
+                    plot_artifacts = {}
 
             result = dict(primary_run)
             result["output_dir"] = resolved_output_dir
@@ -1844,6 +1881,7 @@ class ChempropToolkit(Toolkit):
             result["profile_reason"] = training_policy["profile_reason"]
             result["effective_train_args"] = training_policy["extra_args"]
             result["applicability_domain"] = ad_summary
+            result["plot_artifacts"] = plot_artifacts
             result["trained_at"] = trained_at.isoformat()
             result["trained_date"] = trained_at.strftime("%d/%m/%Y")
             result["trained_time"] = trained_at.strftime("%H:%M:%S")
@@ -1897,6 +1935,8 @@ class ChempropToolkit(Toolkit):
             ):
                 if ad_summary.get(ad_key):
                     bundle_files.append(Path(ad_summary[ad_key]).expanduser())
+            for plot_path in plot_artifacts.values():
+                bundle_files.append(Path(plot_path).expanduser())
             bundle = _bundle_artifacts(
                 bundle_path,
                 bundle_files,

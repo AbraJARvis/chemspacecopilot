@@ -22,6 +22,7 @@ from cs_copilot.tools import (
     GTMToolkit,
     PeptideWAEToolkit,
     PointerPandasTools,
+    QSARReportingToolkit,
     SynPlannerToolkit,
     # SessionToolkit,
     save_gtm_plot,
@@ -699,6 +700,7 @@ class PropertyPredictorFactory(BaseAgentFactory):
             tools=[
                 ChempropToolkit(),
                 PointerPandasTools(),
+                QSARReportingToolkit(),
             ],
             instructions=PROPERTY_PREDICTOR_INSTRUCTIONS,
             session_state={

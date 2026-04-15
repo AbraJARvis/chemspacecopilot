@@ -19,10 +19,16 @@ LATEX_PREAMBLE = r"""\documentclass[11pt,a4paper]{article}
 \usepackage{booktabs}
 \usepackage{longtable}
 \usepackage{array}
+\usepackage{tabularx}
 \usepackage{hyperref}
 \usepackage{xcolor}
 \usepackage{enumitem}
+\usepackage{titlesec}
 \geometry{margin=2.5cm}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.6em}
+\titleformat{\section}{\large\bfseries}{}{0pt}{}
+\titleformat{\subsection}{\normalsize\bfseries}{}{0pt}{}
 \begin{document}
 """
 
@@ -49,23 +55,44 @@ def escape_latex(text: Any) -> str:
 
 
 def _render_table(columns: List[str], rows: List[List[str]]) -> str:
-    colspec = " | ".join(["p{3cm}"] * max(len(columns), 1))
-    header = " & ".join(escape_latex(column) for column in columns) + r" \\"
+    num_cols = max(len(columns), 1)
+    colspec = "|" + "|".join(["p{0.19\\textwidth}"] * num_cols) + "|"
+    header = (
+        " & ".join(escape_latex(column) for column in columns) + r" \\"
+        if columns
+        else r"\multicolumn{1}{l}{Aucune colonne disponible} \\"
+    )
     body_rows = "\n".join(
         " & ".join(escape_latex(cell) for cell in row) + r" \\"
         for row in rows
     )
     return "\n".join(
         [
+            r"\renewcommand{\arraystretch}{1.2}",
             r"\begin{longtable}{" + colspec + "}",
             r"\toprule",
             header,
             r"\midrule",
-            body_rows or r"\multicolumn{1}{l}{Aucune donnee disponible} \\",
+            body_rows or rf"\multicolumn{{{num_cols}}}{{l}}{{Aucune donnee disponible}} \\",
             r"\bottomrule",
             r"\end{longtable}",
         ]
     )
+
+
+def _render_kv_list(items: List[List[str]]) -> str:
+    if not items:
+        return r"\textit{Aucune information disponible.}"
+    lines = [
+        r"\begin{tabularx}{\textwidth}{>{\bfseries}p{0.32\textwidth}X}",
+        r"\toprule",
+        r"Champ & Valeur \\",
+        r"\midrule",
+    ]
+    for key, value in items:
+        lines.append(f"{escape_latex(key)} & {escape_latex(value)} \\\\")
+    lines.extend([r"\bottomrule", r"\end{tabularx}"])
+    return "\n".join(lines)
 
 
 def render_report_payload_to_latex(payload: Dict[str, Any]) -> str:
@@ -107,13 +134,7 @@ def render_report_payload_to_latex(payload: Dict[str, Any]) -> str:
                 parts.extend(r"\item " + escape_latex(item) for item in items)
                 parts.append(r"\end{itemize}")
             elif block_type == "kv_list":
-                items = block.get("items", []) or []
-                parts.append(r"\begin{itemize}[leftmargin=1.5em]")
-                for key, value in items:
-                    parts.append(
-                        r"\item \textbf{" + escape_latex(key) + "} : " + escape_latex(value)
-                    )
-                parts.append(r"\end{itemize}")
+                parts.append(_render_kv_list(block.get("items", []) or []))
             elif block_type == "table":
                 parts.append(_render_table(block.get("columns", []), block.get("rows", [])))
             elif block_type == "files":
@@ -141,4 +162,3 @@ def write_payload_json(payload: Dict[str, Any], output_path: str) -> Dict[str, A
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
     return {"payload_path": str(destination), "report_type": payload.get("report_type")}
-
