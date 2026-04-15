@@ -36,7 +36,6 @@ Core Agents:
 - "chemoinformatician" - Comprehensive chemoinformatics (chemotype, clustering, SAR, similarity, QSAR)
 - "report_generator" - Universal presentation layer for all analysis types
 - "autoencoder" - Molecular generation via LSTM autoencoders (standalone + GTM-guided)
-- "property_predictor" - Model-based molecular property prediction (Chemprop-ready backend)
 
 Testing/Evaluation:
 - "robustness_evaluation" - Analyze robustness test results and metrics
@@ -48,7 +47,7 @@ Agent Capabilities Breakdown:
   - Clustering: Group molecules by structural similarity (k-means, hierarchical, DBSCAN)
   - SAR Analysis: Structure-Activity Relationships, activity cliffs, matched molecular pairs
   - Similarity/Diversity: Molecular similarity, diversity metrics, nearest neighbors
-  - QSAR Modeling: Extensible framework for predictive modeling (tools to be added)
+  - QSAR-adjacent analysis: exploratory structural analyses that can support QSAR work, without replacing the isolated QSAR system
 """
 
 from .factories import AgentConfig, AgentCreationError, BaseAgentFactory

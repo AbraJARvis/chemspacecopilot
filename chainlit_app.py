@@ -12,6 +12,7 @@ import logging
 import mimetypes
 import os
 import re
+import unicodedata
 from pathlib import Path
 
 import chainlit as cl
@@ -71,15 +72,136 @@ model = load_model_from_config()
 # ❷ Define the agent factory (per chat thread)
 
 
-def _create_session_agent():
-    """Create the configured team for the current app deployment."""
+def _default_team_mode() -> str:
     team_mode = os.getenv("CS_COPILOT_AGENT_TEAM", "main").strip().lower()
+    return "qsar" if team_mode == "qsar" else "main"
+
+
+def _create_session_agent(team_mode: str | None = None):
+    """Create the configured team for the current app deployment."""
+    team_mode = (team_mode or _default_team_mode()).strip().lower()
     team_factory = get_qsar_agent_team if team_mode == "qsar" else get_cs_copilot_agent_team
     logger.info("Initializing session agent team: %s", team_mode)
     return team_factory(
         model,
         show_members_responses=False,
     )
+
+
+def _sync_shared_session_state(session_agent):
+    if session_agent is None:
+        return
+    if session_agent.session_state is None:
+        session_agent.session_state = {}
+
+    uploaded_files = cl.user_session.get("uploaded_files_shared") or {}
+    if uploaded_files:
+        session_agent.session_state.setdefault("uploaded_files", {})
+        session_agent.session_state["uploaded_files"].update(uploaded_files)
+
+
+def _get_or_create_session_agent(team_mode: str):
+    agents_by_mode = cl.user_session.get("agents_by_mode") or {}
+    session_agent = agents_by_mode.get(team_mode)
+    if session_agent is None:
+        session_agent = _create_session_agent(team_mode)
+        agents_by_mode[team_mode] = session_agent
+        cl.user_session.set("agents_by_mode", agents_by_mode)
+    _sync_shared_session_state(session_agent)
+    cl.user_session.set("agent", session_agent)
+    return session_agent
+
+
+def _set_active_team_mode(team_mode: str):
+    normalized = "qsar" if team_mode == "qsar" else "main"
+    cl.user_session.set("active_team_mode", normalized)
+    cl.user_session.set("last_team_mode", normalized)
+
+
+def _get_active_team_mode() -> str:
+    active_mode = cl.user_session.get("active_team_mode")
+    if active_mode in {"main", "qsar"}:
+        return active_mode
+    last_mode = cl.user_session.get("last_team_mode")
+    if last_mode in {"main", "qsar"}:
+        return last_mode
+    return _default_team_mode()
+
+
+def _normalize_router_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text or "")
+    ascii_like = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    return ascii_like.strip().lower()
+
+
+QSAR_REQUEST_PATTERNS = [
+    r"\bqsar\b",
+    r"\bchemprop\b",
+    r"\bpredict(?:ion|ions|ive|er)?\b",
+    r"\bpredire\b",
+    r"\bpredit\b",
+    r"\bpredictions?\b",
+    r"\bapplicability domain\b",
+    r"\bdomaine d[' ]applicabilite\b",
+    r"\bstandard_qsar\b",
+    r"\brobust_qsar\b",
+    r"\bchallenging_qsar\b",
+    r"\bfast_local\b",
+    r"\bquick_train\b",
+    r"\blipophilicity\b",
+    r"\blipophilicite\b",
+    r"\blogp\b",
+    r"\blogd\b",
+    r"\bcuration\b",
+    r"\btrain(?:ing)? model\b",
+    r"\bmodele valide\b",
+]
+
+NON_QSAR_PATTERNS = [
+    r"\bgtm\b",
+    r"\bchembl\b",
+    r"\bretrosynth",
+    r"\bsynplanner\b",
+    r"\bautoencoder\b",
+    r"\bpeptide\b",
+    r"\bwae\b",
+    r"\bclustering\b",
+    r"\bchemotype\b",
+    r"\bsimilarity\b",
+    r"\bsar\b",
+]
+
+TEAM_FOLLOW_UP_PATTERNS = [
+    r"^ok\b",
+    r"^okay\b",
+    r"^oui\b",
+    r"^yes\b",
+    r"^vas[ -]?y\b",
+    r"^go\b",
+    r"^continue\b",
+    r"^on y va\b",
+    r"^fais[- ]?le\b",
+    r"^lance\b",
+]
+
+
+def _select_team_mode_for_message(user_text: str) -> str:
+    text = _normalize_router_text(user_text)
+    if text == "@latex":
+        return "qsar"
+
+    if any(re.search(pattern, text) for pattern in NON_QSAR_PATTERNS):
+        return "main"
+    if any(re.search(pattern, text) for pattern in QSAR_REQUEST_PATTERNS):
+        return "qsar"
+
+    last_mode = cl.user_session.get("last_team_mode")
+    if last_mode in {"main", "qsar"} and any(
+        re.search(pattern, text) for pattern in TEAM_FOLLOW_UP_PATTERNS
+    ):
+        return last_mode
+
+    return "main"
 
 
 # ---------- Chat lifecycle --------------------------------------------------- #
@@ -93,9 +215,11 @@ async def on_chat_start():
         S3.prefix = f"sessions/{thread_id}"
         logger.info(f"Set S3 session prefix to: {S3.prefix}")
 
-    # Initialize session state for this chat thread
-    session_agent = _create_session_agent()
-    cl.user_session.set("agent", session_agent)
+    # Initialize session routing state for this chat thread.
+    cl.user_session.set("agents_by_mode", {})
+    cl.user_session.set("agent", None)
+    cl.user_session.set("active_team_mode", _default_team_mode())
+    cl.user_session.set("last_team_mode", None)
     cl.user_session.set("title_set", False)
     cl.user_session.set("session_initialized", True)
 
@@ -122,11 +246,18 @@ async def on_chat_resume(thread: ThreadDict):
         S3.prefix = f"sessions/{thread_id}"
         logger.info(f"Resumed S3 session prefix: {S3.prefix}")
 
-    # Only create a new agent if none exists and session wasn't properly initialized
-    if not cl.user_session.get("session_initialized") or cl.user_session.get("agent") is None:
-        session_agent = _create_session_agent()
-        cl.user_session.set("agent", session_agent)
+    # Restore or initialize per-mode routing state without forcing a single team.
+    if not cl.user_session.get("session_initialized"):
+        cl.user_session.set("agents_by_mode", {})
+        cl.user_session.set("agent", None)
+        cl.user_session.set("active_team_mode", _default_team_mode())
+        cl.user_session.set("last_team_mode", None)
         cl.user_session.set("session_initialized", True)
+    else:
+        if cl.user_session.get("agents_by_mode") is None:
+            cl.user_session.set("agents_by_mode", {})
+        if cl.user_session.get("active_team_mode") not in {"main", "qsar"}:
+            cl.user_session.set("active_team_mode", _default_team_mode())
 
     # Restore ChatSettings on resume
     settings = await cl.ChatSettings(
@@ -195,7 +326,7 @@ def _pretty(x):
 
 
 def _is_qsar_team_mode() -> bool:
-    return os.getenv("CS_COPILOT_AGENT_TEAM", "main").strip().lower() == "qsar"
+    return _get_active_team_mode() == "qsar"
 
 
 def _extract_qsar_final_report(full_content: str) -> str:
@@ -1161,20 +1292,17 @@ async def main(user_msg: cl.Message):
                 pass
             cl.user_session.set("title_set", True)
 
-        # Get or create session agent first (needed for session_state)
-        session_agent = cl.user_session.get("agent")
-        if session_agent is None:
-            # Ensure S3 session is synchronized
-            thread_id = cl.context.session.thread_id
-            if thread_id:
-                S3.prefix = f"sessions/{thread_id}"
-                logger.info(f"Set S3 session prefix in main(): {S3.prefix}")
+        requested_team_mode = _select_team_mode_for_message(user_msg.content)
+        _set_active_team_mode(requested_team_mode)
 
-            session_agent = get_cs_copilot_agent_team(
-                model,
-                show_members_responses=False,
-            )
-            cl.user_session.set("agent", session_agent)
+        # Ensure S3 session is synchronized
+        thread_id = cl.context.session.thread_id
+        if thread_id:
+            S3.prefix = f"sessions/{thread_id}"
+            logger.info(f"Set S3 session prefix in main(): {S3.prefix}")
+
+        # Get or create the agent matching this request's routing mode.
+        session_agent = _get_or_create_session_agent(requested_team_mode)
 
         if user_msg.content.strip() == "@Latex":
             await _handle_latex_shortcut(session_agent)
@@ -1205,24 +1333,17 @@ async def main(user_msg: cl.Message):
                 logger.debug(f"Uploaded paths: {uploaded_paths}")
 
                 if uploaded_paths:
-                    # Store uploaded files in agent's session state
-                    # Ensure session_state exists
-                    if session_agent.session_state is None:
-                        session_agent.session_state = {}
-                        logger.info("Initialized session_state")
-
-                    # Initialize uploaded_files dict if it doesn't exist
-                    if "uploaded_files" not in session_agent.session_state:
-                        session_agent.session_state["uploaded_files"] = {}
-                        logger.info("Initialized uploaded_files in agent session state")
-
-                    # Add new files (basename: s3_path) without overwriting existing ones
+                    # Store uploaded files in shared session state so both teams
+                    # can access the same user uploads without cross-agent calls.
+                    shared_uploaded_files = cl.user_session.get("uploaded_files_shared") or {}
                     for s3_path in uploaded_paths:
                         filename = s3_path.split('/')[-1]
-                        session_agent.session_state["uploaded_files"][filename] = s3_path
-                        logger.info(f"Added to session state: {filename} → {s3_path}")
+                        shared_uploaded_files[filename] = s3_path
+                        logger.info(f"Added to shared upload state: {filename} → {s3_path}")
 
-                    logger.info(f"Total files in session state: {len(session_agent.session_state['uploaded_files'])}")
+                    cl.user_session.set("uploaded_files_shared", shared_uploaded_files)
+                    _sync_shared_session_state(session_agent)
+                    logger.info(f"Total files in shared upload state: {len(shared_uploaded_files)}")
 
                     # Display confirmation message
                     file_list = "\n".join([f"- `{path.split('/')[-1]}` → {path}" for path in uploaded_paths])
@@ -1246,7 +1367,6 @@ async def main(user_msg: cl.Message):
         #  - Outer: this loop catches errors that surface after relay()
         #    has already emitted partial UI content.  On retry a fresh
         #    stream + relay is started and the user is notified.
-        thread_id = cl.context.session.thread_id
         max_retries = 3
         base_delay = 2.0
         for attempt in range(max_retries + 1):

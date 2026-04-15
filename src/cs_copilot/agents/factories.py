@@ -38,7 +38,6 @@ from .prompts import (
     MODEL_INFERENCE_INSTRUCTIONS,
     MODEL_REGISTRY_INSTRUCTIONS,
     PEPTIDE_WAE_INSTRUCTIONS,  # Peptide WAE for amino acid sequence generation
-    PROPERTY_PREDICTOR_INSTRUCTIONS,
     QSAR_REPORT_INSTRUCTIONS,
     QSAR_TRAINING_INSTRUCTIONS,
     REPORT_GENERATOR_INSTRUCTIONS,  # Universal presentation layer
@@ -664,57 +663,6 @@ class DatasetCurationFactory(BaseAgentFactory):
                     "last_result": {},
                     "history": [],
                 }
-            },
-        )
-
-
-class PropertyPredictorFactory(BaseAgentFactory):
-    """Factory for creating model-based molecular property prediction agents.
-
-    The first backend target is Chemprop, but the agent is deliberately framed
-    around predictive modeling rather than a single library.  This keeps the
-    conversational layer stable when the project later adds other predictors,
-    multitask endpoints, uncertainty-aware ranking, or active learning loops.
-    """
-
-    agent_type = "property_predictor"
-
-    def get_agent_config(self) -> AgentConfig:
-        return AgentConfig(
-            name="property_predictor_agent",
-            description="""
-            You are a predictive modeling assistant for molecular property estimation.
-            Your role is to register predictive models, validate molecular inputs,
-            run batch or single-molecule predictions, and prepare structured outputs
-            for downstream analysis and reporting.
-
-            Current backend target:
-            - Chemprop for property prediction from molecular or reaction CSV data
-
-            Forward-compatible design:
-            - multiple model registries per session
-            - multi-endpoint prediction
-            - uncertainty-aware scoring
-            - future retraining and active learning workflows
-            """,
-            tools=[
-                ChempropToolkit(),
-                PointerPandasTools(),
-                QSARReportingToolkit(),
-            ],
-            instructions=PROPERTY_PREDICTOR_INSTRUCTIONS,
-            session_state={
-                "prediction_models": {
-                    "registered": {},
-                    "last_prediction": {},
-                    "prediction_history": [],
-                    "catalog_recommendations": {},
-                    "training_runs": [],
-                },
-                "prediction_outputs": {
-                    "latest_predictions_csv": None,
-                    "latest_summary": None,
-                },
             },
         )
 
