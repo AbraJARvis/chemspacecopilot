@@ -17,6 +17,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import torch
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
@@ -219,11 +220,23 @@ class ChempropToolkit(Toolkit):
         memory_gb_total = (
             round(memory_limit_bytes / (1024**3), 2) if memory_limit_bytes else None
         )
-        gpu_available = bool(
-            os.getenv("CUDA_VISIBLE_DEVICES")
-            and os.getenv("CUDA_VISIBLE_DEVICES", "").strip() not in {"", "-1"}
-        )
-        execution_env = "docker_local" if Path("/.dockerenv").exists() else "local"
+        try:
+            gpu_available = bool(torch.cuda.is_available())
+            gpu_count = torch.cuda.device_count() if gpu_available else 0
+        except Exception:
+            gpu_available = bool(
+                os.getenv("CUDA_VISIBLE_DEVICES")
+                and os.getenv("CUDA_VISIBLE_DEVICES", "").strip() not in {"", "-1"}
+            )
+            gpu_count = 0
+
+        if Path("/.dockerenv").exists():
+            execution_env = "docker_local"
+        elif Path("/.singularity.d").exists() or os.getenv("APPTAINER_NAME") or os.getenv("SINGULARITY_NAME"):
+            execution_env = "apptainer_local"
+        else:
+            execution_env = "local"
+
         profile = self._resolve_training_profile(
             {
                 "cpu_count": cpu_count,
@@ -237,6 +250,7 @@ class ChempropToolkit(Toolkit):
             "cpu_count": cpu_count,
             "memory_gb_total": memory_gb_total,
             "gpu_available": gpu_available,
+            "gpu_count": gpu_count,
             "suggested_profile": profile["profile"],
             "profile_reason": profile["reason"],
         }
