@@ -569,6 +569,68 @@ class ChempropToolkit(Toolkit):
         )
         return result
 
+    def _summarize_training_resources(
+        self,
+        *,
+        compute_env: Dict[str, Any],
+        effective_train_args: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        cpu_count = int(compute_env.get("cpu_count") or 1)
+        gpu_available = bool(compute_env.get("gpu_available"))
+        gpu_count = int(compute_env.get("gpu_count") or 0)
+        num_workers = int(effective_train_args.get("num_workers") or 0)
+        batch_size = int(effective_train_args.get("batch_size") or 0)
+        ensemble_size = int(effective_train_args.get("ensemble_size") or 1)
+        num_replicates = int(effective_train_args.get("num_replicates") or 1)
+        epochs = int(effective_train_args.get("epochs") or 0)
+
+        gpu_devices_requested = 1 if gpu_available and gpu_count > 0 else 0
+        cpu_processes_estimated = max(1, min(cpu_count, num_workers + 1))
+
+        return {
+            "batch_size": batch_size,
+            "num_workers": num_workers,
+            "ensemble_size": ensemble_size,
+            "num_replicates": num_replicates,
+            "epochs": epochs,
+            "cpu_cores_available": cpu_count,
+            "cpu_processes_estimated": cpu_processes_estimated,
+            "gpu_available": gpu_available,
+            "gpu_count_available": gpu_count,
+            "gpu_devices_requested": gpu_devices_requested,
+            "gpu_name": compute_env.get("gpu_name"),
+            "memory_gb_total": compute_env.get("memory_gb_total"),
+            "disk_gb_free": compute_env.get("disk_gb_free"),
+            "disk_gb_total": compute_env.get("disk_gb_total"),
+            "execution_env": compute_env.get("execution_env"),
+        }
+
+    def _summarize_training_durations(
+        self,
+        *,
+        split_results: List[Dict[str, Any]],
+        total_started_at: datetime,
+        total_completed_at: datetime,
+    ) -> Dict[str, Any]:
+        split_durations: List[Dict[str, Any]] = []
+        for item in split_results:
+            split_durations.append(
+                {
+                    "label": item.get("strategy_label"),
+                    "strategy_family": item.get("strategy_family"),
+                    "started_at": item.get("started_at"),
+                    "completed_at": item.get("completed_at"),
+                    "duration_seconds": item.get("duration_seconds"),
+                }
+            )
+
+        return {
+            "total_started_at": total_started_at.isoformat(),
+            "total_completed_at": total_completed_at.isoformat(),
+            "total_duration_seconds": round((total_completed_at - total_started_at).total_seconds(), 3),
+            "split_durations": split_durations,
+        }
+
     def _aggregate_split_families(self, split_results: List[Dict[str, Any]]) -> Dict[str, Any]:
         families: Dict[str, List[Dict[str, Any]]] = {}
         for item in split_results:
@@ -1817,6 +1879,7 @@ class ChempropToolkit(Toolkit):
         split_results: List[Dict[str, Any]] = []
         primary_run: Optional[Dict[str, Any]] = None
         primary_output_dir: Optional[Path] = None
+        total_started_at = _project_now()
 
         multi_run_protocol = len(protocol_policy["split_runs"]) > 1
 
@@ -1937,6 +2000,16 @@ class ChempropToolkit(Toolkit):
             result["training_profile"] = training_policy["training_profile"]
             result["profile_reason"] = training_policy["profile_reason"]
             result["effective_train_args"] = training_policy["extra_args"]
+            result["training_resources"] = self._summarize_training_resources(
+                compute_env=training_policy["compute_environment"],
+                effective_train_args=training_policy["extra_args"],
+            )
+            total_completed_at = _project_now()
+            result["training_durations"] = self._summarize_training_durations(
+                split_results=split_results,
+                total_started_at=total_started_at,
+                total_completed_at=total_completed_at,
+            )
             result["applicability_domain"] = ad_summary
             result["plot_artifacts"] = plot_artifacts
             result["trained_at"] = trained_at.isoformat()

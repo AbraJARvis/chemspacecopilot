@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -462,6 +463,7 @@ class ChempropBackend(PredictionBackend):
 
         output_path = Path(output_dir).expanduser()
         output_path.mkdir(parents=True, exist_ok=True)
+        started_at = datetime.now().astimezone()
 
         args = [
             "chemprop",
@@ -496,10 +498,14 @@ class ChempropBackend(PredictionBackend):
                 args.extend([flag, str(value)])
 
         completed = self._run_cli(args)
+        completed_at = datetime.now().astimezone()
         return {
             "backend": self.backend_name,
             "command": args,
             "output_dir": str(output_path),
             "stdout": completed.stdout.strip(),
             "stderr": completed.stderr.strip(),
+            "started_at": started_at.isoformat(),
+            "completed_at": completed_at.isoformat(),
+            "duration_seconds": round((completed_at - started_at).total_seconds(), 3),
         }
