@@ -584,6 +584,7 @@ QSAR_REPORT_INSTRUCTIONS = [
     "  - In prediction reports, when model validation metadata is available, do not stop at a single R² value. Add a compact validation summary with: `Protocole de validation`, `Split de reference`, and a metrics line including at least `R²`, `RMSE`, and `MAE` for the reference split.",
     "  - If both scaffold and random validation metrics are available, prefer scaffold as the reference split and optionally add one short `Metriques random` line for context.",
     "  - For robust_qsar-style metadata, if mean/std metrics are available, report them compactly instead of collapsing them to a single point estimate.",
+    "  - In training reports, when available, prefer validation metric lines that include at least `RMSE`, `MAE`, `RAE`, `R²`, `Spearman`, and `Kendall` for the reported split(s).",
     "  - When training information is available, include a dedicated compute/runtime subsection near the training summary.",
     "  - In that subsection, explicitly report the training profile and the machine/runtime characteristics used for the run.",
     "  - When training duration metadata is available, report the total duration and one compact line per split duration (for example random, scaffold, cluster) using the observed labels from the handoff.",

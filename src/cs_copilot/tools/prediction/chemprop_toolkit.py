@@ -20,6 +20,7 @@ import pandas as pd
 import torch
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
+from scipy.stats import kendalltau, spearmanr
 
 from cs_copilot.storage import S3
 from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
@@ -672,7 +673,7 @@ class ChempropToolkit(Toolkit):
             families.setdefault(family, []).append(item)
 
         aggregated: Dict[str, Any] = {}
-        metric_names = ("mse", "mae", "rmse", "r2")
+        metric_names = ("mse", "mae", "rae", "rmse", "r2", "spearman", "kendall")
         for family, items in families.items():
             entry: Dict[str, Any] = {
                 "family": family,
@@ -1815,11 +1816,26 @@ class ChempropToolkit(Toolkit):
         residuals = y_true - y_pred
         mse = float((residuals.pow(2)).mean())
         mae = float(residuals.abs().mean())
+        rae_denom = float((y_true - float(y_true.mean())).abs().sum())
+        rae_num = float(residuals.abs().sum())
+        rae = float(rae_num / rae_denom) if rae_denom > 0 else None
         rmse = float(math.sqrt(mse))
         centered = y_true - float(y_true.mean())
         ss_tot = float((centered.pow(2)).sum())
         ss_res = float((residuals.pow(2)).sum())
         r2 = float(1.0 - (ss_res / ss_tot)) if ss_tot > 0 else None
+        spearman = None
+        kendall = None
+        try:
+            spearman_stat = spearmanr(y_true.to_numpy(), y_pred.to_numpy(), nan_policy="omit")
+            spearman = float(spearman_stat.statistic) if spearman_stat.statistic is not None else None
+        except Exception:
+            spearman = None
+        try:
+            kendall_stat = kendalltau(y_true.to_numpy(), y_pred.to_numpy(), nan_policy="omit")
+            kendall = float(kendall_stat.statistic) if kendall_stat.statistic is not None else None
+        except Exception:
+            kendall = None
 
         return {
             "best_model_path": str(resolved_artifacts["best_model_path"]) if resolved_artifacts.get("best_model_path") else None,
@@ -1829,8 +1845,11 @@ class ChempropToolkit(Toolkit):
                 "test": {
                     "mse": mse,
                     "mae": mae,
+                    "rae": rae,
                     "rmse": rmse,
                     "r2": r2,
+                    "spearman": spearman,
+                    "kendall": kendall,
                     "n": int(valid_mask.sum()),
                     "target_column": target_column,
                 }
