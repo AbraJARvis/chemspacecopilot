@@ -1132,14 +1132,14 @@ async def _send_text_with_smiles(text: str):
 
 async def _handle_file_uploads(files: list, session_id: str) -> list[str]:
     """
-    Upload files to S3 in the session-specific folder.
+    Upload files to session-scoped storage in the current backend.
 
     Args:
         files: List of cl.File objects from the message
         session_id: Current Chainlit thread/session ID
 
     Returns:
-        List of S3 paths where files were uploaded
+        List of storage paths where files were uploaded
     """
     uploaded_paths = []
     logger.debug(f"_handle_file_uploads called with {len(files)} files")
@@ -1166,21 +1166,21 @@ async def _handle_file_uploads(files: list, session_id: str) -> list[str]:
                 logger.warning(f"Could not read content from file {file.name}")
                 continue
 
-            # Upload to S3 using relative path
-            # S3.prefix is already set to sessions/{session_id} by on_chat_start/resume
-            relative_path = f"{file.name}"
-            logger.debug(f"Relative S3 path: {relative_path}")
+            # Upload to session storage using a stable uploads/ prefix.
+            # S3.prefix is already set to sessions/{session_id} by on_chat_start/resume.
+            relative_path = f"uploads/{file.name}"
+            logger.debug(f"Relative storage path: {relative_path}")
             logger.debug(f"Current S3.prefix: {S3.prefix}")
 
-            # Write file to S3 using S3.open with relative path
-            logger.debug("Opening S3 file for writing...")
+            # Write file using the unified storage abstraction.
+            logger.debug("Opening session storage file for writing...")
             with S3.open(relative_path, 'wb') as s3_file:
                 s3_file.write(file_content)
 
-            # Get the full S3 URL for display
-            full_s3_url = S3.path(relative_path)
-            uploaded_paths.append(full_s3_url)
-            logger.info(f"Uploaded file {file.name} to {full_s3_url}")
+            # Get the full storage path for display and later reuse by agents.
+            full_storage_path = S3.path(relative_path)
+            uploaded_paths.append(full_storage_path)
+            logger.info(f"Uploaded file {file.name} to {full_storage_path}")
 
         except Exception as e:
             logger.error(f"Error uploading file {getattr(file, 'name', 'unknown')}: {type(e).__name__}: {e}", exc_info=True)
@@ -1346,9 +1346,11 @@ async def main(user_msg: cl.Message):
                     logger.info(f"Total files in shared upload state: {len(shared_uploaded_files)}")
 
                     # Display confirmation message
-                    file_list = "\n".join([f"- `{path.split('/')[-1]}` → {path}" for path in uploaded_paths])
+                    file_list = "\n".join(
+                        [f"- `{path.split('/')[-1]}` → {path}" for path in uploaded_paths]
+                    )
                     await cl.Message(
-                        content=f"📁 **Files uploaded to S3:**\n{file_list}",
+                        content=f"📁 **Files uploaded to session storage:**\n{file_list}",
                         author="assistant",
                     ).send()
                     logger.debug("Confirmation message sent to UI")

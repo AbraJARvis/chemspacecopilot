@@ -62,12 +62,10 @@ class S3Config:
         )
 
         # Access key fallbacks: MINIO_ACCESS_KEY, AWS_ACCESS_KEY_ID
-        access_key = os.getenv("MINIO_ACCESS_KEY") or os.getenv("AWS_ACCESS_KEY_ID") or "minioadmin"
+        access_key = os.getenv("MINIO_ACCESS_KEY") or os.getenv("AWS_ACCESS_KEY_ID") or ""
 
         # Secret key fallbacks: MINIO_SECRET_KEY, AWS_SECRET_ACCESS_KEY
-        secret_key = (
-            os.getenv("MINIO_SECRET_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY") or "minioadmin"
-        )
+        secret_key = os.getenv("MINIO_SECRET_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY") or ""
 
         # Bucket name fallbacks: ASSETS_BUCKET, S3_BUCKET_NAME
         bucket_name = os.getenv("ASSETS_BUCKET") or os.getenv("S3_BUCKET_NAME") or "chatbot-assets"
@@ -75,8 +73,9 @@ class S3Config:
         # Region
         region_name = os.getenv("AWS_REGION", "us-east-1")
 
-        # Use S3 flag
-        use_s3 = os.getenv("USE_S3", "true").lower() == "true"
+        # Use S3 only when explicitly enabled. This keeps local/dev installs
+        # from accidentally attempting AWS with invalid default credentials.
+        use_s3 = os.getenv("USE_S3", "false").lower() == "true"
 
         return cls(
             endpoint_url=endpoint,

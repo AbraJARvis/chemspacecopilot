@@ -12,6 +12,7 @@ import datetime
 import logging
 import os
 import uuid
+from pathlib import Path
 
 import fsspec
 
@@ -70,6 +71,26 @@ class S3:
     logger.info(f"Initialized S3 client with SESSION_ID: {SESSION_ID}")
 
     @classmethod
+    def local_root(cls) -> Path:
+        """
+        Root directory for local session-scoped storage when S3 is disabled.
+        """
+        root = os.getenv("CS_COPILOT_STORAGE_ROOT", ".files")
+        return Path(root).resolve()
+
+    @classmethod
+    def local_path(cls, rel: str) -> str:
+        """
+        Convert a relative path to a local session-scoped absolute path.
+        """
+        if isinstance(rel, str) and rel.startswith("file://"):
+            return rel.replace("file://", "", 1)
+        if isinstance(rel, str) and rel.startswith("/"):
+            return rel
+
+        return str((cls.local_root() / cls.prefix / rel).resolve())
+
+    @classmethod
     def path(cls, rel: str) -> str:
         """
         Convert a relative path to an S3 URL.
@@ -95,8 +116,11 @@ class S3:
         if isinstance(rel, str) and rel.startswith("s3://"):
             return rel
 
-        # Always produce a URL; works with fsspec & pandas
         config = get_s3_config()
+        if not is_s3_enabled():
+            return cls.local_path(rel)
+
+        # Always produce a URL; works with fsspec & pandas
         return f"s3://{config.bucket_name}/{cls.prefix}/{rel}".strip("/")
 
     @classmethod
@@ -147,11 +171,13 @@ class S3:
                 return fsspec.open(rel, mode=mode)
             return builtins.open(rel, mode)
 
-        # 3) If S3 is disabled, allow relative local file access
+        # 3) If S3 is disabled, keep relative paths session-scoped locally
         if not use_s3:
-            if isinstance(rel, str) and rel.startswith("file://"):
-                return fsspec.open(rel, mode=mode)
-            return builtins.open(rel, mode)
+            local_path = cls.local_path(rel)
+            local_parent = Path(local_path).parent
+            if any(flag in mode for flag in ("w", "a", "x", "+")):
+                local_parent.mkdir(parents=True, exist_ok=True)
+            return builtins.open(local_path, mode)
 
         # 4) Otherwise treat as a key relative to the session prefix and force S3
         return fsspec.open(cls.path(rel), mode=mode, **config.to_storage_options())
