@@ -213,22 +213,54 @@ class ChempropToolkit(Toolkit):
                 continue
         return None
 
+    def _detect_physical_memory_bytes(self) -> Optional[int]:
+        try:
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            page_count = os.sysconf("SC_PHYS_PAGES")
+            if isinstance(page_size, int) and isinstance(page_count, int) and page_size > 0 and page_count > 0:
+                return page_size * page_count
+        except Exception:
+            return None
+        return None
+
+    def _detect_disk_usage(self, base_path: Optional[Path] = None) -> Dict[str, Optional[float]]:
+        target = (base_path or Path.cwd()).resolve()
+        try:
+            usage = shutil.disk_usage(target)
+        except Exception:
+            return {
+                "disk_path": str(target),
+                "disk_gb_total": None,
+                "disk_gb_free": None,
+                "disk_gb_used": None,
+            }
+
+        gib = 1024**3
+        return {
+            "disk_path": str(target),
+            "disk_gb_total": round(usage.total / gib, 2),
+            "disk_gb_free": round(usage.free / gib, 2),
+            "disk_gb_used": round(usage.used / gib, 2),
+        }
+
     def describe_compute_environment(self) -> Dict[str, Any]:
         """Describe the local compute budget used to choose safe training defaults."""
         cpu_count = os.cpu_count() or 1
         memory_limit_bytes = self._detect_memory_limit_bytes()
-        memory_gb_total = (
-            round(memory_limit_bytes / (1024**3), 2) if memory_limit_bytes else None
-        )
+        physical_memory_bytes = self._detect_physical_memory_bytes()
+        memory_bytes_total = memory_limit_bytes or physical_memory_bytes
+        memory_gb_total = round(memory_bytes_total / (1024**3), 2) if memory_bytes_total else None
         try:
             gpu_available = bool(torch.cuda.is_available())
             gpu_count = torch.cuda.device_count() if gpu_available else 0
+            gpu_name = torch.cuda.get_device_name(0) if gpu_available and gpu_count > 0 else None
         except Exception:
             gpu_available = bool(
                 os.getenv("CUDA_VISIBLE_DEVICES")
                 and os.getenv("CUDA_VISIBLE_DEVICES", "").strip() not in {"", "-1"}
             )
             gpu_count = 0
+            gpu_name = None
 
         if Path("/.dockerenv").exists():
             execution_env = "docker_local"
@@ -236,6 +268,8 @@ class ChempropToolkit(Toolkit):
             execution_env = "apptainer_local"
         else:
             execution_env = "local"
+
+        disk_usage = self._detect_disk_usage()
 
         profile = self._resolve_training_profile(
             {
@@ -249,8 +283,17 @@ class ChempropToolkit(Toolkit):
             "execution_env": execution_env,
             "cpu_count": cpu_count,
             "memory_gb_total": memory_gb_total,
+            "memory_source": (
+                "cgroup_limit"
+                if memory_limit_bytes
+                else "physical_host"
+                if physical_memory_bytes
+                else None
+            ),
             "gpu_available": gpu_available,
             "gpu_count": gpu_count,
+            "gpu_name": gpu_name,
+            **disk_usage,
             "suggested_profile": profile["profile"],
             "profile_reason": profile["reason"],
         }
