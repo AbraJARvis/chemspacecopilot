@@ -162,6 +162,16 @@ def _write_active_training_marker(marker_path: Path, payload: Dict[str, Any]) ->
     marker_path.write_text(json.dumps(payload, indent=2))
 
 
+def _find_first_existing_path(candidates: List[Path]) -> Optional[Path]:
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
 class ChempropToolkit(Toolkit):
     """Toolkit exposing Chemprop-backed property prediction workflows."""
 
@@ -212,6 +222,27 @@ class ChempropToolkit(Toolkit):
             except Exception:
                 continue
         return None
+
+    def _resolve_chemprop_run_artifacts(self, output_dir: Path) -> Dict[str, Optional[Path]]:
+        output_path = output_dir.expanduser().resolve()
+        best_model_path = _find_first_existing_path(
+            [
+                output_path / "model_0" / "best.pt",
+                output_path / "replicate_0" / "model_0" / "best.pt",
+            ]
+        )
+        test_predictions_path = _find_first_existing_path(
+            [
+                output_path / "model_0" / "test_predictions.csv",
+                output_path / "replicate_0" / "model_0" / "test_predictions.csv",
+            ]
+        )
+        return {
+            "best_model_path": best_model_path,
+            "test_predictions_path": test_predictions_path,
+            "config_path": output_path / "config.toml",
+            "splits_path": output_path / "splits.json",
+        }
 
     def _detect_physical_memory_bytes(self) -> Optional[int]:
         try:
@@ -361,7 +392,7 @@ class ChempropToolkit(Toolkit):
                 "batch_size": 64,
                 "num_replicates": 3,
                 "ensemble_size": 1,
-                "num_workers": 8,
+                "num_workers": 24,
                 "metric": "rmse",
                 "split_type": "random",
                 "split_sizes": [0.8, 0.1, 0.1],
@@ -879,7 +910,6 @@ class ChempropToolkit(Toolkit):
         primary_output_dir: Path,
     ) -> Dict[str, Optional[str]]:
         root_output_dir.mkdir(parents=True, exist_ok=True)
-        primary_model_dir = primary_output_dir / "model_0"
         root_model_dir = root_output_dir / "model_0"
         root_model_dir.mkdir(parents=True, exist_ok=True)
 
@@ -890,15 +920,16 @@ class ChempropToolkit(Toolkit):
             "splits_path": None,
         }
 
+        resolved_artifacts = self._resolve_chemprop_run_artifacts(primary_output_dir)
         file_map = {
-            primary_model_dir / "best.pt": root_model_dir / "best.pt",
-            primary_model_dir / "test_predictions.csv": root_model_dir / "test_predictions.csv",
-            primary_output_dir / "config.toml": root_output_dir / "config.toml",
-            primary_output_dir / "splits.json": root_output_dir / "splits.json",
+            resolved_artifacts["best_model_path"]: root_model_dir / "best.pt",
+            resolved_artifacts["test_predictions_path"]: root_model_dir / "test_predictions.csv",
+            resolved_artifacts["config_path"]: root_output_dir / "config.toml",
+            resolved_artifacts["splits_path"]: root_output_dir / "splits.json",
         }
 
         for source_path, target_path in file_map.items():
-            if source_path.exists():
+            if source_path and source_path.exists():
                 if source_path.resolve() != target_path.resolve():
                     shutil.copy2(source_path, target_path)
                 if target_path.name == "best.pt":
@@ -986,7 +1017,10 @@ class ChempropToolkit(Toolkit):
             "config_path": run_dir / "config.toml",
             "training_summary_path": run_dir / "cs_copilot_training_summary.json",
             "splits_path": run_dir / "splits.json",
-            "test_predictions_path": run_dir / "model_0" / "test_predictions.csv",
+            "test_predictions_path": (
+                self._resolve_chemprop_run_artifacts(run_dir).get("test_predictions_path")
+                or run_dir / "model_0" / "test_predictions.csv"
+            ),
             "reference_store_path": run_dir / "applicability_domain" / "reference_fingerprints.npz",
             "reference_manifest_path": run_dir / "applicability_domain" / "reference_manifest.json",
             "applicability_domain_path": run_dir / "applicability_domain" / "applicability_domain.json",
@@ -1743,10 +1777,11 @@ class ChempropToolkit(Toolkit):
         task: PredictionTaskSpec,
     ) -> Dict[str, Any]:
         output_path = Path(output_dir).expanduser()
-        splits_path = output_path / "splits.json"
-        preds_path = output_path / "model_0" / "test_predictions.csv"
+        resolved_artifacts = self._resolve_chemprop_run_artifacts(output_path)
+        splits_path = resolved_artifacts["splits_path"]
+        preds_path = resolved_artifacts["test_predictions_path"]
 
-        if not splits_path.exists() or not preds_path.exists():
+        if splits_path is None or preds_path is None or not splits_path.exists() or not preds_path.exists():
             return {}
 
         target_column = task.target_columns[0] if task.target_columns else None
@@ -1787,6 +1822,7 @@ class ChempropToolkit(Toolkit):
         r2 = float(1.0 - (ss_res / ss_tot)) if ss_tot > 0 else None
 
         return {
+            "best_model_path": str(resolved_artifacts["best_model_path"]) if resolved_artifacts.get("best_model_path") else None,
             "test_predictions_path": str(preds_path),
             "splits_path": str(splits_path),
             "metrics": {
@@ -2020,16 +2056,14 @@ class ChempropToolkit(Toolkit):
             training_summary_path.parent.mkdir(parents=True, exist_ok=True)
             training_summary_path.write_text(json.dumps(result, indent=2))
 
+            resolved_primary_artifacts = self._resolve_chemprop_run_artifacts(Path(resolved_output_dir))
             best_model_path = Path(
                 root_artifacts.get("best_model_path")
+                or resolved_primary_artifacts.get("best_model_path")
                 or (Path(resolved_output_dir) / "model_0" / "best.pt")
             )
-            config_path = Path(
-                root_artifacts.get("config_path") or (Path(resolved_output_dir) / "config.toml")
-            )
-            splits_path = Path(
-                root_artifacts.get("splits_path") or (Path(resolved_output_dir) / "splits.json")
-            )
+            config_path = Path(root_artifacts.get("config_path") or resolved_primary_artifacts["config_path"])
+            splits_path = Path(root_artifacts.get("splits_path") or resolved_primary_artifacts["splits_path"])
             result["summary_path"] = str(training_summary_path)
             if best_model_path.exists():
                 result["best_model_path"] = str(best_model_path)
