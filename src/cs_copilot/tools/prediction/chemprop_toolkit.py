@@ -358,10 +358,10 @@ class ChempropToolkit(Toolkit):
         if profile == "heavy_validation":
             return {
                 "epochs": 75,
-                "batch_size": 32,
+                "batch_size": 64,
                 "num_replicates": 3,
                 "ensemble_size": 1,
-                "num_workers": 0,
+                "num_workers": 8,
                 "metric": "rmse",
                 "split_type": "random",
                 "split_sizes": [0.8, 0.1, 0.1],
