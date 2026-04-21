@@ -144,6 +144,12 @@ class ChempropBackend(PredictionBackend):
             )
             sanitized.pop("save_dir", None)
 
+        if "gpus" in sanitized:
+            logger.warning(
+                "Dropping unsupported Chemprop train arg `gpus`; this Chemprop version does not accept `--gpus` and will rely on runtime auto-detection instead."
+            )
+            sanitized.pop("gpus", None)
+
         return sanitized
 
     def _resolve_artifact_path(
