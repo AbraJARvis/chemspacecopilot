@@ -165,6 +165,11 @@ class ChempropBackend(PredictionBackend):
             "max_lr",
             "final_lr",
             "warmup_epochs",
+            "primary_split",
+            "random_seed",
+            "checkpoint_dir",
+            "metrics_dir",
+            "applicability_domain",
         }
         dropped_unsupported = sorted(arg for arg in unsupported_args if arg in sanitized)
         for arg in dropped_unsupported:
