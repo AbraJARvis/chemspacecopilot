@@ -150,6 +150,25 @@ class ChempropBackend(PredictionBackend):
             )
             sanitized.pop("gpus", None)
 
+        unsupported_args = {
+            "model_type",
+            "hidden_size",
+            "depth",
+            "dropout",
+            "init_lr",
+            "max_lr",
+            "final_lr",
+            "warmup_epochs",
+        }
+        dropped_unsupported = sorted(arg for arg in unsupported_args if arg in sanitized)
+        for arg in dropped_unsupported:
+            sanitized.pop(arg, None)
+        if dropped_unsupported:
+            logger.warning(
+                "Dropping unsupported Chemprop train args for this CLI version: %s",
+                ", ".join(dropped_unsupported),
+            )
+
         return sanitized
 
     def _resolve_artifact_path(
