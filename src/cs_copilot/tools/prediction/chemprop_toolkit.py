@@ -394,6 +394,7 @@ class ChempropToolkit(Toolkit):
                 "num_replicates": 3,
                 "ensemble_size": 1,
                 "num_workers": 40,
+                "patience": 15,
                 "metric": "rmse",
                 "split_type": "random",
                 "split_sizes": [0.8, 0.1, 0.1],

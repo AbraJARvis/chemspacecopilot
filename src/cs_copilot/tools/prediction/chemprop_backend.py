@@ -544,19 +544,6 @@ class ChempropBackend(PredictionBackend):
                         if observed_total is not None:
                             observed_total_epochs = observed_total
                         last_progress_line = stripped
-                        if observed_total_epochs:
-                            logger.info(
-                                "Chemprop progress [%s]: epoch %s/%s",
-                                progress_label or "training",
-                                last_epoch,
-                                observed_total_epochs,
-                            )
-                        else:
-                            logger.info(
-                                "Chemprop progress [%s]: epoch %s",
-                                progress_label or "training",
-                                last_epoch,
-                            )
                 except queue.Empty:
                     pass
 
