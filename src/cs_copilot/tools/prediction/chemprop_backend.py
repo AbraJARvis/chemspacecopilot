@@ -150,6 +150,12 @@ class ChempropBackend(PredictionBackend):
             )
             sanitized.pop("gpus", None)
 
+        if "seed" in sanitized:
+            logger.warning(
+                "Dropping unsupported Chemprop train arg `seed`; `data_seed` is already used for split reproducibility."
+            )
+            sanitized.pop("seed", None)
+
         unsupported_args = {
             "model_type",
             "hidden_size",
