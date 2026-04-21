@@ -12,13 +12,18 @@ CSV files, which fits the project's S3/local file abstraction well.
 from __future__ import annotations
 
 import json
+import csv
 import importlib.metadata
 import importlib.util
 import logging
 import os
+import queue
+import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -39,6 +44,8 @@ from .backend import (
 from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
 
 logger = logging.getLogger(__name__)
+
+EPOCH_PROGRESS_RE = re.compile(r"\bepoch\b[^0-9]*(\d+)(?:\s*/\s*(\d+))?", re.IGNORECASE)
 
 
 class ChempropBackend(PredictionBackend):
@@ -377,22 +384,292 @@ class ChempropBackend(PredictionBackend):
             "ad_method": [index_payload.get("method", "hybrid_morgan_domain")] * len(ad_status),
         }
 
-    def _run_cli(self, args: list[str]) -> subprocess.CompletedProcess:
+    def _extract_epoch_progress(self, line: str) -> tuple[Optional[int], Optional[int]]:
+        match = EPOCH_PROGRESS_RE.search(line)
+        if not match:
+            return None, None
+
+        current_epoch = int(match.group(1))
+        total_epochs = int(match.group(2)) if match.group(2) else None
+        return current_epoch, total_epochs
+
+    def _parse_run_index(self, name: str, prefix: str) -> Optional[int]:
+        if not name.startswith(prefix):
+            return None
+        suffix = name[len(prefix):]
+        if not suffix.isdigit():
+            return None
+        return int(suffix)
+
+    def _read_last_metrics_row(self, metrics_path: Path) -> Optional[Dict[str, str]]:
+        try:
+            with metrics_path.open("r", newline="") as fh:
+                reader = csv.DictReader(fh)
+                last_row: Optional[Dict[str, str]] = None
+                for row in reader:
+                    if any((value or "").strip() for value in row.values()):
+                        last_row = row
+                return last_row
+        except Exception as exc:
+            logger.debug("Could not read metrics CSV %s: %s", metrics_path, exc)
+            return None
+
+    def _get_metrics_progress(
+        self,
+        *,
+        output_dir: Path,
+        total_epochs: Optional[int],
+        total_replicates: Optional[int],
+        total_models: Optional[int],
+    ) -> Optional[Dict[str, Any]]:
+        metrics_candidates = list(output_dir.rglob("metrics.csv"))
+        if not metrics_candidates:
+            return None
+
+        try:
+            latest_metrics = max(metrics_candidates, key=lambda path: path.stat().st_mtime)
+        except Exception:
+            return None
+
+        last_row = self._read_last_metrics_row(latest_metrics)
+        if not last_row:
+            return None
+
+        try:
+            rel_parts = latest_metrics.relative_to(output_dir).parts
+        except Exception:
+            rel_parts = latest_metrics.parts
+
+        replicate_idx: Optional[int] = None
+        model_idx: Optional[int] = None
+        for part in rel_parts:
+            if replicate_idx is None:
+                replicate_idx = self._parse_run_index(part, "replicate_")
+            if model_idx is None:
+                model_idx = self._parse_run_index(part, "model_")
+
+        epoch_raw = (last_row.get("epoch") or "").strip()
+        epoch = int(float(epoch_raw)) if epoch_raw else None
+
+        return {
+            "metrics_path": latest_metrics,
+            "replicate_index": replicate_idx,
+            "model_index": model_idx,
+            "replicate_display": (
+                f"{(replicate_idx + 1)}/{total_replicates}"
+                if replicate_idx is not None and total_replicates
+                else None
+            ),
+            "model_display": (
+                f"{(model_idx + 1)}/{total_models}"
+                if model_idx is not None and total_models
+                else None
+            ),
+            "epoch": epoch,
+            "epoch_display": (
+                f"{epoch}/{total_epochs}" if epoch is not None and total_epochs else None
+            ),
+            "step": (last_row.get("step") or "").strip() or None,
+        }
+
+    def _run_cli(
+        self,
+        args: list[str],
+        *,
+        progress_label: Optional[str] = None,
+        heartbeat_seconds: float = 120.0,
+        output_dir: Optional[Path] = None,
+        total_epochs: Optional[int] = None,
+        total_replicates: Optional[int] = None,
+        total_models: Optional[int] = None,
+    ) -> subprocess.CompletedProcess:
         self._ensure_available()
         cli_path = self._find_cli_path()
         if cli_path:
             args = [cli_path, *args[1:]]
         logger.info("Running Chemprop command: %s", " ".join(args))
+
+        process = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+
+        stream_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        last_epoch: Optional[int] = None
+        observed_total_epochs: Optional[int] = None
+        last_progress_line: Optional[str] = None
+        started_at = time.monotonic()
+        next_heartbeat_at = started_at + heartbeat_seconds
+
+        def _pump_stream(stream, source: str) -> None:
+            try:
+                if stream is None:
+                    return
+                for line in iter(stream.readline, ""):
+                    stream_queue.put((source, line))
+            finally:
+                if stream is not None:
+                    stream.close()
+
+        stdout_thread = threading.Thread(
+            target=_pump_stream, args=(process.stdout, "stdout"), daemon=True
+        )
+        stderr_thread = threading.Thread(
+            target=_pump_stream, args=(process.stderr, "stderr"), daemon=True
+        )
+        stdout_thread.start()
+        stderr_thread.start()
+
         try:
-            return subprocess.run(args, capture_output=True, text=True, check=True)
-        except subprocess.CalledProcessError as exc:
-            stdout = (exc.stdout or "").strip()
-            stderr = (exc.stderr or "").strip()
+            while True:
+                try:
+                    source, line = stream_queue.get(timeout=1.0)
+                    stripped = line.rstrip()
+                    if source == "stdout":
+                        stdout_lines.append(line)
+                    else:
+                        stderr_lines.append(line)
+
+                    if not stripped:
+                        continue
+
+                    current_epoch, observed_total = self._extract_epoch_progress(stripped)
+                    if current_epoch is not None:
+                        last_epoch = current_epoch
+                        if observed_total is not None:
+                            observed_total_epochs = observed_total
+                        last_progress_line = stripped
+                        if observed_total_epochs:
+                            logger.info(
+                                "Chemprop progress [%s]: epoch %s/%s",
+                                progress_label or "training",
+                                last_epoch,
+                                observed_total_epochs,
+                            )
+                        else:
+                            logger.info(
+                                "Chemprop progress [%s]: epoch %s",
+                                progress_label or "training",
+                                last_epoch,
+                            )
+                except queue.Empty:
+                    pass
+
+                if process.poll() is not None:
+                    while True:
+                        try:
+                            source, line = stream_queue.get_nowait()
+                            if source == "stdout":
+                                stdout_lines.append(line)
+                            else:
+                                stderr_lines.append(line)
+                        except queue.Empty:
+                            break
+                    break
+
+                now = time.monotonic()
+                if now >= next_heartbeat_at:
+                    elapsed_seconds = int(now - started_at)
+                    minutes, seconds = divmod(elapsed_seconds, 60)
+                    metrics_progress = (
+                        self._get_metrics_progress(
+                            output_dir=output_dir,
+                            total_epochs=total_epochs,
+                            total_replicates=total_replicates,
+                            total_models=total_models,
+                        )
+                        if output_dir is not None
+                        else None
+                    )
+
+                    if metrics_progress is not None:
+                        parts = [f"split={progress_label or output_dir.name}"]
+                        if metrics_progress.get("replicate_display"):
+                            parts.append(f"replicate={metrics_progress['replicate_display']}")
+                        if metrics_progress.get("model_display"):
+                            parts.append(f"model={metrics_progress['model_display']}")
+                        if metrics_progress.get("epoch_display"):
+                            parts.append(f"epoch={metrics_progress['epoch_display']}")
+                        elif metrics_progress.get("epoch") is not None:
+                            parts.append(f"epoch={metrics_progress['epoch']}")
+                        if metrics_progress.get("step"):
+                            parts.append(f"step={metrics_progress['step']}")
+                        logger.info(
+                            "Training status: %s (elapsed=%dm%02ds)",
+                            ", ".join(parts),
+                            minutes,
+                            seconds,
+                        )
+                    elif last_epoch is not None:
+                        if observed_total_epochs:
+                            percent = min(
+                                100.0,
+                                max(0.0, (float(last_epoch) / float(observed_total_epochs)) * 100.0),
+                            )
+                            logger.info(
+                                "Chemprop status [%s]: still running after %dm%02ds, epoch %s/%s (%.1f%%).",
+                                progress_label or "training",
+                                minutes,
+                                seconds,
+                                last_epoch,
+                                observed_total_epochs,
+                                percent,
+                            )
+                        else:
+                            logger.info(
+                                "Chemprop status [%s]: still running after %dm%02ds, latest epoch seen: %s.",
+                                progress_label or "training",
+                                minutes,
+                                seconds,
+                                last_epoch,
+                            )
+                    elif output_dir is not None:
+                        logger.info(
+                            "Training status: split=%s, waiting for first metrics (elapsed=%dm%02ds)",
+                            progress_label or output_dir.name,
+                            minutes,
+                            seconds,
+                        )
+                    elif last_progress_line:
+                        logger.info(
+                            "Chemprop status [%s]: still running after %dm%02ds, last progress line: %s",
+                            progress_label or "training",
+                            minutes,
+                            seconds,
+                            last_progress_line,
+                        )
+                    else:
+                        logger.info(
+                            "Chemprop status [%s]: still running after %dm%02ds.",
+                            progress_label or "training",
+                            minutes,
+                            seconds,
+                        )
+                    next_heartbeat_at = now + heartbeat_seconds
+        finally:
+            stdout_thread.join(timeout=1.0)
+            stderr_thread.join(timeout=1.0)
+
+        stdout = "".join(stdout_lines).strip()
+        stderr = "".join(stderr_lines).strip()
+        if process.returncode != 0:
             details = stderr or stdout or "Chemprop CLI exited with a non-zero status."
             raise PredictionExecutionError(
                 "Chemprop execution failed. "
                 f"Command: {' '.join(args)} | Details: {details}"
-            ) from exc
+            )
+
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=process.returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
 
     def predict_from_csv(
         self,
@@ -533,7 +810,14 @@ class ChempropBackend(PredictionBackend):
             elif value is not None:
                 args.extend([flag, str(value)])
 
-        completed = self._run_cli(args)
+        completed = self._run_cli(
+            args,
+            progress_label=output_path.name,
+            output_dir=output_path,
+            total_epochs=int(sanitized_extra_args.get("epochs")) if sanitized_extra_args.get("epochs") is not None else None,
+            total_replicates=int(sanitized_extra_args.get("num_replicates")) if sanitized_extra_args.get("num_replicates") is not None else None,
+            total_models=int(sanitized_extra_args.get("ensemble_size")) if sanitized_extra_args.get("ensemble_size") is not None else None,
+        )
         completed_at = datetime.now().astimezone()
         return {
             "backend": self.backend_name,
