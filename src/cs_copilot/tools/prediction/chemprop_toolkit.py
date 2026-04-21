@@ -393,7 +393,7 @@ class ChempropToolkit(Toolkit):
                 "batch_size": 64,
                 "num_replicates": 3,
                 "ensemble_size": 1,
-                "num_workers": 24,
+                "num_workers": 40,
                 "metric": "rmse",
                 "split_type": "random",
                 "split_sizes": [0.8, 0.1, 0.1],
@@ -449,7 +449,7 @@ class ChempropToolkit(Toolkit):
             # On high-compute GPU runs, treat the profile values as floor values:
             # the agent may request a more aggressive configuration, but not a slower one.
             merged["batch_size"] = max(int(merged.get("batch_size", 64)), 64)
-            merged["num_workers"] = max(int(merged.get("num_workers", 24)), 24)
+            merged["num_workers"] = max(int(merged.get("num_workers", 40)), 40)
 
         return {
             "compute_environment": compute_env,
