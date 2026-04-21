@@ -460,6 +460,8 @@ QSAR_TRAINING_INSTRUCTIONS = [
     "Step 3: Train reproducibly.",
     "  - Use the prediction toolkit training flow with an explicit validation protocol and CPU-friendly defaults unless the user asks otherwise.",
     "  - Always inspect the local compute budget before training and select a training profile compatible with the machine.",
+    "  - When a GPU-capable heavy compute environment is available, default to a speed-oriented mindset: prefer faster high-throughput settings over conservative ones unless the user explicitly asks for caution.",
+    "  - For `heavy_validation`, treat the profile compute settings as floor values: do not propose or request a lower `batch_size` or `num_workers` than the active heavy profile. You may propose higher values if the detected machine can sustain them.",
     "  - On CPU-only local Docker environments, default to a conservative single-run profile unless the user explicitly authorizes heavier validation.",
     "  - Do not choose multi-replicate or ensemble-heavy runs by default on modest local machines.",
     "  - Default to `standard_qsar` validation when possible: one random split plus one scaffold-aware split.",

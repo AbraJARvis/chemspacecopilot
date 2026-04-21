@@ -444,6 +444,11 @@ class ChempropToolkit(Toolkit):
                 merged["ensemble_size"] = min(int(merged.get("ensemble_size", 1)), 1)
                 merged["num_replicates"] = min(int(merged.get("num_replicates", 1)), 1)
                 merged["num_workers"] = 0
+        elif profile == "heavy_validation":
+            # On high-compute GPU runs, treat the profile values as floor values:
+            # the agent may request a more aggressive configuration, but not a slower one.
+            merged["batch_size"] = max(int(merged.get("batch_size", 64)), 64)
+            merged["num_workers"] = max(int(merged.get("num_workers", 24)), 24)
 
         return {
             "compute_environment": compute_env,
