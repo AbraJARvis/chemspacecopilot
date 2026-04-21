@@ -157,6 +157,12 @@ class ChempropBackend(PredictionBackend):
             )
             sanitized.pop("gpus", None)
 
+        if "gpu" in sanitized:
+            logger.warning(
+                "Dropping unsupported Chemprop train arg `gpu`; this Chemprop version does not accept `--gpu` and will rely on runtime auto-detection instead."
+            )
+            sanitized.pop("gpu", None)
+
         if "seed" in sanitized:
             logger.warning(
                 "Dropping unsupported Chemprop train arg `seed`; `data_seed` is already used for split reproducibility."
@@ -173,10 +179,12 @@ class ChempropBackend(PredictionBackend):
             "final_lr",
             "warmup_epochs",
             "primary_split",
+            "split_strategies",
             "random_seed",
             "checkpoint_dir",
             "metrics_dir",
             "applicability_domain",
+            "save_preds",
         }
         dropped_unsupported = sorted(arg for arg in unsupported_args if arg in sanitized)
         for arg in dropped_unsupported:
