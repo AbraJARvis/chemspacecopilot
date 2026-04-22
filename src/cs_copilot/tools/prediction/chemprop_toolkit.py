@@ -23,13 +23,18 @@ from agno.tools.toolkit import Toolkit
 from scipy.stats import kendalltau, spearmanr
 
 from cs_copilot.storage import S3
-from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
-
 from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionModelRecord, PredictionTaskSpec
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
 from .chemprop_backend import ChempropBackend
 from .qsar_plots import build_qsar_training_plots
+from .random_forest_backend import RandomForestBackend
+from .representation import (
+    MorganFingerprintBuilder,
+    RepresentationBuilder,
+    SmilesGraphBuilder,
+    TrainingRecipe,
+)
 
 QSAR_HARDEST_SPLIT_R2_MIN = 0.70
 QSAR_ROBUSTNESS_DELTA_R2_MIN = -0.10
@@ -179,10 +184,43 @@ class ChempropToolkit(Toolkit):
     def __init__(self, backend: Optional[ChempropBackend] = None):
         super().__init__("chemprop_prediction")
         primary_backend = backend or ChempropBackend()
+        rf_backend = RandomForestBackend()
         self.backends = {
             primary_backend.backend_name: primary_backend,
+            rf_backend.backend_name: rf_backend,
         }
         self.backend = primary_backend
+        self.representation_builders: Dict[str, RepresentationBuilder] = {
+            SmilesGraphBuilder.representation_name: SmilesGraphBuilder(),
+            MorganFingerprintBuilder.representation_name: MorganFingerprintBuilder(),
+        }
+        self.training_recipes: Dict[str, TrainingRecipe] = {
+            "chemprop_smiles_default": TrainingRecipe(
+                recipe_id="chemprop_smiles_default",
+                backend_name=primary_backend.backend_name,
+                representation_name=SmilesGraphBuilder.representation_name,
+                display_name="Chemprop SMILES Default",
+                description="Default graph-native Chemprop training recipe on canonical SMILES.",
+                selection_hints={
+                    "mode": "single_auto",
+                    "supports_smiles_input": True,
+                    "priority": 100,
+                },
+            ),
+            "rf_morgan_default": TrainingRecipe(
+                recipe_id="rf_morgan_default",
+                backend_name="random_forest",
+                representation_name=MorganFingerprintBuilder.representation_name,
+                display_name="Random Forest Morgan Default",
+                description="Planned fingerprint-based baseline recipe for tabular tree models.",
+                selection_hints={
+                    "mode": "single_auto",
+                    "supports_smiles_input": True,
+                    "status": "available",
+                    "priority": 80,
+                },
+            ),
+        }
         self.catalog = PredictionModelCatalog.load()
         self.catalog.refresh_from_internal_store(persist=True)
         self.register(self.describe_backend)
@@ -202,6 +240,58 @@ class ChempropToolkit(Toolkit):
         self.register(self.prepare_training_dataset)
         self.register(self.describe_compute_environment)
         self.register(self.train_model)
+
+    def _get_representation_builder(self, representation_name: str) -> RepresentationBuilder:
+        builder = self.representation_builders.get(representation_name)
+        if builder is None:
+            available = sorted(self.representation_builders)
+            raise ValueError(
+                f"Unknown representation '{representation_name}'. Available representations: {available}"
+            )
+        return builder
+
+    def _default_representation_for_record(self, record: PredictionModelRecord) -> str:
+        if record.representation_name:
+            return record.representation_name
+        if record.backend_name == self.backend.backend_name:
+            return SmilesGraphBuilder.representation_name
+        raise ValueError(
+            f"Model '{record.model_id}' does not declare a representation_name and "
+            f"no backend default is known for backend '{record.backend_name}'."
+        )
+
+    def _resolve_training_recipe(
+        self,
+        *,
+        backend_name: Optional[str] = None,
+        training_recipe_id: Optional[str] = None,
+    ) -> TrainingRecipe:
+        if training_recipe_id:
+            recipe = self.training_recipes.get(training_recipe_id)
+            if recipe is None:
+                available = sorted(self.training_recipes)
+                raise ValueError(
+                    f"Unknown training_recipe_id '{training_recipe_id}'. Available recipes: {available}"
+                )
+            return recipe
+
+        resolved_backend = backend_name or self.backend.backend_name
+        for recipe in self.training_recipes.values():
+            if recipe.backend_name == resolved_backend:
+                return recipe
+
+        available_backends = sorted({recipe.backend_name for recipe in self.training_recipes.values()})
+        raise ValueError(
+            f"No training recipe configured for backend '{resolved_backend}'. "
+            f"Available recipe backends: {available_backends}"
+        )
+
+    def _load_dataframe_from_csv(self, input_csv: str) -> pd.DataFrame:
+        local_input = Path(input_csv).expanduser()
+        if local_input.exists():
+            return pd.read_csv(local_input)
+        with S3.open(input_csv, "r") as fh:
+            return pd.read_csv(fh)
 
     def _detect_memory_limit_bytes(self) -> Optional[int]:
         candidates = [
@@ -1093,6 +1183,12 @@ class ChempropToolkit(Toolkit):
             "owner": record.owner or "chemspacecopilot",
             "source": record.source or "internal_training",
             "backend_name": record.backend_name,
+            "model_family": record.model_family,
+            "representation_name": record.representation_name,
+            "representation_metadata": dict(record.representation_metadata),
+            "feature_schema": dict(record.feature_schema),
+            "training_recipe_id": record.training_recipe_id,
+            "package_level": record.package_level,
             "task": {
                 "task_type": record.task.task_type,
                 "smiles_columns": list(record.task.smiles_columns),
@@ -1111,6 +1207,8 @@ class ChempropToolkit(Toolkit):
             "training_data_summary": dict(record.training_data_summary),
             "inference_profile": dict(record.inference_profile),
             "selection_hints": dict(record.selection_hints),
+            "runtime_cost": dict(record.runtime_cost),
+            "inference_speed_hint": record.inference_speed_hint,
             "tags": dict(record.tags),
             "artifacts": copied_files,
         }
@@ -1161,6 +1259,12 @@ class ChempropToolkit(Toolkit):
                 "owner": record.owner or "chemspacecopilot",
                 "source": record.source or "internal_training",
                 "backend_name": record.backend_name,
+                "model_family": record.model_family,
+                "representation_name": record.representation_name,
+                "representation_metadata": dict(record.representation_metadata),
+                "feature_schema": dict(record.feature_schema),
+                "training_recipe_id": record.training_recipe_id,
+                "package_level": record.package_level,
                 "description": record.description or "",
                 "domain_summary": record.domain_summary or "",
                 "known_metrics": dict(record.known_metrics),
@@ -1170,6 +1274,8 @@ class ChempropToolkit(Toolkit):
                 "trained_time": (record.training_data_summary or {}).get("trained_time"),
                 "inference_profile": dict(record.inference_profile),
                 "selection_hints": dict(record.selection_hints),
+                "runtime_cost": dict(record.runtime_cost),
+                "inference_speed_hint": record.inference_speed_hint,
                 "strengths": list(record.strengths),
                 "limitations": list(record.limitations),
                 "recommended_for": list(record.recommended_for),
@@ -1298,6 +1404,12 @@ class ChempropToolkit(Toolkit):
             model_id=record.model_id,
             model_path=record.model_path,
             backend_name=record.backend_name,
+            model_family=record.model_family,
+            representation_name=record.representation_name,
+            representation_metadata=record.representation_metadata,
+            feature_schema=record.feature_schema,
+            training_recipe_id=record.training_recipe_id,
+            package_level=record.package_level,
             task_type=record.task.task_type,
             smiles_columns=record.task.smiles_columns,
             target_columns=record.task.target_columns,
@@ -1320,6 +1432,9 @@ class ChempropToolkit(Toolkit):
             inference_profile=record.inference_profile,
             selection_hints=record.selection_hints,
             applicability_domain=record.applicability_domain,
+            runtime_cost=record.runtime_cost,
+            inference_speed_hint=record.inference_speed_hint,
+            artifact_inventory=record.artifact_inventory,
             agent=agent,
         )
 
@@ -1329,6 +1444,12 @@ class ChempropToolkit(Toolkit):
         model_path: str,
         task_type: str,
         backend_name: Optional[str] = None,
+        model_family: Optional[str] = None,
+        representation_name: Optional[str] = None,
+        representation_metadata: Optional[Dict[str, Any]] = None,
+        feature_schema: Optional[Dict[str, Any]] = None,
+        training_recipe_id: Optional[str] = None,
+        package_level: str = "minimal",
         smiles_columns: Optional[List[str]] = None,
         target_columns: Optional[List[str]] = None,
         reaction_columns: Optional[List[str]] = None,
@@ -1350,6 +1471,9 @@ class ChempropToolkit(Toolkit):
         inference_profile: Optional[Dict[str, Any]] = None,
         selection_hints: Optional[Dict[str, Any]] = None,
         applicability_domain: Optional[Dict[str, Any]] = None,
+        runtime_cost: Optional[Dict[str, Any]] = None,
+        inference_speed_hint: Optional[str] = None,
+        artifact_inventory: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Register a Chemprop model in session state for later use."""
@@ -1371,6 +1495,12 @@ class ChempropToolkit(Toolkit):
             model_id=model_id,
             backend_name=backend.backend_name,
             model_path=str(validated_path),
+            model_family=model_family,
+            representation_name=representation_name,
+            representation_metadata=representation_metadata or {},
+            feature_schema=feature_schema or {},
+            training_recipe_id=training_recipe_id,
+            package_level=package_level,
             metadata_path=None,
             task=task,
             description=description,
@@ -1389,6 +1519,9 @@ class ChempropToolkit(Toolkit):
             inference_profile=inference_profile or {},
             selection_hints=selection_hints or {},
             applicability_domain=applicability_domain or {},
+            runtime_cost=runtime_cost or {},
+            inference_speed_hint=inference_speed_hint,
+            artifact_inventory=artifact_inventory or {},
         )
 
         prediction_state = _get_prediction_state(agent)
@@ -1517,6 +1650,12 @@ class ChempropToolkit(Toolkit):
             model_id=canonical_model_id,
             backend_name=current.backend_name,
             model_path=resolved_model_path,
+            model_family=current.model_family,
+            representation_name=current.representation_name,
+            representation_metadata=dict(current.representation_metadata),
+            feature_schema=dict(current.feature_schema),
+            training_recipe_id=current.training_recipe_id,
+            package_level=current.package_level,
             metadata_path=resolved_metadata_path,
             task=current.task,
             display_name=display_name or canonical_display_name,
@@ -1555,6 +1694,9 @@ class ChempropToolkit(Toolkit):
                 **current.applicability_domain,
                 **(applicability_domain or {}),
             },
+            runtime_cost=dict(current.runtime_cost),
+            inference_speed_hint=current.inference_speed_hint,
+            artifact_inventory=dict(current.artifact_inventory),
         )
 
         self.catalog.upsert_model(persisted_record)
@@ -1622,6 +1764,7 @@ class ChempropToolkit(Toolkit):
         record = self._resolve_record(model_id, agent)
         output_path = _prediction_output_path(model_id, preds_path)
         backend = self._get_backend(record.backend_name)
+        builder = self._get_representation_builder(self._default_representation_for_record(record))
         local_input = Path(input_csv).expanduser()
         if local_input.exists():
             source_df = pd.read_csv(local_input)
@@ -1629,37 +1772,16 @@ class ChempropToolkit(Toolkit):
             with S3.open(input_csv, "r") as fh:
                 source_df = pd.read_csv(fh)
 
-        df = source_df.copy()
-
-        smiles_found = None
-        smiles_candidates = [
-            smiles_column,
-            "smiles",
-            "SMILES",
-            "canonical_smiles",
-            "Smiles",
-            "smi",
-        ]
-        for candidate in smiles_candidates:
-            if candidate and candidate in df.columns:
-                smiles_found = candidate
-                break
-
-        if smiles_found is None:
-            raise ValueError(
-                f"No SMILES column found for prediction. Tried {smiles_candidates}. "
-                f"Available columns: {list(df.columns)}"
-            )
-
-        df = standardize_smiles_column(df, smiles_found)
-        if smiles_found != "smiles":
-            df = df.rename(columns={smiles_found: "smiles"})
         local_input = Path(".files") / "prediction_inputs" / f"{model_id}_input.csv"
-        local_input.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(local_input, index=False)
+        prepared_input = builder.prepare_inference_input(
+            df=source_df,
+            destination_csv=str(local_input),
+            smiles_column=smiles_column,
+            metadata=record.representation_metadata,
+        )
 
         result = backend.predict_from_csv(
-            input_csv=str(local_input),
+            input_csv=prepared_input.prepared_csv,
             model_record=record,
             preds_path=str(output_path),
             return_uncertainty=return_uncertainty,
@@ -1684,17 +1806,19 @@ class ChempropToolkit(Toolkit):
         prediction_state = _get_prediction_state(agent)
         prediction_state["last_prediction"] = {
             "model_id": model_id,
-            "input_csv": str(local_input),
+            "input_csv": prepared_input.prepared_csv,
             "preds_path": str(output_path),
             "return_uncertainty": return_uncertainty,
             "applicability_domain": result.get("applicability_domain") or {},
             "applicability_domain_columns": result.get("applicability_domain_columns") or [],
+            "representation_name": prepared_input.representation_name,
         }
         history_entry = {
             "model_id": model_id,
             "backend_name": record.backend_name,
+            "representation_name": prepared_input.representation_name,
             "task_type": record.task.task_type,
-            "input_csv": str(local_input),
+            "input_csv": prepared_input.prepared_csv,
             "preds_path": str(output_path),
             "download_file_ref": str(output_path),
             "preview_columns": preview_columns,
@@ -1729,12 +1853,16 @@ class ChempropToolkit(Toolkit):
         input_path = Path(".files") / "prediction_inputs" / f"{model_id}_smiles_input.csv"
         input_path.parent.mkdir(parents=True, exist_ok=True)
         df = pd.DataFrame({"smiles": smiles})
-        df = standardize_smiles_column(df, "smiles")
-        df.to_csv(input_path, index=False)
+        builder = self._get_representation_builder(SmilesGraphBuilder.representation_name)
+        prepared_input = builder.prepare_inference_input(
+            df=df,
+            destination_csv=str(input_path),
+            smiles_column="smiles",
+        )
 
         result = self.predict_from_csv(
             model_id=model_id,
-            input_csv=str(input_path),
+            input_csv=prepared_input.prepared_csv,
             smiles_column="smiles",
             preds_path=preds_path,
             return_uncertainty=return_uncertainty,
@@ -1908,34 +2036,207 @@ class ChempropToolkit(Toolkit):
         with S3.open(input_csv, "r") as fh:
             df = pd.read_csv(fh)
 
-        df = standardize_smiles_column(df, smiles_column)
-        missing_targets = [column for column in target_columns if column not in df.columns]
-        if missing_targets:
-            raise ValueError(f"Missing target columns: {missing_targets}")
-
-        standardized = df[["smiles", *target_columns]].copy()
         destination = output_csv or "training/chemprop_training_dataset.csv"
-        with S3.open(destination, "w") as fh:
-            standardized.to_csv(fh, index=False)
+        builder = self._get_representation_builder(SmilesGraphBuilder.representation_name)
+        prepared_input = builder.prepare_training_input(
+            df=df,
+            destination_csv=destination,
+            smiles_column=smiles_column,
+            target_columns=target_columns,
+        )
+        standardized = pd.read_csv(prepared_input.prepared_csv)
 
         return {
-            "output_csv": destination,
+            "output_csv": prepared_input.prepared_csv,
+            "representation_name": prepared_input.representation_name,
             "rows": int(len(standardized)),
             "columns": list(standardized.columns),
         }
+
+    def _train_random_forest_model(
+        self,
+        *,
+        train_csv: str,
+        output_dir: str,
+        task: PredictionTaskSpec,
+        recipe: TrainingRecipe,
+        extra_args: Optional[Dict[str, Any]] = None,
+        agent: Optional[Agent] = None,
+    ) -> Dict[str, Any]:
+        resolved_output_dir = str(Path(output_dir).expanduser().resolve())
+        root_output_path = Path(resolved_output_dir)
+        active_marker_path = root_output_path / ".training_in_progress"
+        trained_at = _project_now()
+        compute_environment = self.describe_compute_environment()
+        builder = self._get_representation_builder(recipe.representation_name)
+        backend = self._get_backend(recipe.backend_name)
+        prediction_state = _get_prediction_state(agent) if agent is not None else None
+        qsar_training_state = agent.session_state.setdefault("qsar_training", {}) if agent is not None else None
+
+        active_run_record = {
+            "status": "running",
+            "train_csv": train_csv,
+            "output_dir": resolved_output_dir,
+            "backend_name": recipe.backend_name,
+            "representation_name": recipe.representation_name,
+            "training_recipe_id": recipe.recipe_id,
+            "validation_protocol": "single_fit",
+            "created_at": trained_at.isoformat(),
+            "active_marker_path": str(active_marker_path),
+            "current_split_label": "full_fit",
+        }
+        if prediction_state is not None:
+            prediction_state["active_training_run"] = dict(active_run_record)
+        if qsar_training_state is not None:
+            qsar_training_state["active_run"] = dict(active_run_record)
+        _write_active_training_marker(active_marker_path, active_run_record)
+
+        try:
+            source_df = self._load_dataframe_from_csv(train_csv)
+            prepared_path = root_output_path / "prepared_inputs" / f"{recipe.recipe_id}_train.csv"
+            prepared_input = builder.prepare_training_input(
+                df=source_df,
+                destination_csv=str(prepared_path),
+                smiles_column=(task.smiles_columns or ["smiles"])[0],
+                target_columns=task.target_columns,
+            )
+
+            train_args = {
+                **recipe.default_train_args,
+                **(extra_args or {}),
+                "representation_name": prepared_input.representation_name,
+                "feature_columns": prepared_input.feature_columns,
+            }
+            backend_result = backend.train_model(
+                train_csv=prepared_input.prepared_csv,
+                output_dir=resolved_output_dir,
+                task=task,
+                extra_args=train_args,
+            )
+
+            result = {
+                **backend_result,
+                "backend_name": recipe.backend_name,
+                "representation_name": prepared_input.representation_name,
+                "representation_metadata": dict(prepared_input.metadata),
+                "feature_schema": backend_result.get("feature_schema") or {
+                    "feature_columns": list(prepared_input.feature_columns),
+                    "num_features": len(prepared_input.feature_columns),
+                },
+                "training_recipe_id": recipe.recipe_id,
+                "output_dir": resolved_output_dir,
+                "train_csv": train_csv,
+                "prepared_train_csv": prepared_input.prepared_csv,
+                "validation_protocol": "single_fit",
+                "validation_protocol_reason": (
+                    "Random forest V1 currently trains a full-fit tabular model without split orchestration."
+                ),
+                "compute_environment": compute_environment,
+                "training_profile": "tabular_default",
+                "profile_reason": "Default tabular backend recipe for Morgan fingerprint random forest.",
+                "effective_train_args": train_args,
+                "training_resources": {
+                    "cpu_cores_available": compute_environment.get("cpu_count"),
+                    "gpu_available": False,
+                    "gpu_count_available": 0,
+                    "gpu_devices_requested": 0,
+                    "feature_columns": len(prepared_input.feature_columns),
+                    "n_estimators": (backend_result.get("training_params") or {}).get("n_estimators"),
+                    "n_jobs": (backend_result.get("training_params") or {}).get("n_jobs"),
+                    "memory_gb_total": compute_environment.get("memory_gb_total"),
+                    "disk_gb_free": compute_environment.get("disk_gb_free"),
+                    "disk_gb_total": compute_environment.get("disk_gb_total"),
+                    "execution_env": compute_environment.get("execution_env"),
+                },
+                "trained_at": trained_at.isoformat(),
+                "trained_date": trained_at.strftime("%d/%m/%Y"),
+                "trained_time": trained_at.strftime("%H:%M:%S"),
+            }
+
+            summary_path = root_output_path / "cs_copilot_training_summary.json"
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            summary_path.write_text(json.dumps(result, indent=2) + "\n")
+            result["summary_path"] = str(summary_path)
+            result["summary_file_ref"] = str(summary_path)
+            if result.get("best_model_path"):
+                result["download_file_ref"] = result["best_model_path"]
+
+            if prediction_state is not None:
+                prediction_state["training_runs"].append(
+                    {
+                        "train_csv": train_csv,
+                        "output_dir": resolved_output_dir,
+                        "task_type": task.task_type,
+                        "smiles_columns": task.smiles_columns,
+                        "target_columns": task.target_columns,
+                        "backend_name": recipe.backend_name,
+                        "representation_name": prepared_input.representation_name,
+                        "training_recipe_id": recipe.recipe_id,
+                        "validation_protocol": "single_fit",
+                        "split_runs": [
+                            {
+                                "label": "full_fit",
+                                "strategy": "full_fit",
+                                "strategy_family": "full_fit",
+                                "output_dir": resolved_output_dir,
+                                "seed": train_args.get("random_state", 42),
+                            }
+                        ],
+                    }
+                )
+
+            return result
+        except Exception as exc:
+            active_run_record["status"] = "failed"
+            active_run_record["error"] = str(exc)
+            if prediction_state is not None:
+                prediction_state["active_training_run"] = dict(active_run_record)
+            if qsar_training_state is not None:
+                qsar_training_state["active_run"] = dict(active_run_record)
+            _write_active_training_marker(active_marker_path, active_run_record)
+            raise
+        finally:
+            if active_marker_path.exists():
+                active_marker_path.unlink()
+            if prediction_state is not None:
+                prediction_state["active_training_run"] = None
+            if qsar_training_state is not None:
+                qsar_training_state["active_run"] = None
 
     def train_model(
         self,
         train_csv: str,
         task_type: str,
         output_dir: str,
+        backend_name: Optional[str] = None,
+        training_recipe_id: Optional[str] = None,
         smiles_columns: Optional[List[str]] = None,
         target_columns: Optional[List[str]] = None,
         reaction_columns: Optional[List[str]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
-        """Launch Chemprop training and persist a lightweight training record."""
+        """Launch backend training and persist a lightweight training record."""
+        recipe = self._resolve_training_recipe(
+            backend_name=backend_name,
+            training_recipe_id=training_recipe_id,
+        )
+        if recipe.backend_name != self.backend.backend_name:
+            task = PredictionTaskSpec(
+                task_type=task_type,
+                smiles_columns=smiles_columns or ["smiles"],
+                target_columns=target_columns or [],
+                reaction_columns=reaction_columns or [],
+            )
+            return self._train_random_forest_model(
+                train_csv=train_csv,
+                output_dir=output_dir,
+                task=task,
+                recipe=recipe,
+                extra_args=extra_args,
+                agent=agent,
+            )
+
         resolved_output_dir = str(Path(output_dir).expanduser().resolve())
         root_output_path = Path(resolved_output_dir)
         active_marker_path = root_output_path / ".training_in_progress"
@@ -1957,6 +2258,9 @@ class ChempropToolkit(Toolkit):
             "status": "running",
             "train_csv": train_csv,
             "output_dir": resolved_output_dir,
+            "backend_name": recipe.backend_name,
+            "representation_name": recipe.representation_name,
+            "training_recipe_id": recipe.recipe_id,
             "validation_protocol": protocol_policy["protocol"],
             "training_profile": training_policy["training_profile"],
             "created_at": trained_at.isoformat(),
@@ -2045,6 +2349,9 @@ class ChempropToolkit(Toolkit):
                         "task_type": task_type,
                         "smiles_columns": task.smiles_columns,
                         "target_columns": task.target_columns,
+                        "backend_name": recipe.backend_name,
+                        "representation_name": recipe.representation_name,
+                        "training_recipe_id": recipe.recipe_id,
                         "validation_protocol": protocol_policy["protocol"],
                         "split_runs": [
                             {
@@ -2087,6 +2394,9 @@ class ChempropToolkit(Toolkit):
                     plot_artifacts = {}
 
             result = dict(primary_run)
+            result["backend_name"] = recipe.backend_name
+            result["representation_name"] = recipe.representation_name
+            result["training_recipe_id"] = recipe.recipe_id
             result["output_dir"] = resolved_output_dir
             result["validation_protocol"] = protocol_policy["protocol"]
             result["validation_protocol_reason"] = protocol_policy["reason"]

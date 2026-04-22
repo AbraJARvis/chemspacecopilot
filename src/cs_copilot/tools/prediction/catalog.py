@@ -80,6 +80,12 @@ def _record_from_internal_metadata(metadata_path: Path) -> Optional[PredictionMo
         backend_name=backend_name,
         model_path=resolved_model_path,
         metadata_path=str(metadata_path.resolve()),
+        model_family=payload.get("model_family"),
+        representation_name=payload.get("representation_name"),
+        representation_metadata=dict(payload.get("representation_metadata", {}) or {}),
+        feature_schema=dict(payload.get("feature_schema", {}) or {}),
+        training_recipe_id=payload.get("training_recipe_id"),
+        package_level=payload.get("package_level", "minimal"),
         display_name=payload.get("display_name"),
         description=payload.get("description"),
         tags=dict(payload.get("tags", {}) or {}),
@@ -97,6 +103,9 @@ def _record_from_internal_metadata(metadata_path: Path) -> Optional[PredictionMo
         inference_profile=dict(payload.get("inference_profile", {}) or {}),
         selection_hints=dict(payload.get("selection_hints", {}) or {}),
         applicability_domain=applicability_domain,
+        runtime_cost=dict(payload.get("runtime_cost", {}) or {}),
+        inference_speed_hint=payload.get("inference_speed_hint"),
+        artifact_inventory=dict(payload.get("artifacts", {}) or payload.get("artifact_inventory", {}) or {}),
         task=PredictionModelRecord.from_dict(
             {
                 "model_id": model_id,

@@ -53,6 +53,12 @@ class PredictionModelRecord:
     backend_name: str
     model_path: str
     task: PredictionTaskSpec
+    model_family: Optional[str] = None
+    representation_name: Optional[str] = None
+    representation_metadata: Dict[str, Any] = field(default_factory=dict)
+    feature_schema: Dict[str, Any] = field(default_factory=dict)
+    training_recipe_id: Optional[str] = None
+    package_level: str = "minimal"
     metadata_path: Optional[str] = None
     display_name: Optional[str] = None
     description: Optional[str] = None
@@ -71,12 +77,21 @@ class PredictionModelRecord:
     inference_profile: Dict[str, Any] = field(default_factory=dict)
     selection_hints: Dict[str, Any] = field(default_factory=dict)
     applicability_domain: Dict[str, Any] = field(default_factory=dict)
+    runtime_cost: Dict[str, Any] = field(default_factory=dict)
+    inference_speed_hint: Optional[str] = None
+    artifact_inventory: Dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, Any]:
         return {
             "model_id": self.model_id,
             "backend_name": self.backend_name,
             "model_path": self.model_path,
+            "model_family": self.model_family,
+            "representation_name": self.representation_name,
+            "representation_metadata": dict(self.representation_metadata),
+            "feature_schema": dict(self.feature_schema),
+            "training_recipe_id": self.training_recipe_id,
+            "package_level": self.package_level,
             "metadata_path": self.metadata_path,
             "display_name": self.display_name or self.model_id,
             "description": self.description or "",
@@ -94,6 +109,9 @@ class PredictionModelRecord:
             "inference_profile": dict(self.inference_profile),
             "selection_hints": dict(self.selection_hints),
             "applicability_domain": dict(self.applicability_domain),
+            "runtime_cost": dict(self.runtime_cost),
+            "inference_speed_hint": self.inference_speed_hint,
+            "artifact_inventory": dict(self.artifact_inventory),
             "task": {
                 "task_type": self.task.task_type,
                 "smiles_columns": list(self.task.smiles_columns),
@@ -113,6 +131,12 @@ class PredictionModelRecord:
             model_id=payload["model_id"],
             backend_name=payload["backend_name"],
             model_path=payload["model_path"],
+            model_family=payload.get("model_family"),
+            representation_name=payload.get("representation_name"),
+            representation_metadata=payload.get("representation_metadata", {}),
+            feature_schema=payload.get("feature_schema", {}),
+            training_recipe_id=payload.get("training_recipe_id"),
+            package_level=payload.get("package_level", "minimal"),
             metadata_path=payload.get("metadata_path"),
             display_name=payload.get("display_name"),
             description=payload.get("description"),
@@ -131,6 +155,9 @@ class PredictionModelRecord:
             inference_profile=payload.get("inference_profile", {}),
             selection_hints=payload.get("selection_hints", {}),
             applicability_domain=payload.get("applicability_domain", {}),
+            runtime_cost=payload.get("runtime_cost", {}),
+            inference_speed_hint=payload.get("inference_speed_hint"),
+            artifact_inventory=payload.get("artifact_inventory", {}),
             task=PredictionTaskSpec(
                 task_type=task_payload.get("task_type", "regression"),
                 smiles_columns=task_payload.get("smiles_columns", ["smiles"]),
