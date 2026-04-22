@@ -129,43 +129,59 @@ class ChempropBackend(PredictionBackend):
     def _sanitize_train_extra_args(
         self, extra_args: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """Whitelist Chemprop train args supported by this project/runtime.
+        """Normalize or drop legacy/internal Chemprop CLI arguments before training.
 
-        The agent layer may propose extra orchestration or legacy CLI arguments.
-        Rather than chasing them one by one with a blacklist, keep only the
-        small set of train options that our current workflow intentionally
-        supports on the installed Chemprop CLI.
+        We keep a blacklist here because the agent may legitimately propose
+        extra supported Chemprop flags that are unknown to the backend today.
+        The blacklist only removes arguments that are known to be invalid for
+        the installed CLI or that belong to our orchestration layer rather than
+        Chemprop itself.
         """
-        requested = dict(extra_args or {})
+        sanitized = dict(extra_args or {})
 
-        if "num_folds" in requested and "num_replicates" not in requested:
+        if "num_folds" in sanitized and "num_replicates" not in sanitized:
             logger.warning(
                 "Received deprecated Chemprop train arg `num_folds`; mapping it to `num_replicates`."
             )
-            requested["num_replicates"] = requested.pop("num_folds")
+            sanitized["num_replicates"] = sanitized.pop("num_folds")
         else:
-            requested.pop("num_folds", None)
+            sanitized.pop("num_folds", None)
 
-        allowed_args = {
-            "epochs",
-            "batch_size",
-            "num_replicates",
-            "ensemble_size",
-            "num_workers",
-            "patience",
-            "metric",
-            "split_type",
-            "split_sizes",
-            "data_seed",
-            "save_smiles_splits",
+        if "save_dir" in sanitized:
+            logger.warning(
+                "Dropping deprecated/duplicate Chemprop train arg `save_dir`; `output_dir` is already set."
+            )
+            sanitized.pop("save_dir", None)
+
+        unsupported_args = {
+            "gpus",
+            "gpu",
+            "use_gpu",
+            "seed",
+            "model_type",
+            "hidden_size",
+            "depth",
+            "dropout",
+            "init_lr",
+            "max_lr",
+            "final_lr",
+            "warmup_epochs",
+            "primary_split",
+            "split_strategies",
+            "random_seed",
+            "checkpoint_dir",
+            "metrics_dir",
+            "applicability_domain",
+            "save_preds",
+            "dataset_id",
         }
+        dropped_args = sorted(arg for arg in unsupported_args if arg in sanitized)
+        for arg in dropped_args:
+            sanitized.pop(arg, None)
 
-        sanitized = {key: value for key, value in requested.items() if key in allowed_args}
-
-        dropped_args = sorted(key for key in requested.keys() if key not in allowed_args)
         if dropped_args:
             logger.warning(
-                "Dropping non-whitelisted Chemprop train args for this runtime: %s",
+                "Dropping unsupported Chemprop train args for this CLI/runtime: %s",
                 ", ".join(dropped_args),
             )
         return sanitized
