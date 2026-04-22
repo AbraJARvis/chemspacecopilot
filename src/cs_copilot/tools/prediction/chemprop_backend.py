@@ -129,72 +129,45 @@ class ChempropBackend(PredictionBackend):
     def _sanitize_train_extra_args(
         self, extra_args: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """Normalize or drop legacy Chemprop CLI arguments before training.
+        """Whitelist Chemprop train args supported by this project/runtime.
 
-        Older prompts/runs may still emit v1/v2.0-era flags. Chemprop v2.1+
-        rejects some of them hard (notably `num_folds`). We normalize the safe
-        ones and silently drop those that only duplicate newer required args.
+        The agent layer may propose extra orchestration or legacy CLI arguments.
+        Rather than chasing them one by one with a blacklist, keep only the
+        small set of train options that our current workflow intentionally
+        supports on the installed Chemprop CLI.
         """
-        sanitized = dict(extra_args or {})
+        requested = dict(extra_args or {})
 
-        if "num_folds" in sanitized and "num_replicates" not in sanitized:
+        if "num_folds" in requested and "num_replicates" not in requested:
             logger.warning(
                 "Received deprecated Chemprop train arg `num_folds`; mapping it to `num_replicates`."
             )
-            sanitized["num_replicates"] = sanitized.pop("num_folds")
+            requested["num_replicates"] = requested.pop("num_folds")
         else:
-            sanitized.pop("num_folds", None)
+            requested.pop("num_folds", None)
 
-        if "save_dir" in sanitized:
-            logger.warning(
-                "Dropping deprecated/duplicate Chemprop train arg `save_dir`; `output_dir` is already set."
-            )
-            sanitized.pop("save_dir", None)
-
-        if "gpus" in sanitized:
-            logger.warning(
-                "Dropping unsupported Chemprop train arg `gpus`; this Chemprop version does not accept `--gpus` and will rely on runtime auto-detection instead."
-            )
-            sanitized.pop("gpus", None)
-
-        if "gpu" in sanitized:
-            logger.warning(
-                "Dropping unsupported Chemprop train arg `gpu`; this Chemprop version does not accept `--gpu` and will rely on runtime auto-detection instead."
-            )
-            sanitized.pop("gpu", None)
-
-        if "seed" in sanitized:
-            logger.warning(
-                "Dropping unsupported Chemprop train arg `seed`; `data_seed` is already used for split reproducibility."
-            )
-            sanitized.pop("seed", None)
-
-        unsupported_args = {
-            "model_type",
-            "hidden_size",
-            "depth",
-            "dropout",
-            "init_lr",
-            "max_lr",
-            "final_lr",
-            "warmup_epochs",
-            "primary_split",
-            "split_strategies",
-            "random_seed",
-            "checkpoint_dir",
-            "metrics_dir",
-            "applicability_domain",
-            "save_preds",
+        allowed_args = {
+            "epochs",
+            "batch_size",
+            "num_replicates",
+            "ensemble_size",
+            "num_workers",
+            "patience",
+            "metric",
+            "split_type",
+            "split_sizes",
+            "data_seed",
+            "save_smiles_splits",
         }
-        dropped_unsupported = sorted(arg for arg in unsupported_args if arg in sanitized)
-        for arg in dropped_unsupported:
-            sanitized.pop(arg, None)
-        if dropped_unsupported:
-            logger.warning(
-                "Dropping unsupported Chemprop train args for this CLI version: %s",
-                ", ".join(dropped_unsupported),
-            )
 
+        sanitized = {key: value for key, value in requested.items() if key in allowed_args}
+
+        dropped_args = sorted(key for key in requested.keys() if key not in allowed_args)
+        if dropped_args:
+            logger.warning(
+                "Dropping non-whitelisted Chemprop train args for this runtime: %s",
+                ", ".join(dropped_args),
+            )
         return sanitized
 
     def _resolve_artifact_path(
