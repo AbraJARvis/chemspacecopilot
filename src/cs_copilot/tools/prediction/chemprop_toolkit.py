@@ -1629,9 +1629,29 @@ class ChempropToolkit(Toolkit):
             with S3.open(input_csv, "r") as fh:
                 df = pd.read_csv(fh)
 
-        df = standardize_smiles_column(df, smiles_column)
-        if smiles_column != "smiles" and smiles_column in df.columns:
-            df = df.rename(columns={smiles_column: "smiles"})
+        smiles_found = None
+        smiles_candidates = [
+            smiles_column,
+            "smiles",
+            "SMILES",
+            "canonical_smiles",
+            "Smiles",
+            "smi",
+        ]
+        for candidate in smiles_candidates:
+            if candidate and candidate in df.columns:
+                smiles_found = candidate
+                break
+
+        if smiles_found is None:
+            raise ValueError(
+                f"No SMILES column found for prediction. Tried {smiles_candidates}. "
+                f"Available columns: {list(df.columns)}"
+            )
+
+        df = standardize_smiles_column(df, smiles_found)
+        if smiles_found != "smiles":
+            df = df.rename(columns={smiles_found: "smiles"})
         local_input = Path(".files") / "prediction_inputs" / f"{model_id}_input.csv"
         local_input.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(local_input, index=False)
