@@ -389,7 +389,7 @@ class ChempropToolkit(Toolkit):
             }
         if profile == "heavy_validation":
             return {
-                "epochs": 75,
+                "epochs": 100,
                 "batch_size": 64,
                 "num_replicates": 3,
                 "ensemble_size": 1,
@@ -449,6 +449,7 @@ class ChempropToolkit(Toolkit):
         if profile == "heavy_validation":
             # On high-compute GPU runs, treat the profile values as floor values:
             # the agent may request a more aggressive configuration, but not a slower one.
+            merged["epochs"] = max(int(merged.get("epochs", 100)), 100)
             merged["batch_size"] = max(int(merged.get("batch_size", 64)), 64)
             merged["num_workers"] = max(int(merged.get("num_workers", 16)), 16)
 
@@ -1621,19 +1622,17 @@ class ChempropToolkit(Toolkit):
         record = self._resolve_record(model_id, agent)
         output_path = _prediction_output_path(model_id, preds_path)
         backend = self._get_backend(record.backend_name)
-
-        if not Path(input_csv).is_absolute():
-            local_input = Path(input_csv)
+        local_input = Path(input_csv).expanduser()
+        if local_input.exists():
+            df = pd.read_csv(local_input)
         else:
-            local_input = Path(input_csv)
-
-        if not local_input.exists():
             with S3.open(input_csv, "r") as fh:
                 df = pd.read_csv(fh)
-            df = standardize_smiles_column(df, smiles_column)
-            local_input = Path(".files") / "prediction_inputs" / f"{model_id}_input.csv"
-            local_input.parent.mkdir(parents=True, exist_ok=True)
-            df.to_csv(local_input, index=False)
+
+        df = standardize_smiles_column(df, smiles_column)
+        local_input = Path(".files") / "prediction_inputs" / f"{model_id}_input.csv"
+        local_input.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(local_input, index=False)
 
         result = backend.predict_from_csv(
             input_csv=str(local_input),
