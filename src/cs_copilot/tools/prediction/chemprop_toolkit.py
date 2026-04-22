@@ -1624,10 +1624,12 @@ class ChempropToolkit(Toolkit):
         backend = self._get_backend(record.backend_name)
         local_input = Path(input_csv).expanduser()
         if local_input.exists():
-            df = pd.read_csv(local_input)
+            source_df = pd.read_csv(local_input)
         else:
             with S3.open(input_csv, "r") as fh:
-                df = pd.read_csv(fh)
+                source_df = pd.read_csv(fh)
+
+        df = source_df.copy()
 
         smiles_found = None
         smiles_candidates = [
@@ -1662,6 +1664,17 @@ class ChempropToolkit(Toolkit):
             preds_path=str(output_path),
             return_uncertainty=return_uncertainty,
         )
+
+        predictions_only_df = pd.read_csv(output_path)
+        prediction_columns = [
+            column for column in predictions_only_df.columns if column not in source_df.columns
+        ]
+        if prediction_columns:
+            enriched_output_df = pd.concat(
+                [source_df.reset_index(drop=True), predictions_only_df[prediction_columns].reset_index(drop=True)],
+                axis=1,
+            )
+            enriched_output_df.to_csv(output_path, index=False)
 
         preview_df = pd.read_csv(output_path)
         preview_columns = list(preview_df.columns)
