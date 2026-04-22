@@ -41,6 +41,12 @@ QSAR_ROBUSTNESS_DELTA_R2_MIN = -0.10
 QSAR_ROBUSTNESS_DELTA_RMSE_MAX = 0.15
 QSAR_RANDOM_STABILITY_R2_STD_MAX = 0.03
 PROJECT_TIMEZONE = ZoneInfo("Europe/Paris")
+KNOWN_VALIDATION_PROTOCOLS = {
+    "fast_local",
+    "standard_qsar",
+    "robust_qsar",
+    "challenging_qsar",
+}
 
 
 def _project_now() -> datetime:
@@ -2217,6 +2223,12 @@ class ChempropToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Launch backend training and persist a lightweight training record."""
+        normalized_extra_args = dict(extra_args or {})
+        legacy_protocol = (training_recipe_id or "").strip().lower()
+        if legacy_protocol in KNOWN_VALIDATION_PROTOCOLS:
+            normalized_extra_args.setdefault("validation_protocol", legacy_protocol)
+            training_recipe_id = None
+
         recipe = self._resolve_training_recipe(
             backend_name=backend_name,
             training_recipe_id=training_recipe_id,
@@ -2233,7 +2245,7 @@ class ChempropToolkit(Toolkit):
                 output_dir=output_dir,
                 task=task,
                 recipe=recipe,
-                extra_args=extra_args,
+                extra_args=normalized_extra_args,
                 agent=agent,
             )
 
@@ -2241,7 +2253,7 @@ class ChempropToolkit(Toolkit):
         root_output_path = Path(resolved_output_dir)
         active_marker_path = root_output_path / ".training_in_progress"
         trained_at = _project_now()
-        training_policy = self._apply_training_profile(extra_args)
+        training_policy = self._apply_training_profile(normalized_extra_args)
         protocol_policy = self._resolve_validation_protocol(
             requested_protocol=training_policy.get("validation_protocol"),
             training_profile=training_policy["training_profile"],
