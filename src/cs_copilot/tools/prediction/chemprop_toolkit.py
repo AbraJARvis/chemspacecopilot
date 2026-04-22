@@ -1630,6 +1630,8 @@ class ChempropToolkit(Toolkit):
                 df = pd.read_csv(fh)
 
         df = standardize_smiles_column(df, smiles_column)
+        if smiles_column != "smiles" and smiles_column in df.columns:
+            df = df.rename(columns={smiles_column: "smiles"})
         local_input = Path(".files") / "prediction_inputs" / f"{model_id}_input.csv"
         local_input.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(local_input, index=False)
