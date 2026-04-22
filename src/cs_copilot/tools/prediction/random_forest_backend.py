@@ -242,14 +242,19 @@ class RandomForestBackend(PredictionBackend):
 
         feature_importances = getattr(model, "feature_importances_", None)
         feature_schema = {
-            "feature_columns": feature_columns,
             "num_features": len(feature_columns),
+            "feature_column_prefix": "fp_",
         }
         if feature_importances is not None:
-            feature_schema["feature_importances"] = {
-                column: float(value)
-                for column, value in zip(feature_columns, feature_importances.tolist())
-            }
+            ranked = sorted(
+                zip(feature_columns, feature_importances.tolist()),
+                key=lambda item: item[1],
+                reverse=True,
+            )[:25]
+            feature_schema["top_feature_importances"] = [
+                {"feature": column, "importance": float(value)}
+                for column, value in ranked
+            ]
 
         return {
             "backend_name": self.backend_name,
