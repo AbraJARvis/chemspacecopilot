@@ -2124,10 +2124,16 @@ class ChempropToolkit(Toolkit):
                 **backend_result,
                 "backend_name": recipe.backend_name,
                 "representation_name": prepared_input.representation_name,
-                "representation_metadata": dict(prepared_input.metadata),
+                "representation_metadata": {
+                    "smiles_source_column": prepared_input.metadata.get("smiles_source_column"),
+                    "canonical_smiles_column": prepared_input.metadata.get("canonical_smiles_column"),
+                    "feature_builder": prepared_input.metadata.get("feature_builder"),
+                    "radius": prepared_input.metadata.get("radius"),
+                    "n_bits": prepared_input.metadata.get("n_bits"),
+                },
                 "feature_schema": backend_result.get("feature_schema") or {
-                    "feature_columns": list(prepared_input.feature_columns),
                     "num_features": len(prepared_input.feature_columns),
+                    "feature_column_prefix": "fp_",
                 },
                 "training_recipe_id": recipe.recipe_id,
                 "output_dir": resolved_output_dir,
