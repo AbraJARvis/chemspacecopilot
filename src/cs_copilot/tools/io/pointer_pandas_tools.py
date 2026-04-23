@@ -34,6 +34,8 @@ _OPERATION_ALIASES = {
     "stat": "describe",
     "describe_dataframe": "describe",
     "describe_data": "describe",
+    "list_columns": "columns",
+    "column_info": "dtypes",
     "head_rows": "head",
     "tail_rows": "tail",
     "preview": "head",
