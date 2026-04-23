@@ -36,6 +36,8 @@ from .prediction import (
     ChempropBackend,
     ChempropToolkit,
     PredictionModelCatalog,
+    TabICLBackend,
+    TabICLToolkit,
 )
 
 # GTM Toolkit
@@ -70,6 +72,8 @@ __all__ = [
     "SynPlannerToolkit",
     "ChempropToolkit",
     "ChempropBackend",
+    "TabICLToolkit",
+    "TabICLBackend",
     "PredictionModelCatalog",
     "CatalogRecommendation",
     "ChemblToolkit",

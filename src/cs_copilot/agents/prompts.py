@@ -460,6 +460,7 @@ QSAR_TRAINING_INSTRUCTIONS = [
     "Step 3: Train reproducibly.",
     "  - Use the prediction toolkit training flow with an explicit validation protocol and CPU-friendly defaults unless the user asks otherwise.",
     "  - When the user explicitly asks for a tabular molecular representation, use dedicated feature-generation tools such as Morgan fingerprints before backend training rather than improvising the transformation with pandas.",
+    "  - When the user explicitly asks for TabICLv2, first prepare or reuse a tabular QSAR dataset, then call the dedicated TabICL training tool rather than forcing the request through Chemprop.",
     "  - For RDKit descriptor generation, use only `descriptor_set=basic` in the current implementation. Do not request `all`, `extended`, or any other variant unless the tool is explicitly upgraded later.",
     "  - Never try to call molecular feature tools through `run_dataframe_operation`; call tools such as `smiles_to_morgan_fingerprints` directly.",
     "  - Always inspect the local compute budget before training and select a training profile compatible with the machine.",

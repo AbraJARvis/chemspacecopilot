@@ -25,6 +25,7 @@ from cs_copilot.tools import (
     PointerPandasTools,
     QSARReportingToolkit,
     SynPlannerToolkit,
+    TabICLToolkit,
     # SessionToolkit,
     save_gtm_plot,
 )
@@ -685,6 +686,7 @@ class QSARTrainingFactory(BaseAgentFactory):
             """,
             tools=[
                 ChempropToolkit(),
+                TabICLToolkit(),
                 MolecularFeatureToolkit(),
                 PointerPandasTools(),
             ],
