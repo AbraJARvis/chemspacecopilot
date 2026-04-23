@@ -60,6 +60,30 @@ def _build_base_output_dataframe(
     return pd.DataFrame(index=working.index)
 
 
+def _coerce_join_on(join_on: Optional[List[str]]) -> List[str]:
+    if join_on is None:
+        return ["smiles"]
+    if isinstance(join_on, str):
+        return [join_on]
+    if not join_on:
+        raise ValueError("join_on cannot be empty.")
+    return list(join_on)
+
+
+def _validate_join_columns(df: pd.DataFrame, join_on: List[str], *, df_name: str) -> None:
+    missing = [column for column in join_on if column not in df.columns]
+    if missing:
+        raise ValueError(f"{df_name} is missing join columns: {missing}")
+
+
+def _validate_unique_keys(df: pd.DataFrame, join_on: List[str], *, df_name: str) -> None:
+    duplicate_mask = df.duplicated(subset=join_on, keep=False)
+    if duplicate_mask.any():
+        raise ValueError(
+            f"{df_name} contains duplicate rows for join keys {join_on}; V1 requires a strict 1:1 join."
+        )
+
+
 class MolecularFeatureToolkit(Toolkit):
     """Explicit tools for transforming molecular datasets into tabular features."""
 
@@ -67,6 +91,7 @@ class MolecularFeatureToolkit(Toolkit):
         super().__init__("molecular_features")
         self.register(self.smiles_to_morgan_fingerprints)
         self.register(self.smiles_to_rdkit_descriptors)
+        self.register(self.build_tabular_qsar_dataset)
 
     def smiles_to_morgan_fingerprints(
         self,
@@ -233,4 +258,109 @@ class MolecularFeatureToolkit(Toolkit):
             "descriptor_names": descriptor_names,
             "descriptor_columns_sample": descriptor_columns[:5],
             "input_columns_kept": kept_columns,
+        }
+
+    def build_tabular_qsar_dataset(
+        self,
+        base_csv: str,
+        output_csv: Optional[str] = None,
+        feature_csvs: Optional[List[str]] = None,
+        join_on: Optional[List[str]] = None,
+        base_columns_to_keep: Optional[List[str]] = None,
+        drop_duplicate_feature_columns: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Build a final tabular QSAR dataset by combining a curated base CSV with
+        one or more precomputed molecular feature tables.
+        """
+        if not feature_csvs:
+            raise ValueError("feature_csvs must contain at least one feature table.")
+
+        join_columns = _coerce_join_on(join_on)
+
+        with S3.open(base_csv, "r") as fh:
+            base_df = pd.read_csv(fh)
+
+        _validate_join_columns(base_df, join_columns, df_name="base_csv")
+        _validate_unique_keys(base_df, join_columns, df_name="base_csv")
+
+        if base_columns_to_keep is not None:
+            missing_columns = [column for column in base_columns_to_keep if column not in base_df.columns]
+            if missing_columns:
+                raise ValueError(f"base_csv is missing requested base columns: {missing_columns}")
+            assembled_df = base_df[base_columns_to_keep].copy()
+            base_columns_kept = list(base_columns_to_keep)
+        else:
+            assembled_df = base_df.copy()
+            base_columns_kept = list(base_df.columns)
+
+        feature_sources: List[str] = []
+        added_feature_columns: List[str] = []
+
+        for index, feature_csv in enumerate(feature_csvs, start=1):
+            with S3.open(feature_csv, "r") as fh:
+                feature_df = pd.read_csv(fh)
+
+            source_name = f"feature_csv[{index}]"
+            _validate_join_columns(feature_df, join_columns, df_name=source_name)
+            _validate_unique_keys(feature_df, join_columns, df_name=source_name)
+
+            non_join_columns = [column for column in feature_df.columns if column not in join_columns]
+            if not non_join_columns:
+                raise ValueError(f"{source_name} does not contain any feature columns beyond join keys {join_columns}.")
+
+            colliding_columns = [column for column in non_join_columns if column in assembled_df.columns]
+            if colliding_columns:
+                if drop_duplicate_feature_columns:
+                    non_join_columns = [column for column in non_join_columns if column not in colliding_columns]
+                else:
+                    raise ValueError(
+                        f"{source_name} has feature columns that already exist in the assembled dataset: {colliding_columns}"
+                    )
+
+            if not non_join_columns:
+                raise ValueError(
+                    f"{source_name} only contributed duplicate feature columns after collision filtering."
+                )
+
+            feature_subset = feature_df[join_columns + non_join_columns].copy()
+            merged_df = assembled_df.merge(
+                feature_subset,
+                on=join_columns,
+                how="left",
+                sort=False,
+                validate="one_to_one",
+            )
+
+            if len(merged_df) != len(assembled_df):
+                raise ValueError(
+                    f"{source_name} changed the row count during merge; expected {len(assembled_df)} rows but got {len(merged_df)}."
+                )
+
+            missing_feature_rows = merged_df[non_join_columns].isna().all(axis=1)
+            if missing_feature_rows.any():
+                missing_count = int(missing_feature_rows.sum())
+                raise ValueError(
+                    f"{source_name} could not be joined for {missing_count} base row(s) using keys {join_columns}."
+                )
+
+            assembled_df = merged_df
+            feature_sources.append(S3.path(feature_csv))
+            added_feature_columns.extend(non_join_columns)
+
+        resolved_output_csv = _resolve_output_csv(output_csv, base_csv, "_tabular_qsar.csv")
+        with S3.open(resolved_output_csv, "w") as fh:
+            assembled_df.to_csv(fh, index=False)
+
+        return {
+            "output_csv": resolved_output_csv,
+            "rows_in_base": int(len(base_df)),
+            "rows_out": int(len(assembled_df)),
+            "join_on": join_columns,
+            "base_columns_kept": base_columns_kept,
+            "feature_sources": feature_sources,
+            "num_feature_tables": len(feature_sources),
+            "num_added_feature_columns": len(added_feature_columns),
+            "final_column_count": int(len(assembled_df.columns)),
+            "feature_column_samples": added_feature_columns[:5],
         }
