@@ -194,7 +194,8 @@ class MolecularFeatureToolkit(Toolkit):
         """
         if descriptor_set != "basic":
             raise ValueError(
-                "Only descriptor_set='basic' is supported in this V1 implementation."
+                "Only descriptor_set='basic' is supported in this V1 implementation. "
+                "Use 'basic' for now; richer descriptor sets can be added later."
             )
 
         with S3.open(input_csv, "r") as fh:
