@@ -161,6 +161,7 @@ class ChempropBackend(PredictionBackend):
             "extra_metrics",
             "profile",
             "scaffold_split",
+            "split_type_mixed",
             "model_type",
             "hidden_size",
             "depth",
