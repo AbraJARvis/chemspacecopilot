@@ -84,6 +84,9 @@ _NULL_CHECK_OPS = {
     "notnull",  # Null checking operations (can work on DataFrame or subset)
 }
 
+_CREATION_FUNCTIONS_MISUSED_AS_OPERATIONS = {"from_dict", "from_records", "dataframe"}
+_UNSUPPORTED_PSEUDO_OPERATIONS = {"import_subprocess", "subprocess", "shell", "exec", "execute"}
+
 
 def _preview(df: pd.DataFrame) -> str:
     """Generate a preview string for a DataFrame."""
@@ -476,6 +479,18 @@ class PointerPandasTools(PandasTools):
         params = _coerce_parameter_dict(
             operation_parameters, param_name="operation_parameters"
         ).copy()
+
+        if operation in _CREATION_FUNCTIONS_MISUSED_AS_OPERATIONS:
+            raise ValueError(
+                f"'{operation}' creates a DataFrame and cannot be used with run_dataframe_operation(). "
+                "Use create_pandas_dataframe() instead."
+            )
+
+        if operation in _UNSUPPORTED_PSEUDO_OPERATIONS:
+            raise ValueError(
+                f"'{operation}' is not a supported pandas DataFrame operation. "
+                "run_dataframe_operation() only works on existing DataFrames."
+            )
 
         # Fix legacy to_csv aliases
         if operation == "to_csv":

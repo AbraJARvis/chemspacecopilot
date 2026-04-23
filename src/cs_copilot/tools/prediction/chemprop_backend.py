@@ -159,6 +159,7 @@ class ChempropBackend(PredictionBackend):
             "use_gpu",
             "seed",
             "extra_metrics",
+            "profile",
             "model_type",
             "hidden_size",
             "depth",
@@ -174,6 +175,7 @@ class ChempropBackend(PredictionBackend):
             "metrics_dir",
             "applicability_domain",
             "save_preds",
+            "save_checkpoints",
             "dataset_id",
         }
         dropped_args = sorted(arg for arg in unsupported_args if arg in sanitized)

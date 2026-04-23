@@ -1221,11 +1221,13 @@ async def _handle_file_uploads(files: list, session_id: str) -> list[str]:
 # ---------- main relay ------------------------------------------------------ #
 async def relay(stream):
     assistant = None  # Will be created when we have content
-    current_step = None  # active tool Step
     buf = ""  # accumulate until newline
     full_content = ""  # collect all content for final message
     qsar_mode = _is_qsar_team_mode()
     qsar_progress_msg = None
+    active_tool_calls: dict[str, dict] = {}
+    active_tool_name_queues: dict[str, list[str]] = {}
+    tool_event_sequence = 0
 
     # Check if tool calls should be displayed
     show_tool_calls = cl.user_session.get("show_tool_calls", True)
@@ -1239,33 +1241,88 @@ async def relay(stream):
         qsar_progress_msg = cl.Message(content="Workflow QSAR en cours...", author="assistant")
         await qsar_progress_msg.send()
 
+    def _extract_tool_name(tool) -> str:
+        if tool is None:
+            return "tool"
+        return getattr(tool, "tool_name", None) or getattr(tool, "name", None) or "tool"
+
+    def _extract_tool_call_id(chunk, tool) -> str | None:
+        candidates = [
+            getattr(chunk, "tool_call_id", None),
+            getattr(chunk, "call_id", None),
+            getattr(chunk, "id", None),
+            getattr(tool, "tool_call_id", None),
+            getattr(tool, "call_id", None),
+            getattr(tool, "id", None),
+            getattr(tool, "tool_use_id", None),
+        ]
+        for candidate in candidates:
+            if candidate:
+                return str(candidate)
+        return None
+
+    def _remember_active_tool(call_id: str, tool_name: str, step=None) -> None:
+        active_tool_calls[call_id] = {"tool_name": tool_name, "step": step}
+        active_tool_name_queues.setdefault(tool_name, []).append(call_id)
+
+    def _pop_active_tool(call_id: str | None, tool_name: str | None) -> dict | None:
+        resolved_id = None
+        if call_id and call_id in active_tool_calls:
+            resolved_id = call_id
+        elif tool_name:
+            queue = active_tool_name_queues.get(tool_name) or []
+            while queue:
+                candidate = queue.pop(0)
+                if candidate in active_tool_calls:
+                    resolved_id = candidate
+                    break
+        elif len(active_tool_calls) == 1:
+            resolved_id = next(iter(active_tool_calls))
+
+        if not resolved_id:
+            return None
+
+        entry = active_tool_calls.pop(resolved_id, None)
+        if entry is None:
+            return None
+
+        queue = active_tool_name_queues.get(entry["tool_name"]) or []
+        active_tool_name_queues[entry["tool_name"]] = [
+            candidate for candidate in queue if candidate != resolved_id
+        ]
+        return entry
+
     async for chunk in stream:
         # ── tool events → COT sidebar as Steps ───────────────────────────────
         ev = getattr(chunk, "event", None)
         if ev == "ToolCallStarted":
             t = chunk.tool
-            tool_name = t.tool_name or t.name or "tool"
+            tool_name = _extract_tool_name(t)
             tool_args = t.tool_args or getattr(t, "arguments", {})
+            call_id = _extract_tool_call_id(chunk, t)
+            if call_id is None:
+                tool_event_sequence += 1
+                call_id = f"{tool_name}#{tool_event_sequence}"
             _log_tool_event("started", tool_name, tool_args)
+            step = None
             if show_tool_calls:
-                current_step = cl.Step(name=tool_name, type="tool")
-                current_step.input = tool_args
-                await current_step.send()
+                step = cl.Step(name=tool_name, type="tool")
+                step.input = tool_args
+                await step.send()
+            _remember_active_tool(call_id, tool_name, step)
             continue
 
         if ev and ev.endswith("Completed"):
-            tool_name = "tool"
+            tool = getattr(chunk, "tool", None)
+            call_id = _extract_tool_call_id(chunk, tool)
+            hinted_name = _extract_tool_name(tool) if tool is not None else None
+            active_entry = _pop_active_tool(call_id, hinted_name)
+            tool_name = active_entry["tool_name"] if active_entry else (hinted_name or "tool")
             payload = chunk.content or getattr(chunk, "text", "") or "done"
-            if current_step and current_step.name:
-                tool_name = current_step.name
-            elif getattr(chunk, "tool", None):
-                tool = chunk.tool
-                tool_name = getattr(tool, "tool_name", None) or getattr(tool, "name", None) or "tool"
             _log_tool_event("completed", tool_name, payload)
-            if show_tool_calls and current_step:
-                current_step.output = chunk.content or "✅ done"
-                await current_step.update()
-                current_step = None
+            if show_tool_calls and active_entry and active_entry.get("step") is not None:
+                active_entry["step"].output = chunk.content or "✅ done"
+                await active_entry["step"].update()
             continue
 
         # ── plain text from the LLM / agent ─────────────────────────────────
