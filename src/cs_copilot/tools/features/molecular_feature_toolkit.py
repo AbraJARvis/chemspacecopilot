@@ -13,7 +13,7 @@ import pandas as pd
 from agno.tools.toolkit import Toolkit
 
 from cs_copilot.storage import S3
-from cs_copilot.tools.chemistry.base_chemistry import calc_morgan_fp
+from cs_copilot.tools.chemistry.base_chemistry import calc_morgan_bit_fp
 from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
 
 
@@ -84,12 +84,12 @@ class MolecularFeatureToolkit(Toolkit):
         feature_columns = _feature_column_names(feature_prefix, n_bits)
         fingerprint_rows: List[Any] = []
         for smiles in working["smiles"].tolist():
-            fingerprint = calc_morgan_fp(smiles, n_bits)
+            fingerprint = calc_morgan_bit_fp(smiles, n_bits)
             if fingerprint is None:
                 raise ValueError(
                     f"Could not compute Morgan fingerprint for standardized SMILES: {smiles}"
                 )
-            fingerprint_rows.append(fingerprint.tolist())
+            fingerprint_rows.append(fingerprint.astype(int).tolist())
 
         feature_df = pd.DataFrame(fingerprint_rows, columns=feature_columns)
 
