@@ -774,6 +774,30 @@ class PointerPandasTools(PandasTools):
                         f"'func' must be a string, list, or dict. Got: {type(func).__name__}"
                     )
 
+            # Guard against LLM-generated pseudo-code passed into pandas apply-like APIs.
+            if operation in ("apply", "applymap", "map", "transform"):
+                func_param_name = None
+                for candidate in ("func", "callable", "function", "mapper"):
+                    if candidate in params:
+                        func_param_name = candidate
+                        break
+                if func_param_name is not None:
+                    func_value = params[func_param_name]
+                    if isinstance(func_value, str):
+                        stripped = func_value.strip()
+                        if stripped.startswith("lambda") or "lambda " in stripped:
+                            raise ValueError(
+                                f"{operation}() does not accept inline Python such as "
+                                f"'{func_value}'. Use a built-in pandas operation instead "
+                                "of passing code strings."
+                            )
+                        if operation in ("applymap", "map") and stripped:
+                            raise ValueError(
+                                f"{operation}() requires a real callable, but received the "
+                                f"string '{func_value}'. Use a supported pandas operation "
+                                "instead of passing function source code."
+                            )
+
             # Perform the operation
             if result is None:
                 try:
