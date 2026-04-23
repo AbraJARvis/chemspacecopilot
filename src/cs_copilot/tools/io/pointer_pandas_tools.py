@@ -236,7 +236,7 @@ class PointerPandasTools(PandasTools):
         self,
         dataframe_name: str,
         create_using_function: str,
-        function_parameters: Optional[Dict] = None,
+        function_parameters: Optional[Dict | str] = None,
     ) -> Dict[str, Union[str, pd.DataFrame]]:
         """Create a pandas DataFrame using various methods.
 
@@ -449,7 +449,7 @@ class PointerPandasTools(PandasTools):
         self,
         dataframe_name: str,
         operation: str,
-        operation_parameters: Optional[Dict] = None,
+        operation_parameters: Optional[Dict | str] = None,
     ) -> Union[pd.DataFrame, pd.Series, Dict, str, float, int]:
         """Run operations on existing DataFrames.
 

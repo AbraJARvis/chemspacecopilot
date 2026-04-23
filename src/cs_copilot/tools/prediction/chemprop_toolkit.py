@@ -1910,12 +1910,18 @@ class ChempropToolkit(Toolkit):
         self,
         input_csv: str,
         smiles_column: str,
-        target_columns: List[str],
+        target_columns: List[str] | str,
         output_csv: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Normalize a training CSV into the canonical format expected by later prediction tools."""
         with S3.open(input_csv, "r") as fh:
             df = pd.read_csv(fh)
+
+        if isinstance(target_columns, str):
+            parsed = json.loads(target_columns)
+            if not isinstance(parsed, list):
+                raise ValueError("target_columns must be a list or a JSON-encoded list.")
+            target_columns = parsed
 
         df = standardize_smiles_column(df, smiles_column)
         missing_targets = [column for column in target_columns if column not in df.columns]
@@ -1938,13 +1944,23 @@ class ChempropToolkit(Toolkit):
         train_csv: str,
         task_type: str,
         output_dir: str,
-        smiles_columns: Optional[List[str]] = None,
-        target_columns: Optional[List[str]] = None,
-        reaction_columns: Optional[List[str]] = None,
+        smiles_columns: Optional[List[str] | str] = None,
+        target_columns: Optional[List[str] | str] = None,
+        reaction_columns: Optional[List[str] | str] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Launch Chemprop training and persist a lightweight training record."""
+        if isinstance(smiles_columns, str):
+            parsed = json.loads(smiles_columns)
+            smiles_columns = parsed if isinstance(parsed, list) else [str(parsed)]
+        if isinstance(target_columns, str):
+            parsed = json.loads(target_columns)
+            target_columns = parsed if isinstance(parsed, list) else [str(parsed)]
+        if isinstance(reaction_columns, str):
+            parsed = json.loads(reaction_columns)
+            reaction_columns = parsed if isinstance(parsed, list) else [str(parsed)]
+
         resolved_output_dir = str(Path(output_dir).expanduser().resolve())
         root_output_path = Path(resolved_output_dir)
         active_marker_path = root_output_path / ".training_in_progress"
