@@ -40,6 +40,19 @@ def _load_dataset(dataset_path: str) -> pd.DataFrame:
         return pd.read_csv(fh)
 
 
+def _absolute_storage_path(path_value: Optional[str | Path]) -> Optional[str]:
+    """Return a real absolute storage path for local or session-relative artifacts."""
+    if path_value is None:
+        return None
+    path_text = str(path_value)
+    if not path_text:
+        return None
+    expanded = Path(path_text).expanduser()
+    if expanded.is_absolute():
+        return str(expanded.resolve())
+    return S3.path(path_text)
+
+
 def _bundle_files(bundle_path: Path, files: List[Path]) -> Path:
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(bundle_path, "w", compression=ZIP_DEFLATED) as zf:
@@ -690,7 +703,7 @@ class DatasetCurationToolkit(Toolkit):
         )
 
         if output_csv:
-            curated_path = Path(output_csv).expanduser()
+            curated_path = Path(_absolute_storage_path(output_csv)).expanduser()
         else:
             stem = dataset_id or Path(dataset_path).stem or "qsar_dataset"
             curated_path = (Path(".files") / "qsar_curation" / f"{stem}_curated.csv").resolve()
@@ -737,7 +750,7 @@ class DatasetCurationToolkit(Toolkit):
 
         if report_path:
             report_payload = result.as_dict()
-            report_file = Path(report_path).expanduser()
+            report_file = Path(_absolute_storage_path(report_path)).expanduser()
             report_file.parent.mkdir(parents=True, exist_ok=True)
             report_file.write_text(json.dumps(report_payload, indent=2) + "\n")
             result.report_path = str(report_file)
@@ -800,7 +813,7 @@ class DatasetCurationToolkit(Toolkit):
         """Persist a curation result as a JSON report artifact."""
         dataset_id = curation_result.get("dataset_id") or "qsar_dataset"
         destination = (
-            Path(report_path).expanduser()
+            Path(_absolute_storage_path(report_path)).expanduser()
             if report_path
             else (Path(".files") / "qsar_curation" / f"{dataset_id}_curation_report.json").resolve()
         )

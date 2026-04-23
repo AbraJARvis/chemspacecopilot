@@ -4,6 +4,7 @@
 Enhanced PandasTools with pointer-based dataframe management and S3 support.
 """
 
+import json
 import logging
 from pathlib import Path
 from typing import Dict, Optional, Union
@@ -99,6 +100,29 @@ def _normalize_csv(params: dict) -> dict:
         if old in params:
             params["path_or_buf"] = params.pop(old)
     return params
+
+
+def _coerce_parameter_dict(value: object, *, param_name: str) -> dict:
+    """Accept either a real dict or a JSON-encoded dict string from the agent."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"{param_name} must be a dictionary or a JSON object string. Received invalid JSON: {value!r}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                f"{param_name} JSON payload must decode to a dictionary. Received: {type(parsed).__name__}"
+            )
+        return parsed
+    raise ValueError(
+        f"{param_name} must be a dictionary. Received unsupported type: {type(value).__name__}"
+    )
 
 
 def _normalize_operation_name(operation: str) -> str:
@@ -256,7 +280,9 @@ class PointerPandasTools(PandasTools):
         if not create_using_function:
             raise ValueError("create_using_function cannot be empty")
 
-        function_parameters = function_parameters or {}
+        function_parameters = _coerce_parameter_dict(
+            function_parameters, param_name="function_parameters"
+        )
 
         # Normalize CSV params early for common cases
         if create_using_function in {"read_csv", "to_csv"}:
@@ -447,7 +473,9 @@ class PointerPandasTools(PandasTools):
 
         operation = _normalize_operation_name(operation)
         operation = _OPERATION_ALIASES.get(operation.lower(), operation)
-        params = (operation_parameters or {}).copy()
+        params = _coerce_parameter_dict(
+            operation_parameters, param_name="operation_parameters"
+        ).copy()
 
         # Fix legacy to_csv aliases
         if operation == "to_csv":
