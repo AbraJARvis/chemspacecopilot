@@ -8,7 +8,6 @@ import asyncio
 import base64
 import hashlib
 import json
-import logging
 import mimetypes
 import os
 import re
@@ -25,11 +24,14 @@ from cs_copilot.model_config import _is_retriable, arun_with_retry, load_model_f
 from cs_copilot.storage import S3
 from cs_copilot.tools.io.formatting import smiles_to_png_bytes
 from cs_copilot.tools.reporting.qsar_latex import escape_latex
+from cs_copilot.utils.logging import compact_log_data, get_logger, setup_logging
 
 load_dotenv()
+setup_logging()
 
 # Set up logger
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
+runtime_logger = get_logger("cs_copilot.runtime")
 
 # ---------- User Management System ----------------------------------------- #
 # Simple in-memory user storage (in production, use a proper database)
@@ -126,6 +128,31 @@ def _get_active_team_mode() -> str:
     if last_mode in {"main", "qsar"}:
         return last_mode
     return _default_team_mode()
+
+
+def _get_runtime_context() -> dict[str, str]:
+    thread_id = getattr(cl.context.session, "thread_id", None)
+    return {
+        "team": _get_active_team_mode(),
+        "thread": thread_id or "-",
+    }
+
+
+def _log_tool_event(stage: str, tool_name: str, payload=None):
+    context = _get_runtime_context()
+    suffix = ""
+    compact_payload = compact_log_data(payload)
+    if compact_payload != "-":
+        suffix = f" | payload={compact_payload}"
+
+    runtime_logger.info(
+        "Tool %s: %s | team=%s | thread=%s%s",
+        stage,
+        tool_name or "tool",
+        context["team"],
+        context["thread"],
+        suffix,
+    )
 
 
 def _normalize_router_text(text: str) -> str:
@@ -1204,6 +1231,11 @@ async def relay(stream):
     show_tool_calls = cl.user_session.get("show_tool_calls", True)
 
     if qsar_mode:
+        runtime_logger.info(
+            "QSAR workflow started | team=%s | thread=%s",
+            _get_runtime_context()["team"],
+            _get_runtime_context()["thread"],
+        )
         qsar_progress_msg = cl.Message(content="Workflow QSAR en cours...", author="assistant")
         await qsar_progress_msg.send()
 
@@ -1211,14 +1243,25 @@ async def relay(stream):
         # ── tool events → COT sidebar as Steps ───────────────────────────────
         ev = getattr(chunk, "event", None)
         if ev == "ToolCallStarted":
+            t = chunk.tool
+            tool_name = t.tool_name or t.name or "tool"
+            tool_args = t.tool_args or getattr(t, "arguments", {})
+            _log_tool_event("started", tool_name, tool_args)
             if show_tool_calls:
-                t = chunk.tool
-                current_step = cl.Step(name=t.tool_name or t.name or "tool", type="tool")
-                current_step.input = t.tool_args or getattr(t, "arguments", {})
+                current_step = cl.Step(name=tool_name, type="tool")
+                current_step.input = tool_args
                 await current_step.send()
             continue
 
         if ev and ev.endswith("Completed"):
+            tool_name = "tool"
+            payload = chunk.content or getattr(chunk, "text", "") or "done"
+            if current_step and current_step.name:
+                tool_name = current_step.name
+            elif getattr(chunk, "tool", None):
+                tool = chunk.tool
+                tool_name = getattr(tool, "tool_name", None) or getattr(tool, "name", None) or "tool"
+            _log_tool_event("completed", tool_name, payload)
             if show_tool_calls and current_step:
                 current_step.output = chunk.content or "✅ done"
                 await current_step.update()
@@ -1254,6 +1297,11 @@ async def relay(stream):
         if qsar_progress_msg is not None:
             qsar_progress_msg.content = "Workflow QSAR terminé."
             await qsar_progress_msg.update()
+        runtime_logger.info(
+            "QSAR workflow completed | team=%s | thread=%s",
+            _get_runtime_context()["team"],
+            _get_runtime_context()["thread"],
+        )
         if final_report:
             final_assistant = None
             final_buf = final_report
