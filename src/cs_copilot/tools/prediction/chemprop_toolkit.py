@@ -981,8 +981,17 @@ class ChempropToolkit(Toolkit):
             model_id=model_id_hint,
         )
 
-    def describe_backend(self) -> Dict[str, Any]:
-        """Describe Chemprop backend availability and version information."""
+    def describe_backend(
+        self,
+        backend_name: Optional[str] = None,
+        __name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Describe Chemprop backend availability and version information.
+
+        The agent sometimes passes lightweight selector kwargs such as
+        `backend_name` or `__name`. We accept and ignore them here so a simple
+        backend inspection never fails on argument noise.
+        """
         return self.backend.describe_environment()
 
     def _infer_training_run_dir(self, record: PredictionModelRecord) -> Optional[Path]:

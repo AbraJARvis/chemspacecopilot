@@ -158,6 +158,7 @@ class ChempropBackend(PredictionBackend):
             "gpu",
             "use_gpu",
             "seed",
+            "extra_metrics",
             "model_type",
             "hidden_size",
             "depth",
