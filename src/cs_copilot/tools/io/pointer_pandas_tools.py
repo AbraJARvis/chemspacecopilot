@@ -86,6 +86,7 @@ _NULL_CHECK_OPS = {
 
 _CREATION_FUNCTIONS_MISUSED_AS_OPERATIONS = {"from_dict", "from_records", "dataframe"}
 _UNSUPPORTED_PSEUDO_OPERATIONS = {"import_subprocess", "subprocess", "shell", "exec", "execute"}
+_DEDICATED_TOOL_OPERATIONS = {"smiles_to_morgan_fingerprints", "smiles_to_rdkit_descriptors"}
 
 
 def _preview(df: pd.DataFrame) -> str:
@@ -490,6 +491,12 @@ class PointerPandasTools(PandasTools):
             raise ValueError(
                 f"'{operation}' is not a supported pandas DataFrame operation. "
                 "run_dataframe_operation() only works on existing DataFrames."
+            )
+
+        if operation in _DEDICATED_TOOL_OPERATIONS:
+            raise ValueError(
+                f"'{operation}' is a dedicated molecular feature tool, not a pandas DataFrame operation. "
+                "Call it directly instead of routing it through run_dataframe_operation()."
             )
 
         # Fix legacy to_csv aliases
