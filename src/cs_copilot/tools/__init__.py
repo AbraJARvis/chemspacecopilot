@@ -30,6 +30,7 @@ from .chemistry import (
     SynPlannerToolkit,
 )
 from .curation import DatasetCurationToolkit
+from .features import MolecularFeatureToolkit
 from .prediction import (
     CatalogRecommendation,
     ChempropBackend,
@@ -63,6 +64,7 @@ __all__ = [
     "BaseChemistryToolkit",
     "ChemicalSimilarityToolkit",
     "DatasetCurationToolkit",
+    "MolecularFeatureToolkit",
     "AutoencoderToolkit",
     "PeptideWAEToolkit",
     "SynPlannerToolkit",

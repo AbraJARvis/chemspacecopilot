@@ -459,6 +459,7 @@ QSAR_TRAINING_INSTRUCTIONS = [
     "  - If the dataset is not explicitly marked ready for QSAR, stop and report the blocking issue.",
     "Step 3: Train reproducibly.",
     "  - Use the prediction toolkit training flow with an explicit validation protocol and CPU-friendly defaults unless the user asks otherwise.",
+    "  - When the user explicitly asks for a tabular molecular representation, use dedicated feature-generation tools such as Morgan fingerprints before backend training rather than improvising the transformation with pandas.",
     "  - Always inspect the local compute budget before training and select a training profile compatible with the machine.",
     "  - When a GPU-capable heavy compute environment is available, default to a speed-oriented mindset: prefer faster high-throughput settings over conservative ones unless the user explicitly asks for caution.",
     "  - For `heavy_validation`, treat the profile compute settings as floor values: do not propose or request a lower `batch_size` or `num_workers` than the active heavy profile. You may propose higher values if the detected machine can sustain them.",
