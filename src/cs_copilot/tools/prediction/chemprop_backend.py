@@ -160,6 +160,7 @@ class ChempropBackend(PredictionBackend):
             "seed",
             "extra_metrics",
             "profile",
+            "scaffold_split",
             "model_type",
             "hidden_size",
             "depth",
