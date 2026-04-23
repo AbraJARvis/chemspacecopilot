@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -30,6 +31,57 @@ def _get_curation_state(agent: Agent) -> Dict[str, Any]:
     state.setdefault("last_result", {})
     state.setdefault("history", [])
     return state
+
+
+def _compact_curation_request(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "dataset_path": payload.get("dataset_path"),
+        "dataset_id": payload.get("dataset_id"),
+        "smiles_column": payload.get("smiles_column"),
+        "target_columns": list(payload.get("target_columns") or []),
+        "task_type": payload.get("task_type"),
+    }
+
+
+def _compact_curation_result(payload: Dict[str, Any]) -> Dict[str, Any]:
+    target_quality = payload.get("target_data_quality") or {}
+    return {
+        "status": payload.get("status"),
+        "ready_for_qsar": payload.get("ready_for_qsar"),
+        "dataset_id": payload.get("dataset_id"),
+        "source_dataset_path": payload.get("source_dataset_path"),
+        "curated_dataset_path": payload.get("curated_dataset_path"),
+        "smiles_column_original": payload.get("smiles_column_original"),
+        "smiles_column_curated": payload.get("smiles_column_curated"),
+        "target_columns_original": list(payload.get("target_columns_original") or []),
+        "target_columns_curated": list(payload.get("target_columns_curated") or []),
+        "task_type": payload.get("task_type"),
+        "rows_in": payload.get("rows_in"),
+        "rows_out": payload.get("rows_out"),
+        "rows_removed": (
+            (payload.get("rows_in") or 0) - (payload.get("rows_out") or 0)
+            if payload.get("rows_in") is not None and payload.get("rows_out") is not None
+            else None
+        ),
+        "warnings_count": len(payload.get("warnings") or []),
+        "blocking_issues_count": len(payload.get("blocking_issues") or []),
+        "report_path": payload.get("report_path"),
+        "target_ready_for_qsar": target_quality.get("target_ready_for_qsar"),
+    }
+
+
+def _append_compact_history(state: Dict[str, Any], compact_result: Dict[str, Any]) -> None:
+    history_entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "dataset_id": compact_result.get("dataset_id"),
+        "task_type": compact_result.get("task_type"),
+        "rows_in": compact_result.get("rows_in"),
+        "rows_out": compact_result.get("rows_out"),
+        "status": compact_result.get("status"),
+    }
+    state["history"].append(history_entry)
+    if len(state["history"]) > 10:
+        state["history"] = state["history"][-10:]
 
 
 def _load_dataset(dataset_path: str) -> pd.DataFrame:
@@ -458,9 +510,11 @@ class DatasetCurationToolkit(Toolkit):
             )
             if agent is not None:
                 state = _get_curation_state(agent)
-                state["last_request"] = request.as_dict()
-                state["last_result"] = result.as_dict()
-                state["history"].append(result.as_dict())
+                compact_request = _compact_curation_request(request.as_dict())
+                compact_result = _compact_curation_result(result.as_dict())
+                state["last_request"] = compact_request
+                state["last_result"] = compact_result
+                _append_compact_history(state, compact_result)
             return result.as_dict()
 
         if smiles_column != "smiles":
@@ -746,9 +800,11 @@ class DatasetCurationToolkit(Toolkit):
 
         if agent is not None:
             state = _get_curation_state(agent)
-            state["last_request"] = request.as_dict()
-            state["last_result"] = result_payload
-            state["history"].append(result_payload)
+            compact_request = _compact_curation_request(request.as_dict())
+            compact_result = _compact_curation_result(result_payload)
+            state["last_request"] = compact_request
+            state["last_result"] = compact_result
+            _append_compact_history(state, compact_result)
 
         return result_payload
 
