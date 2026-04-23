@@ -84,6 +84,29 @@ def _validate_unique_keys(df: pd.DataFrame, join_on: List[str], *, df_name: str)
         )
 
 
+def _canonicalize_join_columns(
+    df: pd.DataFrame, join_on: List[str], *, df_name: str
+) -> pd.DataFrame:
+    """Normalize join columns in-memory before strict table joins.
+
+    At the moment we canonicalize `smiles` because chemically equivalent rows can
+    still differ textually between intermediate artifacts. This keeps the join
+    strict while reducing accidental mismatches caused by representation drift.
+    """
+    normalized = df.copy()
+    if "smiles" in join_on:
+        if "smiles" not in normalized.columns:
+            raise ValueError(f"{df_name} is missing join column 'smiles'.")
+        normalized = standardize_smiles_column(normalized, "smiles")
+        invalid_mask = normalized["smiles"].isna()
+        if invalid_mask.any():
+            invalid_rows = int(invalid_mask.sum())
+            raise ValueError(
+                f"{df_name} has {invalid_rows} row(s) with invalid or missing standardized SMILES in join column 'smiles'."
+            )
+    return normalized
+
+
 class MolecularFeatureToolkit(Toolkit):
     """Explicit tools for transforming molecular datasets into tabular features."""
 
@@ -281,6 +304,7 @@ class MolecularFeatureToolkit(Toolkit):
 
         with S3.open(base_csv, "r") as fh:
             base_df = pd.read_csv(fh)
+        base_df = _canonicalize_join_columns(base_df, join_columns, df_name="base_csv")
 
         _validate_join_columns(base_df, join_columns, df_name="base_csv")
         _validate_unique_keys(base_df, join_columns, df_name="base_csv")
@@ -303,6 +327,7 @@ class MolecularFeatureToolkit(Toolkit):
                 feature_df = pd.read_csv(fh)
 
             source_name = f"feature_csv[{index}]"
+            feature_df = _canonicalize_join_columns(feature_df, join_columns, df_name=source_name)
             _validate_join_columns(feature_df, join_columns, df_name=source_name)
             _validate_unique_keys(feature_df, join_columns, df_name=source_name)
 
@@ -341,8 +366,14 @@ class MolecularFeatureToolkit(Toolkit):
             missing_feature_rows = merged_df[non_join_columns].isna().all(axis=1)
             if missing_feature_rows.any():
                 missing_count = int(missing_feature_rows.sum())
+                missing_examples = (
+                    merged_df.loc[missing_feature_rows, join_columns]
+                    .head(3)
+                    .to_dict(orient="records")
+                )
                 raise ValueError(
-                    f"{source_name} could not be joined for {missing_count} base row(s) using keys {join_columns}."
+                    f"{source_name} could not be joined for {missing_count} base row(s) using keys {join_columns}. "
+                    f"Examples: {missing_examples}"
                 )
 
             assembled_df = merged_df
