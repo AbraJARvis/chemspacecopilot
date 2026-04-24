@@ -108,7 +108,7 @@ class TabICLBackend(PredictionBackend):
         ).expanduser()
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_path = checkpoint_dir / checkpoint_version
-        allow_auto_download = bool(extra_args.get("allow_auto_download", True))
+        allow_auto_download = bool(extra_args.get("allow_auto_download", False))
         return {
             "checkpoint_version": checkpoint_version,
             "checkpoint_dir": checkpoint_dir.resolve(),
@@ -294,6 +294,11 @@ class TabICLBackend(PredictionBackend):
 
         sanitized_args = self._sanitize_train_extra_args(extra_args)
         checkpoint_cfg = self._resolve_checkpoint_config(sanitized_args)
+        if not checkpoint_cfg["checkpoint_path"].exists():
+            raise InvalidPredictionInputError(
+                "TabICL checkpoint not found at the expected persistent path: "
+                f"{checkpoint_cfg['checkpoint_path']}. Provision this checkpoint before training."
+            )
         split_sizes = _coerce_split_sizes(sanitized_args.pop("split_sizes", None))
         random_state = int(sanitized_args.get("random_state", 42))
         split_type = str(sanitized_args.get("split_type", "random"))
@@ -336,7 +341,7 @@ class TabICLBackend(PredictionBackend):
         y_test = test_df[target_column].astype(float).copy()
 
         TabICLRegressor = self._import_tabicl_regressor()
-        model_path_arg = str(checkpoint_cfg["checkpoint_path"]) if checkpoint_cfg["checkpoint_path"].exists() else None
+        model_path_arg = str(checkpoint_cfg["checkpoint_path"])
         init_kwargs = {
             "model_path": model_path_arg,
             "allow_auto_download": checkpoint_cfg["allow_auto_download"],

@@ -48,7 +48,7 @@ class TabICLToolkit(Toolkit):
                 "notes": [
                     "V1 supports regression only.",
                     "V1 expects a pre-built tabular dataset with numeric feature columns.",
-                    "Checkpoint auto-download is allowed, but checkpoints should persist locally across runs.",
+                    "V1 expects the TabICL checkpoint to be provisioned in the persistent local checkpoint directory.",
                 ],
             }
         )
