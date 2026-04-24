@@ -30,6 +30,7 @@ from .backend import PredictionModelRecord, PredictionTaskSpec
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
 from .chemprop_backend import ChempropBackend
 from .qsar_plots import build_qsar_training_plots
+from .tabicl_backend import TabICLBackend
 
 QSAR_HARDEST_SPLIT_R2_MIN = 0.70
 QSAR_ROBUSTNESS_DELTA_R2_MIN = -0.10
@@ -179,8 +180,10 @@ class ChempropToolkit(Toolkit):
     def __init__(self, backend: Optional[ChempropBackend] = None):
         super().__init__("chemprop_prediction")
         primary_backend = backend or ChempropBackend()
+        tabicl_backend = TabICLBackend()
         self.backends = {
             primary_backend.backend_name: primary_backend,
+            tabicl_backend.backend_name: tabicl_backend,
         }
         self.backend = primary_backend
         self.catalog = PredictionModelCatalog.load()
@@ -1449,8 +1452,13 @@ class ChempropToolkit(Toolkit):
         summary_payload: Dict[str, Any] = {}
         summary_path: Optional[Path] = None
         if matching_training_run:
-            summary_path = Path(matching_training_run.get("output_dir", "")).expanduser() / "cs_copilot_training_summary.json"
-            if summary_path.exists():
+            output_dir = Path(matching_training_run.get("output_dir", "")).expanduser()
+            summary_candidates = [
+                output_dir / "cs_copilot_training_summary.json",
+                output_dir / "tabicl_training_summary.json",
+            ]
+            summary_path = next((path for path in summary_candidates if path.exists()), None)
+            if summary_path is not None and summary_path.exists():
                 try:
                     summary_payload = json.loads(summary_path.read_text())
                     applicability_domain = summary_payload.get("applicability_domain") or {}

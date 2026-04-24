@@ -10,9 +10,11 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
 from .backend import PredictionTaskSpec
+from .chemprop_toolkit import _get_prediction_state
 from .tabicl_backend import (
     DEFAULT_TABICL_CHECKPOINT_DIR,
     DEFAULT_TABICL_REGRESSOR_CHECKPOINT,
@@ -97,6 +99,7 @@ class TabICLToolkit(Toolkit):
         split_sizes: Optional[List[float] | str] = None,
         random_state: int = 42,
         extra_args: Optional[Dict[str, Any]] = None,
+        agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Train a TabICLv2 regressor on a prepared tabular QSAR dataset."""
         if isinstance(target_columns, str):
@@ -127,12 +130,34 @@ class TabICLToolkit(Toolkit):
             smiles_columns=["smiles"],
             target_columns=list(target_columns),
         )
-        return self.backend.train_model(
+        result = self.backend.train_model(
             train_csv=train_csv,
             output_dir=str(Path(output_dir).expanduser().resolve()),
             task=task,
             extra_args=merged_extra_args,
         )
+        if agent is not None:
+            prediction_state = _get_prediction_state(agent)
+            prediction_state["training_runs"].append(
+                {
+                    "train_csv": train_csv,
+                    "output_dir": result.get("output_dir"),
+                    "task_type": task_type,
+                    "smiles_columns": task.smiles_columns,
+                    "target_columns": task.target_columns,
+                    "validation_protocol": validation_protocol,
+                    "split_runs": [
+                        {
+                            "label": split_type,
+                            "strategy": split_type,
+                            "strategy_family": split_type,
+                            "output_dir": result.get("output_dir"),
+                            "seed": random_state,
+                        }
+                    ],
+                }
+            )
+        return result
 
     def predict_with_tabicl_from_csv(
         self,

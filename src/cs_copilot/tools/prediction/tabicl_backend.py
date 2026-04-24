@@ -417,6 +417,7 @@ class TabICLBackend(PredictionBackend):
 
         summary = {
             "backend_name": self.backend_name,
+            "train_csv": train_csv,
             "task_type": task.task_type,
             "target_column": target_column,
             "feature_columns": feature_columns,
@@ -443,6 +444,7 @@ class TabICLBackend(PredictionBackend):
             "backend_name": self.backend_name,
             "model_path": str(model_artifact_path),
             "output_dir": str(output_path),
+            "train_csv": train_csv,
             "checkpoint_version": checkpoint_cfg["checkpoint_version"],
             "checkpoint_path": persisted_checkpoint or str(checkpoint_path),
             "metrics": {"test": metrics},

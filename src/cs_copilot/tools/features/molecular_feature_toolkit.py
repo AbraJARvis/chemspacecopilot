@@ -26,6 +26,12 @@ def _resolve_output_csv(output_csv: Optional[str], input_csv: str, suffix: str) 
     return S3.path(f"features/{stem}{suffix}")
 
 
+def _ensure_parent_dir(path: str) -> None:
+    if str(path).startswith("s3://"):
+        return
+    Path(path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+
+
 def _feature_column_names(prefix: str, n_bits: int) -> List[str]:
     return [f"{prefix}{index:04d}" for index in range(n_bits)]
 
@@ -381,6 +387,7 @@ class MolecularFeatureToolkit(Toolkit):
             added_feature_columns.extend(non_join_columns)
 
         resolved_output_csv = _resolve_output_csv(output_csv, base_csv, "_tabular_qsar.csv")
+        _ensure_parent_dir(resolved_output_csv)
         with S3.open(resolved_output_csv, "w") as fh:
             assembled_df.to_csv(fh, index=False)
 

@@ -28,6 +28,12 @@ def _looks_like_json_path(path: object) -> bool:
     except Exception:
         return False
 
+
+def _ensure_parent_dir(path: object) -> None:
+    if not isinstance(path, str) or path.startswith("s3://"):
+        return
+    Path(path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+
 _OPERATION_ALIASES = {
     "summary": "describe",
     "stats": "describe",
@@ -328,14 +334,10 @@ class PointerPandasTools(PandasTools):
                 )
             try:
                 if _looks_like_json_path(path):
-                    with S3.open(path, "r") as fh:
-                        df = pd.read_json(fh)
-                    self.dataframes[dataframe_name] = df
-                    logger.warning(
-                        "create_pandas_dataframe(read_csv=...) received JSON path %s; auto-loaded with read_json instead.",
-                        path,
+                    raise ValueError(
+                        "JSON artifacts should not be loaded with create_pandas_dataframe(read_csv=...). "
+                        f"Use a JSON-aware tool or inspect the artifact path directly: {path}"
                     )
-                    return {"dataframe_name": dataframe_name, "preview": _preview(df)}
                 with S3.open(path, "r") as fh:
                     df = pd.read_csv(fh, **params)
                 self.dataframes[dataframe_name] = df
@@ -512,6 +514,7 @@ class PointerPandasTools(PandasTools):
                 return df.to_csv(**params)
             try:
                 # pandas decides newline/encoding; we just provide a text handle
+                _ensure_parent_dir(path)
                 with S3.open(path, "w") as fh:
                     result = df.to_csv(fh, **params)
                 logger.info(f"Successfully wrote CSV to {path}")
