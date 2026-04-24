@@ -49,6 +49,8 @@ class TabICLToolkit(Toolkit):
                     "V1 supports regression only.",
                     "V1 expects a pre-built tabular dataset with numeric feature columns.",
                     "V1 expects the TabICL checkpoint to be provisioned in the persistent local checkpoint directory.",
+                    "The `.ckpt` checkpoint is a backend resource, not a trained model artifact.",
+                    "`validate_model_path` is intended for saved trained models such as `.pkl`, not for the base TabICL checkpoint.",
                 ],
             }
         )
