@@ -1,0 +1,530 @@
+#!/usr/bin/env python
+# coding: utf-8
+"""
+Shared QSAR training policy helpers used by multiple prediction backends.
+"""
+
+from __future__ import annotations
+
+import math
+import os
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
+
+import torch
+
+QSAR_HARDEST_SPLIT_R2_MIN = 0.70
+QSAR_ROBUSTNESS_DELTA_R2_MIN = -0.10
+QSAR_ROBUSTNESS_DELTA_RMSE_MAX = 0.15
+QSAR_RANDOM_STABILITY_R2_STD_MAX = 0.03
+PROJECT_TIMEZONE = ZoneInfo("Europe/Paris")
+
+
+def project_now() -> datetime:
+    return datetime.now(PROJECT_TIMEZONE)
+
+
+def coerce_project_timezone(value: Optional[str]) -> datetime:
+    if not value:
+        return project_now()
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=PROJECT_TIMEZONE)
+    return parsed.astimezone(PROJECT_TIMEZONE)
+
+
+def safe_slug(value: str) -> str:
+    return "".join(ch if ch.isalnum() else "_" for ch in value.strip().lower()).strip("_")
+
+
+def detect_memory_limit_bytes() -> Optional[int]:
+    candidates = [
+        Path("/sys/fs/cgroup/memory.max"),
+        Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            raw = path.read_text().strip()
+            if not raw or raw == "max":
+                continue
+            value = int(raw)
+            if value <= 0 or value > 1 << 60:
+                continue
+            return value
+        except Exception:
+            continue
+    return None
+
+
+def detect_physical_memory_bytes() -> Optional[int]:
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        page_count = os.sysconf("SC_PHYS_PAGES")
+        if (
+            isinstance(page_size, int)
+            and isinstance(page_count, int)
+            and page_size > 0
+            and page_count > 0
+        ):
+            return page_size * page_count
+    except Exception:
+        return None
+    return None
+
+
+def detect_disk_usage(base_path: Optional[Path] = None) -> Dict[str, Optional[float]]:
+    target = (base_path or Path.cwd()).resolve()
+    try:
+        stats = os.statvfs(target)
+        total = stats.f_frsize * stats.f_blocks
+        free = stats.f_frsize * stats.f_bavail
+        return {
+            "disk_gb_total": round(total / (1024**3), 2),
+            "disk_gb_free": round(free / (1024**3), 2),
+        }
+    except Exception:
+        return {"disk_gb_total": None, "disk_gb_free": None}
+
+
+def describe_compute_environment() -> Dict[str, Any]:
+    cpu_count = os.cpu_count() or 1
+    memory_limit_bytes = detect_memory_limit_bytes()
+    physical_memory_bytes = detect_physical_memory_bytes()
+    memory_bytes_total = memory_limit_bytes or physical_memory_bytes
+    memory_gb_total = round(memory_bytes_total / (1024**3), 2) if memory_bytes_total else None
+    try:
+        gpu_available = bool(torch.cuda.is_available())
+        gpu_count = torch.cuda.device_count() if gpu_available else 0
+        gpu_name = torch.cuda.get_device_name(0) if gpu_available and gpu_count > 0 else None
+    except Exception:
+        gpu_available = bool(
+            os.getenv("CUDA_VISIBLE_DEVICES")
+            and os.getenv("CUDA_VISIBLE_DEVICES", "").strip() not in {"", "-1"}
+        )
+        gpu_count = 0
+        gpu_name = None
+
+    if Path("/.dockerenv").exists():
+        execution_env = "docker_local"
+    elif (
+        Path("/.singularity.d").exists()
+        or os.getenv("APPTAINER_NAME")
+        or os.getenv("SINGULARITY_NAME")
+    ):
+        execution_env = "apptainer_local"
+    else:
+        execution_env = "local"
+
+    disk_usage = detect_disk_usage()
+    profile = resolve_training_profile(
+        {
+            "cpu_count": cpu_count,
+            "memory_gb_total": memory_gb_total,
+            "gpu_available": gpu_available,
+            "execution_env": execution_env,
+        }
+    )
+    return {
+        "execution_env": execution_env,
+        "cpu_count": cpu_count,
+        "memory_gb_total": memory_gb_total,
+        "memory_source": (
+            "cgroup_limit"
+            if memory_limit_bytes
+            else "physical_host"
+            if physical_memory_bytes
+            else None
+        ),
+        "gpu_available": gpu_available,
+        "gpu_count": gpu_count,
+        "gpu_name": gpu_name,
+        **disk_usage,
+        "suggested_profile": profile["profile"],
+        "profile_reason": profile["reason"],
+    }
+
+
+def resolve_training_profile(compute_env: Dict[str, Any]) -> Dict[str, Any]:
+    cpu_count = int(compute_env.get("cpu_count") or 1)
+    memory_gb_total = compute_env.get("memory_gb_total")
+    gpu_available = bool(compute_env.get("gpu_available"))
+    execution_env = compute_env.get("execution_env") or "local"
+
+    if not gpu_available and execution_env == "docker_local":
+        if memory_gb_total is None and cpu_count <= 8:
+            return {
+                "profile": "local_light",
+                "reason": "CPU-only Docker environment on a modest local machine; defaulting to the safest single-run profile.",
+            }
+        if memory_gb_total is not None and memory_gb_total <= 8.5 and cpu_count <= 8:
+            return {
+                "profile": "local_light",
+                "reason": "CPU-only Docker environment with limited RAM; using a conservative single-run configuration.",
+            }
+        if memory_gb_total is not None and memory_gb_total <= 16 and cpu_count <= 12:
+            return {
+                "profile": "local_standard",
+                "reason": "CPU-only local environment; using a moderate single-run configuration.",
+            }
+
+    if gpu_available:
+        return {
+            "profile": "heavy_validation",
+            "reason": "GPU detected; heavier validation settings are acceptable.",
+        }
+
+    return {
+        "profile": "local_standard",
+        "reason": "Defaulting to a moderate single-run local profile.",
+    }
+
+
+def resolve_validation_protocol(
+    *,
+    requested_protocol: Optional[str],
+    training_profile: str,
+) -> Dict[str, Any]:
+    protocol = (requested_protocol or "").strip().lower()
+    if not protocol:
+        if training_profile == "local_light":
+            protocol = "fast_local"
+        elif training_profile == "heavy_validation":
+            protocol = "robust_qsar"
+        else:
+            protocol = "standard_qsar"
+
+    if protocol == "fast_local":
+        return {
+            "protocol": "fast_local",
+            "reason": "Single random split optimized for quick local iteration.",
+            "split_runs": [
+                {"label": "random", "backend_split_type": "random", "seed": 42, "primary": True}
+            ],
+        }
+
+    if protocol == "standard_qsar":
+        return {
+            "protocol": "standard_qsar",
+            "reason": "Trustworthy QSAR default: compare a conventional random split against a scaffold-aware split.",
+            "split_runs": [
+                {"label": "random", "backend_split_type": "random", "seed": 42, "primary": True},
+                {
+                    "label": "scaffold",
+                    "backend_split_type": "scaffold_balanced",
+                    "seed": 42,
+                    "primary": False,
+                },
+            ],
+        }
+
+    if protocol == "robust_qsar":
+        return {
+            "protocol": "robust_qsar",
+            "reason": "Robust validation protocol using multiple random seeds plus one scaffold split.",
+            "split_runs": [
+                {
+                    "label": "random_seed_42",
+                    "backend_split_type": "random",
+                    "seed": 42,
+                    "primary": True,
+                },
+                {
+                    "label": "random_seed_123",
+                    "backend_split_type": "random",
+                    "seed": 123,
+                    "primary": False,
+                },
+                {
+                    "label": "random_seed_314",
+                    "backend_split_type": "random",
+                    "seed": 314,
+                    "primary": False,
+                },
+                {
+                    "label": "scaffold",
+                    "backend_split_type": "scaffold_balanced",
+                    "seed": 42,
+                    "primary": False,
+                },
+            ],
+        }
+
+    if protocol == "challenging_qsar":
+        return {
+            "protocol": "challenging_qsar",
+            "reason": "Challenging validation protocol comparing random, scaffold-aware, and cluster-aware splits to reduce optimistic estimates.",
+            "split_runs": [
+                {"label": "random", "backend_split_type": "random", "seed": 42, "primary": True},
+                {
+                    "label": "scaffold",
+                    "backend_split_type": "scaffold_balanced",
+                    "seed": 42,
+                    "primary": False,
+                },
+                {
+                    "label": "cluster_kmeans",
+                    "backend_split_type": "kmeans",
+                    "seed": 42,
+                    "primary": False,
+                },
+            ],
+        }
+
+    return {
+        "protocol": "fast_local" if training_profile == "local_light" else "standard_qsar",
+        "reason": f"Unknown validation protocol `{requested_protocol}`; falling back to a safe default.",
+        "split_runs": [
+            {"label": "random", "backend_split_type": "random", "seed": 42, "primary": True}
+        ],
+    }
+
+
+def summarize_training_durations(
+    *,
+    split_results: List[Dict[str, Any]],
+    total_started_at: datetime,
+    total_completed_at: datetime,
+) -> Dict[str, Any]:
+    split_durations: List[Dict[str, Any]] = []
+    for item in split_results:
+        split_durations.append(
+            {
+                "label": item.get("strategy_label"),
+                "strategy_family": item.get("strategy_family"),
+                "started_at": item.get("started_at"),
+                "completed_at": item.get("completed_at"),
+                "duration_seconds": item.get("duration_seconds"),
+            }
+        )
+
+    return {
+        "total_started_at": total_started_at.isoformat(),
+        "total_completed_at": total_completed_at.isoformat(),
+        "total_duration_seconds": round((total_completed_at - total_started_at).total_seconds(), 3),
+        "split_durations": split_durations,
+    }
+
+
+def aggregate_split_families(split_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    families: Dict[str, List[Dict[str, Any]]] = {}
+    for item in split_results:
+        family = item.get("strategy_family") or item.get("strategy")
+        metrics = ((item.get("metrics") or {}).get("test") or {})
+        if not family or not metrics:
+            continue
+        families.setdefault(family, []).append(item)
+
+    aggregated: Dict[str, Any] = {}
+    metric_names = ("mse", "mae", "rae", "rmse", "r2", "spearman", "kendall")
+    for family, items in families.items():
+        entry: Dict[str, Any] = {
+            "family": family,
+            "num_runs": len(items),
+            "strategy_labels": [item.get("strategy_label") for item in items],
+            "runs": [],
+            "test_n_values": [],
+        }
+        for item in items:
+            metrics = ((item.get("metrics") or {}).get("test") or {})
+            entry["runs"].append(
+                {"label": item.get("strategy_label"), "seed": item.get("seed"), "metrics": metrics}
+            )
+            if metrics.get("n") is not None:
+                entry["test_n_values"].append(metrics["n"])
+
+        for metric_name in metric_names:
+            values = [
+                float(((item.get("metrics") or {}).get("test") or {}).get(metric_name))
+                for item in items
+                if ((item.get("metrics") or {}).get("test") or {}).get(metric_name) is not None
+            ]
+            if not values:
+                continue
+            mean_value = sum(values) / len(values)
+            variance = (
+                sum((value - mean_value) ** 2 for value in values) / len(values)
+                if len(values) > 1
+                else 0.0
+            )
+            entry[f"{metric_name}_mean"] = mean_value
+            entry[f"{metric_name}_std"] = math.sqrt(variance)
+            if len(values) == 1:
+                entry[metric_name] = values[0]
+
+        if entry["test_n_values"]:
+            entry["test_n_mean"] = sum(entry["test_n_values"]) / len(entry["test_n_values"])
+        aggregated[family] = entry
+
+    return aggregated
+
+
+def assess_protocol_results(split_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    assessment: Dict[str, Any] = {
+        "robustness_warning": None,
+        "delta_vs_random": {},
+        "hardest_split": None,
+        "aggregated_split_metrics": {},
+        "governance": {
+            "recommended_status": "experimental",
+            "gates": {},
+            "passes_dataset_gate": True,
+            "passes_hardest_split_gate": False,
+            "passes_robustness_gate": False,
+            "hardest_split_metrics": {},
+            "gating_summary": [],
+        },
+    }
+    aggregated = aggregate_split_families(split_results)
+    assessment["aggregated_split_metrics"] = aggregated
+    random_family = aggregated.get("random")
+    if not random_family:
+        return assessment
+
+    random_r2 = random_family.get("r2_mean")
+    random_rmse = random_family.get("rmse_mean")
+    if random_r2 is None or random_rmse is None:
+        return assessment
+    hardest_name = None
+    hardest_r2 = None
+    hardest_rmse = None
+
+    for strategy_name, family_result in aggregated.items():
+        if strategy_name == "random":
+            continue
+        split_r2 = family_result.get("r2_mean")
+        split_rmse = family_result.get("rmse_mean")
+        if split_r2 is None and split_rmse is None:
+            continue
+
+        deltas: Dict[str, Any] = {}
+        if split_r2 is not None:
+            deltas["r2"] = split_r2 - random_r2
+        if split_rmse is not None:
+            deltas["rmse"] = split_rmse - random_rmse
+        assessment["delta_vs_random"][strategy_name] = deltas
+
+        if split_r2 is not None:
+            if hardest_r2 is None or split_r2 < hardest_r2:
+                hardest_name = strategy_name
+                hardest_r2 = split_r2
+                hardest_rmse = split_rmse
+
+    if hardest_name is not None:
+        assessment["hardest_split"] = hardest_name
+
+    warning_reasons: List[str] = []
+    for strategy_name, deltas in assessment["delta_vs_random"].items():
+        delta_r2 = deltas.get("r2")
+        delta_rmse = deltas.get("rmse")
+        if delta_r2 is not None and delta_r2 < QSAR_ROBUSTNESS_DELTA_R2_MIN:
+            warning_reasons.append(f"{strategy_name} split lowers R² by {abs(delta_r2):.3f} vs random")
+        if delta_rmse is not None and delta_rmse > QSAR_ROBUSTNESS_DELTA_RMSE_MAX:
+            warning_reasons.append(f"{strategy_name} split increases RMSE by {delta_rmse:.3f} vs random")
+
+    if warning_reasons:
+        assessment["robustness_warning"] = (
+            "Harder validation splits reveal a non-trivial performance drop: "
+            + "; ".join(warning_reasons)
+            + "."
+        )
+
+    governance = assessment["governance"]
+    hardest_result = aggregated.get(assessment["hardest_split"]) if assessment["hardest_split"] else None
+    hardest_metrics = {
+        "r2": (hardest_result or {}).get("r2_mean"),
+        "rmse": (hardest_result or {}).get("rmse_mean"),
+        "mae": (hardest_result or {}).get("mae_mean"),
+        "mse": (hardest_result or {}).get("mse_mean"),
+        "n": (hardest_result or {}).get("test_n_mean"),
+    }
+    governance["hardest_split_metrics"] = hardest_metrics
+
+    hardest_r2 = hardest_metrics.get("r2")
+    hardest_rmse = hardest_metrics.get("rmse")
+    hardest_pass = hardest_r2 is not None and hardest_r2 >= QSAR_HARDEST_SPLIT_R2_MIN
+    governance["passes_hardest_split_gate"] = hardest_pass
+
+    robustness_pass = not bool(warning_reasons)
+    governance["passes_robustness_gate"] = robustness_pass
+
+    summary: List[str] = []
+    if random_family.get("num_runs", 0) > 1:
+        summary.append(
+            f"Random stability: R² mean={random_family.get('r2_mean', 0):.3f} ± {random_family.get('r2_std', 0):.3f}"
+        )
+        summary.append(
+            f"Random stability: RMSE mean={random_family.get('rmse_mean', 0):.3f} ± {random_family.get('rmse_std', 0):.3f}"
+        )
+    if assessment["hardest_split"]:
+        summary.append(f"Hardest split: {assessment['hardest_split']}")
+    if hardest_r2 is not None:
+        summary.append(f"Hardest split R²={hardest_r2:.3f}")
+    if hardest_rmse is not None:
+        summary.append(f"Hardest split RMSE={hardest_rmse:.3f}")
+    summary.append("Hardest Split Gate: PASS" if hardest_pass else "Hardest Split Gate: FAIL")
+    summary.append("Robustness Gap Gate: PASS" if robustness_pass else "Robustness Gap Gate: FAIL")
+    governance["gating_summary"] = summary
+
+    random_stability_pass = True
+    random_r2_std = random_family.get("r2_std")
+    if random_family.get("num_runs", 0) > 1 and random_r2_std is not None and random_r2_std > QSAR_RANDOM_STABILITY_R2_STD_MAX:
+        random_stability_pass = False
+    governance["passes_random_stability_gate"] = random_stability_pass
+    if random_family.get("num_runs", 0) > 1:
+        summary.append("Random Stability Gate: PASS" if random_stability_pass else "Random Stability Gate: FAIL")
+
+    protocol_name = None
+    for item in split_results:
+        protocol_name = item.get("validation_protocol") or protocol_name
+
+    dataset_gate_pass = True
+    governance["passes_dataset_gate"] = dataset_gate_pass
+    governance["gates"] = {
+        "dataset_gate": {
+            "name": "Dataset Gate",
+            "pass": dataset_gate_pass,
+            "criteria": [
+                "real dataset source",
+                "completed curation",
+                "real split artifacts",
+                "checkpoint exists",
+                "real test metrics",
+                "applicability domain built",
+            ],
+        },
+        "hardest_split_gate": {
+            "name": "Hardest Split Gate",
+            "pass": hardest_pass,
+            "thresholds": {"r2_min": QSAR_HARDEST_SPLIT_R2_MIN},
+        },
+        "robustness_gap_gate": {
+            "name": "Robustness Gap Gate",
+            "pass": robustness_pass,
+            "thresholds": {
+                "delta_r2_min": QSAR_ROBUSTNESS_DELTA_R2_MIN,
+                "delta_rmse_max": QSAR_ROBUSTNESS_DELTA_RMSE_MAX,
+            },
+        },
+        "random_stability_gate": {
+            "name": "Random Stability Gate",
+            "pass": random_stability_pass,
+            "active": random_family.get("num_runs", 0) > 1,
+            "thresholds": {"r2_std_max": QSAR_RANDOM_STABILITY_R2_STD_MAX},
+        },
+    }
+
+    if not dataset_gate_pass:
+        governance["recommended_status"] = "experimental"
+    elif not hardest_pass or not robustness_pass:
+        governance["recommended_status"] = "workflow_demo"
+    elif protocol_name == "robust_qsar":
+        governance["recommended_status"] = "robust_validated" if random_stability_pass else "workflow_demo"
+    elif protocol_name in {"standard_qsar", "challenging_qsar"}:
+        governance["recommended_status"] = "validated"
+    else:
+        governance["recommended_status"] = "experimental"
+    return assessment

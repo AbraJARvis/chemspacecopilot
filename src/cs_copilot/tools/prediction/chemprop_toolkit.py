@@ -7,14 +7,12 @@ Toolkit for model registration, prediction, and future Chemprop training flows.
 from __future__ import annotations
 
 import json
-import math
 import os
 import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zipfile import ZIP_DEFLATED, ZipFile
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 import torch
@@ -29,28 +27,20 @@ from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionModelRecord, PredictionTaskSpec
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
 from .chemprop_backend import ChempropBackend
+from .qsar_training_policy import (
+    QSAR_HARDEST_SPLIT_R2_MIN,
+    QSAR_RANDOM_STABILITY_R2_STD_MAX,
+    assess_protocol_results,
+    coerce_project_timezone,
+    describe_compute_environment,
+    project_now,
+    resolve_training_profile,
+    resolve_validation_protocol,
+    safe_slug,
+    summarize_training_durations,
+)
 from .qsar_plots import build_qsar_training_plots
 from .tabicl_backend import TabICLBackend
-
-QSAR_HARDEST_SPLIT_R2_MIN = 0.70
-QSAR_ROBUSTNESS_DELTA_R2_MIN = -0.10
-QSAR_ROBUSTNESS_DELTA_RMSE_MAX = 0.15
-QSAR_RANDOM_STABILITY_R2_STD_MAX = 0.03
-PROJECT_TIMEZONE = ZoneInfo("Europe/Paris")
-
-
-def _project_now() -> datetime:
-    return datetime.now(PROJECT_TIMEZONE)
-
-
-def _coerce_project_timezone(value: Optional[str]) -> datetime:
-    if not value:
-        return _project_now()
-    parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=PROJECT_TIMEZONE)
-    return parsed.astimezone(PROJECT_TIMEZONE)
-
 
 def _get_prediction_state(agent: Agent) -> Dict[str, Any]:
     state = agent.session_state.setdefault("prediction_models", {})
@@ -86,10 +76,6 @@ def _relative_posix(path: Path, start: Path) -> str:
     return path.relative_to(start).as_posix()
 
 
-def _safe_slug(value: str) -> str:
-    return "".join(ch if ch.isalnum() else "_" for ch in value.strip().lower()).strip("_")
-
-
 def _safe_display_token(value: str) -> str:
     token = value.replace("_", " ").strip()
     return " ".join(part.capitalize() for part in token.split())
@@ -109,9 +95,9 @@ def _extract_endpoint_and_dataset(train_csv: Optional[str], fallback_model_id: s
         endpoint = parts[0]
         dataset = "dataset"
     else:
-        endpoint = _safe_slug(fallback_model_id) or "endpoint"
+        endpoint = safe_slug(fallback_model_id) or "endpoint"
         dataset = "dataset"
-    return _safe_slug(endpoint) or "endpoint", _safe_slug(dataset) or "dataset"
+    return safe_slug(endpoint) or "endpoint", safe_slug(dataset) or "dataset"
 
 
 def _canonical_model_id(
@@ -128,11 +114,11 @@ def _canonical_model_id(
     time_token = trained_at.strftime("%H%M%S")
     return "_".join(
         [
-            _safe_slug(endpoint),
-            _safe_slug(dataset),
-            _safe_slug(protocol),
-            _safe_slug(backend),
-            _safe_slug(version_token),
+            safe_slug(endpoint),
+            safe_slug(dataset),
+            safe_slug(protocol),
+            safe_slug(backend),
+            safe_slug(version_token),
             date_token,
             time_token,
         ]
@@ -280,92 +266,10 @@ class ChempropToolkit(Toolkit):
 
     def describe_compute_environment(self) -> Dict[str, Any]:
         """Describe the local compute budget used to choose safe training defaults."""
-        cpu_count = os.cpu_count() or 1
-        memory_limit_bytes = self._detect_memory_limit_bytes()
-        physical_memory_bytes = self._detect_physical_memory_bytes()
-        memory_bytes_total = memory_limit_bytes or physical_memory_bytes
-        memory_gb_total = round(memory_bytes_total / (1024**3), 2) if memory_bytes_total else None
-        try:
-            gpu_available = bool(torch.cuda.is_available())
-            gpu_count = torch.cuda.device_count() if gpu_available else 0
-            gpu_name = torch.cuda.get_device_name(0) if gpu_available and gpu_count > 0 else None
-        except Exception:
-            gpu_available = bool(
-                os.getenv("CUDA_VISIBLE_DEVICES")
-                and os.getenv("CUDA_VISIBLE_DEVICES", "").strip() not in {"", "-1"}
-            )
-            gpu_count = 0
-            gpu_name = None
-
-        if Path("/.dockerenv").exists():
-            execution_env = "docker_local"
-        elif Path("/.singularity.d").exists() or os.getenv("APPTAINER_NAME") or os.getenv("SINGULARITY_NAME"):
-            execution_env = "apptainer_local"
-        else:
-            execution_env = "local"
-
-        disk_usage = self._detect_disk_usage()
-
-        profile = self._resolve_training_profile(
-            {
-                "cpu_count": cpu_count,
-                "memory_gb_total": memory_gb_total,
-                "gpu_available": gpu_available,
-                "execution_env": execution_env,
-            }
-        )
-        return {
-            "execution_env": execution_env,
-            "cpu_count": cpu_count,
-            "memory_gb_total": memory_gb_total,
-            "memory_source": (
-                "cgroup_limit"
-                if memory_limit_bytes
-                else "physical_host"
-                if physical_memory_bytes
-                else None
-            ),
-            "gpu_available": gpu_available,
-            "gpu_count": gpu_count,
-            "gpu_name": gpu_name,
-            **disk_usage,
-            "suggested_profile": profile["profile"],
-            "profile_reason": profile["reason"],
-        }
+        return describe_compute_environment()
 
     def _resolve_training_profile(self, compute_env: Dict[str, Any]) -> Dict[str, Any]:
-        cpu_count = int(compute_env.get("cpu_count") or 1)
-        memory_gb_total = compute_env.get("memory_gb_total")
-        gpu_available = bool(compute_env.get("gpu_available"))
-        execution_env = compute_env.get("execution_env") or "local"
-
-        if not gpu_available and execution_env == "docker_local":
-            if memory_gb_total is None and cpu_count <= 8:
-                return {
-                    "profile": "local_light",
-                    "reason": "CPU-only Docker environment on a modest local machine; defaulting to the safest single-run profile.",
-                }
-            if memory_gb_total is not None and memory_gb_total <= 8.5 and cpu_count <= 8:
-                return {
-                    "profile": "local_light",
-                    "reason": "CPU-only Docker environment with limited RAM; using a conservative single-run configuration.",
-                }
-            if memory_gb_total is not None and memory_gb_total <= 16 and cpu_count <= 12:
-                return {
-                    "profile": "local_standard",
-                    "reason": "CPU-only local environment; using a moderate single-run configuration.",
-                }
-
-        if gpu_available:
-            return {
-                "profile": "heavy_validation",
-                "reason": "GPU detected; heavier validation settings are acceptable.",
-            }
-
-        return {
-            "profile": "local_standard",
-            "reason": "Defaulting to a moderate single-run local profile.",
-        }
+        return resolve_training_profile(compute_env)
 
     def _training_defaults_for_profile(self, profile: str) -> Dict[str, Any]:
         if profile == "local_light":
@@ -470,124 +374,10 @@ class ChempropToolkit(Toolkit):
         requested_protocol: Optional[str],
         training_profile: str,
     ) -> Dict[str, Any]:
-        protocol = (requested_protocol or "").strip().lower()
-        if not protocol:
-            protocol = "standard_qsar"
-
-        if protocol == "fast_local":
-            return {
-                "protocol": "fast_local",
-                "reason": "Single random split optimized for quick local iteration.",
-                "split_runs": [
-                    {
-                        "label": "random",
-                        "backend_split_type": "random",
-                        "seed": 42,
-                        "primary": True,
-                    }
-                ],
-            }
-
-        if protocol == "standard_qsar":
-            return {
-                "protocol": "standard_qsar",
-                "reason": (
-                    "Trustworthy QSAR default: compare a conventional random split against "
-                    "a scaffold-aware split."
-                ),
-                "split_runs": [
-                    {
-                        "label": "random",
-                        "backend_split_type": "random",
-                        "seed": 42,
-                        "primary": True,
-                    },
-                    {
-                        "label": "scaffold",
-                        "backend_split_type": "scaffold_balanced",
-                        "seed": 42,
-                        "primary": False,
-                    },
-                ],
-            }
-
-        if protocol == "robust_qsar":
-            return {
-                "protocol": "robust_qsar",
-                "reason": (
-                    "Robust validation protocol using multiple random seeds plus one scaffold split."
-                ),
-                "split_runs": [
-                    {
-                        "label": "random_seed_42",
-                        "backend_split_type": "random",
-                        "seed": 42,
-                        "primary": True,
-                    },
-                    {
-                        "label": "random_seed_123",
-                        "backend_split_type": "random",
-                        "seed": 123,
-                        "primary": False,
-                    },
-                    {
-                        "label": "random_seed_314",
-                        "backend_split_type": "random",
-                        "seed": 314,
-                        "primary": False,
-                    },
-                    {
-                        "label": "scaffold",
-                        "backend_split_type": "scaffold_balanced",
-                        "seed": 42,
-                        "primary": False,
-                    },
-                ],
-            }
-
-        if protocol == "challenging_qsar":
-            return {
-                "protocol": "challenging_qsar",
-                "reason": (
-                    "Challenging validation protocol comparing random, scaffold-aware, and "
-                    "cluster-aware splits to reduce optimistic estimates."
-                ),
-                "split_runs": [
-                    {
-                        "label": "random",
-                        "backend_split_type": "random",
-                        "seed": 42,
-                        "primary": True,
-                    },
-                    {
-                        "label": "scaffold",
-                        "backend_split_type": "scaffold_balanced",
-                        "seed": 42,
-                        "primary": False,
-                    },
-                    {
-                        "label": "cluster_kmeans",
-                        "backend_split_type": "kmeans",
-                        "seed": 42,
-                        "primary": False,
-                    },
-                ],
-            }
-
-        return {
-            "protocol": "fast_local" if training_profile == "local_light" else "standard_qsar",
-            "reason": (
-                f"Unknown validation protocol `{requested_protocol}`; falling back to a safe default."
-            ),
-            "split_runs": [
-                {
-                    "label": "random",
-                    "backend_split_type": "random",
-                    "seed": 42,
-                    "primary": True,
-                }
-            ],
-        }
+        return resolve_validation_protocol(
+            requested_protocol=requested_protocol,
+            training_profile=training_profile,
+        )
 
     def _train_single_run(
         self,
@@ -655,24 +445,11 @@ class ChempropToolkit(Toolkit):
         total_started_at: datetime,
         total_completed_at: datetime,
     ) -> Dict[str, Any]:
-        split_durations: List[Dict[str, Any]] = []
-        for item in split_results:
-            split_durations.append(
-                {
-                    "label": item.get("strategy_label"),
-                    "strategy_family": item.get("strategy_family"),
-                    "started_at": item.get("started_at"),
-                    "completed_at": item.get("completed_at"),
-                    "duration_seconds": item.get("duration_seconds"),
-                }
-            )
-
-        return {
-            "total_started_at": total_started_at.isoformat(),
-            "total_completed_at": total_completed_at.isoformat(),
-            "total_duration_seconds": round((total_completed_at - total_started_at).total_seconds(), 3),
-            "split_durations": split_durations,
-        }
+        return summarize_training_durations(
+            split_results=split_results,
+            total_started_at=total_started_at,
+            total_completed_at=total_completed_at,
+        )
 
     def _aggregate_split_families(self, split_results: List[Dict[str, Any]]) -> Dict[str, Any]:
         families: Dict[str, List[Dict[str, Any]]] = {}
@@ -731,189 +508,7 @@ class ChempropToolkit(Toolkit):
         return aggregated
 
     def _assess_protocol_results(self, split_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        assessment: Dict[str, Any] = {
-            "robustness_warning": None,
-            "delta_vs_random": {},
-            "hardest_split": None,
-            "aggregated_split_metrics": {},
-            "governance": {
-                "recommended_status": "experimental",
-                "gates": {},
-                "passes_dataset_gate": True,
-                "passes_hardest_split_gate": False,
-                "passes_robustness_gate": False,
-                "hardest_split_metrics": {},
-                "gating_summary": [],
-            },
-        }
-        aggregated = self._aggregate_split_families(split_results)
-        assessment["aggregated_split_metrics"] = aggregated
-        random_family = aggregated.get("random")
-        if not random_family:
-            return assessment
-
-        random_r2 = random_family.get("r2_mean")
-        random_rmse = random_family.get("rmse_mean")
-        if random_r2 is None or random_rmse is None:
-            return assessment
-        hardest_name = None
-        hardest_r2 = None
-        hardest_rmse = None
-
-        for strategy_name, family_result in aggregated.items():
-            if strategy_name == "random":
-                continue
-            split_r2 = family_result.get("r2_mean")
-            split_rmse = family_result.get("rmse_mean")
-            if split_r2 is None and split_rmse is None:
-                continue
-
-            deltas: Dict[str, Any] = {}
-            if split_r2 is not None:
-                deltas["r2"] = split_r2 - random_r2
-            if split_rmse is not None:
-                deltas["rmse"] = split_rmse - random_rmse
-            assessment["delta_vs_random"][strategy_name] = deltas
-
-            if split_r2 is not None:
-                if hardest_r2 is None or split_r2 < hardest_r2:
-                    hardest_name = strategy_name
-                    hardest_r2 = split_r2
-                    hardest_rmse = split_rmse
-
-        if hardest_name is not None:
-            assessment["hardest_split"] = hardest_name
-
-        warning_reasons: List[str] = []
-        for strategy_name, deltas in assessment["delta_vs_random"].items():
-            delta_r2 = deltas.get("r2")
-            delta_rmse = deltas.get("rmse")
-            if delta_r2 is not None and delta_r2 < QSAR_ROBUSTNESS_DELTA_R2_MIN:
-                warning_reasons.append(
-                    f"{strategy_name} split lowers R² by {abs(delta_r2):.3f} vs random"
-                )
-            if delta_rmse is not None and delta_rmse > QSAR_ROBUSTNESS_DELTA_RMSE_MAX:
-                warning_reasons.append(
-                    f"{strategy_name} split increases RMSE by {delta_rmse:.3f} vs random"
-                )
-
-        if warning_reasons:
-            assessment["robustness_warning"] = (
-                "Harder validation splits reveal a non-trivial performance drop: "
-                + "; ".join(warning_reasons)
-                + "."
-            )
-
-        governance = assessment["governance"]
-        hardest_result = aggregated.get(assessment["hardest_split"]) if assessment["hardest_split"] else None
-        hardest_metrics = {
-            "r2": (hardest_result or {}).get("r2_mean"),
-            "rmse": (hardest_result or {}).get("rmse_mean"),
-            "mae": (hardest_result or {}).get("mae_mean"),
-            "mse": (hardest_result or {}).get("mse_mean"),
-            "n": (hardest_result or {}).get("test_n_mean"),
-        }
-        governance["hardest_split_metrics"] = hardest_metrics
-
-        hardest_r2 = hardest_metrics.get("r2")
-        hardest_rmse = hardest_metrics.get("rmse")
-        hardest_pass = (
-            hardest_r2 is not None
-            and hardest_r2 >= QSAR_HARDEST_SPLIT_R2_MIN
-        )
-        governance["passes_hardest_split_gate"] = hardest_pass
-
-        robustness_pass = not bool(warning_reasons)
-        governance["passes_robustness_gate"] = robustness_pass
-
-        summary: List[str] = []
-        if random_family.get("num_runs", 0) > 1:
-            summary.append(
-                f"Random stability: R² mean={random_family.get('r2_mean', 0):.3f} ± {random_family.get('r2_std', 0):.3f}"
-            )
-            summary.append(
-                f"Random stability: RMSE mean={random_family.get('rmse_mean', 0):.3f} ± {random_family.get('rmse_std', 0):.3f}"
-            )
-        if assessment["hardest_split"]:
-            summary.append(f"Hardest split: {assessment['hardest_split']}")
-        if hardest_r2 is not None:
-            summary.append(f"Hardest split R²={hardest_r2:.3f}")
-        if hardest_rmse is not None:
-            summary.append(f"Hardest split RMSE={hardest_rmse:.3f}")
-        summary.append(
-            "Hardest Split Gate: PASS" if hardest_pass else "Hardest Split Gate: FAIL"
-        )
-        summary.append(
-            "Robustness Gap Gate: PASS" if robustness_pass else "Robustness Gap Gate: FAIL"
-        )
-        governance["gating_summary"] = summary
-
-        validation_strategies = set(aggregated.keys())
-        random_stability_pass = True
-        random_r2_std = random_family.get("r2_std")
-        random_rmse_std = random_family.get("rmse_std")
-        if random_family.get("num_runs", 0) > 1:
-            if random_r2_std is not None and random_r2_std > QSAR_RANDOM_STABILITY_R2_STD_MAX:
-                random_stability_pass = False
-        governance["passes_random_stability_gate"] = random_stability_pass
-        if random_family.get("num_runs", 0) > 1:
-            summary.append(
-                "Random Stability Gate: PASS" if random_stability_pass else "Random Stability Gate: FAIL"
-            )
-
-        protocol_name = None
-        for item in split_results:
-            protocol_name = item.get("validation_protocol") or protocol_name
-
-        dataset_gate_pass = True
-        governance["passes_dataset_gate"] = dataset_gate_pass
-        governance["gates"] = {
-            "dataset_gate": {
-                "name": "Dataset Gate",
-                "pass": dataset_gate_pass,
-                "criteria": [
-                    "real dataset source",
-                    "completed curation",
-                    "real split artifacts",
-                    "checkpoint exists",
-                    "real test metrics",
-                    "applicability domain built",
-                ],
-            },
-            "hardest_split_gate": {
-                "name": "Hardest Split Gate",
-                "pass": hardest_pass,
-                "thresholds": {"r2_min": QSAR_HARDEST_SPLIT_R2_MIN},
-            },
-            "robustness_gap_gate": {
-                "name": "Robustness Gap Gate",
-                "pass": robustness_pass,
-                "thresholds": {
-                    "delta_r2_min": QSAR_ROBUSTNESS_DELTA_R2_MIN,
-                    "delta_rmse_max": QSAR_ROBUSTNESS_DELTA_RMSE_MAX,
-                },
-            },
-            "random_stability_gate": {
-                "name": "Random Stability Gate",
-                "pass": random_stability_pass,
-                "active": random_family.get("num_runs", 0) > 1,
-                "thresholds": {"r2_std_max": QSAR_RANDOM_STABILITY_R2_STD_MAX},
-            },
-        }
-
-        if not dataset_gate_pass:
-            governance["recommended_status"] = "experimental"
-        elif not hardest_pass or not robustness_pass:
-            governance["recommended_status"] = "workflow_demo"
-        elif protocol_name == "robust_qsar":
-            governance["recommended_status"] = (
-                "robust_validated" if random_stability_pass else "workflow_demo"
-            )
-        elif protocol_name in {"standard_qsar", "challenging_qsar"}:
-            governance["recommended_status"] = "validated"
-        else:
-            governance["recommended_status"] = "experimental"
-        return assessment
+        return assess_protocol_results(split_results)
 
     def _materialize_primary_protocol_artifacts(
         self,
@@ -1490,9 +1085,9 @@ class ChempropToolkit(Toolkit):
         resolved_version = version or current.version or "1"
         trained_at_raw = summary_payload.get("trained_at")
         try:
-            trained_at = _coerce_project_timezone(trained_at_raw)
+            trained_at = coerce_project_timezone(trained_at_raw)
         except Exception:
-            trained_at = _project_now()
+            trained_at = project_now()
         train_csv_for_name = train_csv or summary_payload.get("train_csv") or current.source
         endpoint_name, dataset_name = _extract_endpoint_and_dataset(train_csv_for_name, current.model_id)
         protocol_name = (
@@ -1993,7 +1588,7 @@ class ChempropToolkit(Toolkit):
         resolved_output_dir = str(Path(output_dir).expanduser().resolve())
         root_output_path = Path(resolved_output_dir)
         active_marker_path = root_output_path / ".training_in_progress"
-        trained_at = _project_now()
+        trained_at = project_now()
         training_policy = self._apply_training_profile(extra_args)
         protocol_policy = self._resolve_validation_protocol(
             requested_protocol=training_policy.get("validation_protocol"),
@@ -2029,7 +1624,7 @@ class ChempropToolkit(Toolkit):
         split_results: List[Dict[str, Any]] = []
         primary_run: Optional[Dict[str, Any]] = None
         primary_output_dir: Optional[Path] = None
-        total_started_at = _project_now()
+        total_started_at = project_now()
 
         multi_run_protocol = len(protocol_policy["split_runs"]) > 1
 
@@ -2037,7 +1632,7 @@ class ChempropToolkit(Toolkit):
             for split_run in protocol_policy["split_runs"]:
                 label = split_run["label"]
                 run_output_dir = (
-                    root_output_path / f"{_safe_slug(label)}_split"
+                    root_output_path / f"{safe_slug(label)}_split"
                     if multi_run_protocol
                     else root_output_path
                 )
@@ -2154,7 +1749,7 @@ class ChempropToolkit(Toolkit):
                 compute_env=training_policy["compute_environment"],
                 effective_train_args=training_policy["extra_args"],
             )
-            total_completed_at = _project_now()
+            total_completed_at = project_now()
             result["training_durations"] = self._summarize_training_durations(
                 split_results=split_results,
                 total_started_at=total_started_at,

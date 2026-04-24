@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from sklearn.model_selection import train_test_split
 
 from cs_copilot.storage import S3
 
@@ -29,6 +28,8 @@ from .backend import (
     PredictionModelRecord,
     PredictionTaskSpec,
 )
+from .qsar_training_policy import project_now
+from .tabular_splitters import build_tabular_split_payload
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,7 @@ class TabICLBackend(PredictionBackend):
             "split_type",
             "validation_protocol",
             "feature_columns",
+            "split_payload",
         }
         dropped = sorted(key for key in raw if key not in allowed)
         sanitized = {key: value for key, value in raw.items() if key in allowed}
@@ -269,6 +271,8 @@ class TabICLBackend(PredictionBackend):
             raise PredictionExecutionError(f"TabICL prediction failed: {exc}") from exc
 
         output = pd.DataFrame({"prediction": pd.Series(y_pred).astype(float)})
+        if len(target_columns) == 1:
+            output[target_columns[0]] = output["prediction"]
         with S3.open(preds_path, "w") as fh:
             output.to_csv(fh, index=False)
 
@@ -300,11 +304,11 @@ class TabICLBackend(PredictionBackend):
                 f"{checkpoint_cfg['checkpoint_path']}. Provision this checkpoint before training."
             )
         split_sizes = _coerce_split_sizes(sanitized_args.pop("split_sizes", None))
+        split_payload = sanitized_args.pop("split_payload", None)
         random_state = int(sanitized_args.get("random_state", 42))
         split_type = str(sanitized_args.get("split_type", "random"))
         validation_protocol = str(sanitized_args.get("validation_protocol", "standard_qsar"))
-        if split_type != "random":
-            raise InvalidPredictionInputError("TabICL V1 currently supports only split_type='random'.")
+        started_at = project_now()
 
         with S3.open(train_csv, "r") as fh:
             dataset = _strip_unnamed_columns(pd.read_csv(fh))
@@ -320,20 +324,29 @@ class TabICLBackend(PredictionBackend):
         if len(working) < 10:
             raise InvalidPredictionInputError("TabICL V1 requires at least 10 rows after target cleanup.")
 
-        train_ratio, val_ratio, test_ratio = split_sizes
-        train_val_df, test_df = train_test_split(
-            working,
-            test_size=test_ratio,
-            random_state=random_state,
-            shuffle=True,
-        )
-        relative_val_size = val_ratio / (train_ratio + val_ratio)
-        train_df, val_df = train_test_split(
-            train_val_df,
-            test_size=relative_val_size,
-            random_state=random_state,
-            shuffle=True,
-        )
+        if split_payload is None:
+            split_payload = build_tabular_split_payload(
+                df=working,
+                split_type=split_type,
+                split_sizes=split_sizes,
+                random_state=random_state,
+                smiles_column="smiles" if "smiles" in working.columns else None,
+                feature_columns=feature_columns,
+            )
+        if not isinstance(split_payload, list) or not split_payload or not isinstance(split_payload[0], dict):
+            raise InvalidPredictionInputError(
+                "TabICL split_payload must be a non-empty list with train/val/test index mappings."
+            )
+
+        split_map = split_payload[0]
+        train_indices = [int(idx) for idx in (split_map.get("train") or [])]
+        val_indices = [int(idx) for idx in (split_map.get("val") or [])]
+        test_indices = [int(idx) for idx in (split_map.get("test") or [])]
+        if not train_indices or not val_indices or not test_indices:
+            raise InvalidPredictionInputError("TabICL split payload must provide non-empty train/val/test indices.")
+        train_df = working.iloc[train_indices].reset_index(drop=True)
+        val_df = working.iloc[val_indices].reset_index(drop=True)
+        test_df = working.iloc[test_indices].reset_index(drop=True)
 
         X_train = train_df[feature_columns].copy()
         y_train = train_df[target_column].astype(float).copy()
@@ -406,6 +419,8 @@ class TabICLBackend(PredictionBackend):
                 **(
                     {column: test_df[column].reset_index(drop=True) for column in ("Drug_ID", "smiles") if column in test_df.columns}
                 ),
+                f"{target_column}_true": y_test.reset_index(drop=True),
+                target_column: y_pred.reset_index(drop=True),
                 "y_true": y_test.reset_index(drop=True),
                 "y_pred": y_pred.reset_index(drop=True),
             }
@@ -428,7 +443,7 @@ class TabICLBackend(PredictionBackend):
             "train_rows": int(len(train_df)),
             "val_rows": int(len(val_df)),
             "test_rows": int(len(test_df)),
-            "split_type": "random",
+            "split_type": split_type,
             "validation_protocol": validation_protocol,
             "split_sizes": split_sizes,
             "random_state": random_state,
@@ -441,6 +456,7 @@ class TabICLBackend(PredictionBackend):
             "config_path": str(config_path),
             "splits_path": str(splits_path),
             "output_dir": str(output_path),
+            "started_at": started_at.isoformat(),
         }
         config_payload = [
             'backend_name = "tabicl"',
@@ -452,23 +468,10 @@ class TabICLBackend(PredictionBackend):
             f'checkpoint_version = "{checkpoint_cfg["checkpoint_version"]}"',
         ]
         config_path.write_text("\n".join(config_payload) + "\n")
-        splits_payload = {
-            "split_type": split_type,
-            "validation_protocol": validation_protocol,
-            "random_state": random_state,
-            "split_sizes": split_sizes,
-            "counts": {
-                "train": int(len(train_df)),
-                "val": int(len(val_df)),
-                "test": int(len(test_df)),
-            },
-            "indices": {
-                "train": train_df.index.astype(int).tolist(),
-                "val": val_df.index.astype(int).tolist(),
-                "test": test_df.index.astype(int).tolist(),
-            },
-        }
-        splits_path.write_text(json.dumps(splits_payload, indent=2) + "\n")
+        splits_path.write_text(json.dumps(split_payload, indent=2) + "\n")
+        completed_at = project_now()
+        summary["completed_at"] = completed_at.isoformat()
+        summary["duration_seconds"] = round((completed_at - started_at).total_seconds(), 3)
         with S3.open(str(summary_path), "w") as fh:
             json.dump(summary, fh, indent=2)
         canonical_summary_path.write_text(json.dumps(summary, indent=2) + "\n")
@@ -484,7 +487,7 @@ class TabICLBackend(PredictionBackend):
             "feature_columns": feature_columns,
             "feature_count": len(feature_columns),
             "target_column": target_column,
-            "split_type": "random",
+            "split_type": split_type,
             "validation_protocol": validation_protocol,
             "split_sizes": split_sizes,
             "train_rows": int(len(train_df)),
@@ -498,4 +501,7 @@ class TabICLBackend(PredictionBackend):
             "save_model_weights": save_model_weights,
             "save_training_data": save_training_data,
             "save_kv_cache": save_kv_cache,
+            "started_at": started_at.isoformat(),
+            "completed_at": completed_at.isoformat(),
+            "duration_seconds": round((completed_at - started_at).total_seconds(), 3),
         }
