@@ -1918,10 +1918,15 @@ class ChempropToolkit(Toolkit):
             df = pd.read_csv(fh)
 
         if isinstance(target_columns, str):
-            parsed = json.loads(target_columns)
-            if not isinstance(parsed, list):
-                raise ValueError("target_columns must be a list or a JSON-encoded list.")
-            target_columns = parsed
+            try:
+                parsed = json.loads(target_columns)
+            except json.JSONDecodeError:
+                target_columns = [target_columns]
+            else:
+                if isinstance(parsed, list):
+                    target_columns = parsed
+                else:
+                    target_columns = [str(parsed)]
 
         df = standardize_smiles_column(df, smiles_column)
         missing_targets = [column for column in target_columns if column not in df.columns]

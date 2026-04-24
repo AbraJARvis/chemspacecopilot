@@ -26,18 +26,19 @@ class TabICLToolkit(Toolkit):
     def __init__(self, backend: Optional[TabICLBackend] = None):
         super().__init__("tabicl_prediction")
         self.backend = backend or TabICLBackend()
-        self.register(self.describe_backend)
-        self.register(self.describe_environment)
-        self.register(self.is_available)
-        self.register(self.validate_model_path)
-        self.register(self.train_model)
-        self.register(self.predict_from_csv)
+        self.register(self.describe_tabicl_backend)
+        self.register(self.describe_tabicl_environment)
+        self.register(self.is_tabicl_available)
+        self.register(self.validate_tabicl_model_path)
+        self.register(self.validate_tabicl_checkpoint_path)
+        self.register(self.train_tabicl_model)
+        self.register(self.predict_with_tabicl_from_csv)
 
-    def is_available(self) -> bool:
+    def is_tabicl_available(self) -> bool:
         """Return whether the TabICL backend is available in the current environment."""
         return self.backend.is_available()
 
-    def describe_backend(self) -> Dict[str, Any]:
+    def describe_tabicl_backend(self) -> Dict[str, Any]:
         """Describe the TabICL backend defaults and current runtime support."""
         description = self.backend.describe_environment()
         description.update(
@@ -56,11 +57,11 @@ class TabICLToolkit(Toolkit):
         )
         return description
 
-    def describe_environment(self) -> Dict[str, Any]:
+    def describe_tabicl_environment(self) -> Dict[str, Any]:
         """Return a lightweight runtime snapshot for TabICL availability."""
         return self.backend.describe_environment()
 
-    def validate_model_path(self, model_path: str) -> Dict[str, Any]:
+    def validate_tabicl_model_path(self, model_path: str) -> Dict[str, Any]:
         """Validate a saved TabICL model artifact path."""
         resolved = self.backend.validate_model_path(model_path)
         return {
@@ -69,7 +70,22 @@ class TabICLToolkit(Toolkit):
             "suffix": resolved.suffix,
         }
 
-    def train_model(
+    def validate_tabicl_checkpoint_path(self, checkpoint_path: Optional[str] = None) -> Dict[str, Any]:
+        """Validate the persisted TabICL base checkpoint path."""
+        path = Path(checkpoint_path or (DEFAULT_TABICL_CHECKPOINT_DIR / DEFAULT_TABICL_REGRESSOR_CHECKPOINT))
+        resolved = path.expanduser().resolve()
+        if resolved.suffix != ".ckpt":
+            raise ValueError(
+                f"TabICL checkpoint must end with '.ckpt'. Received: {resolved}"
+            )
+        return {
+            "checkpoint_path": str(resolved),
+            "exists": resolved.exists(),
+            "suffix": resolved.suffix,
+            "is_backend_resource": True,
+        }
+
+    def train_tabicl_model(
         self,
         train_csv: str,
         task_type: str,
@@ -118,7 +134,7 @@ class TabICLToolkit(Toolkit):
             extra_args=merged_extra_args,
         )
 
-    def predict_from_csv(
+    def predict_with_tabicl_from_csv(
         self,
         input_csv: str,
         model_path: str,

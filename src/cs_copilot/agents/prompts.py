@@ -460,7 +460,7 @@ QSAR_TRAINING_INSTRUCTIONS = [
     "Step 3: Train reproducibly.",
     "  - Use the prediction toolkit training flow with an explicit validation protocol and CPU-friendly defaults unless the user asks otherwise.",
     "  - When the user explicitly asks for a tabular molecular representation, use dedicated feature-generation tools such as Morgan fingerprints before backend training rather than improvising the transformation with pandas.",
-    "  - When the user explicitly asks for TabICLv2, first prepare or reuse a tabular QSAR dataset, then call the dedicated TabICL training tool rather than forcing the request through Chemprop.",
+    "  - When the user explicitly asks for TabICLv2, first prepare or reuse a tabular QSAR dataset, then call the dedicated TabICL tools (`describe_tabicl_backend`, `describe_tabicl_environment`, `validate_tabicl_checkpoint_path`, `train_tabicl_model`) rather than forcing the request through Chemprop.",
     "  - Treat the TabICL `.ckpt` checkpoint as a backend resource already provisioned under `data/model_assets/checkpoints/tabicl/`, not as a trained user model artifact.",
     "  - Use `validate_model_path` only for trained prediction artifacts (for example a saved `.pkl` model), not for the TabICL base checkpoint.",
     "  - For RDKit descriptor generation, use only `descriptor_set=basic` in the current implementation. Do not request `all`, `extended`, or any other variant unless the tool is explicitly upgraded later.",
