@@ -383,6 +383,9 @@ class TabICLBackend(PredictionBackend):
         model_artifact_path = output_path / "tabicl_model.pkl"
         test_predictions_path = output_path / "test_predictions.csv"
         summary_path = output_path / "tabicl_training_summary.json"
+        canonical_summary_path = output_path / "cs_copilot_training_summary.json"
+        config_path = output_path / "config.toml"
+        splits_path = output_path / "splits.json"
 
         save_model_weights = bool(sanitized_args.get("save_model_weights", True))
         save_training_data = bool(sanitized_args.get("save_training_data", True))
@@ -435,10 +438,40 @@ class TabICLBackend(PredictionBackend):
             "metrics": {"test": metrics},
             "model_artifact_path": str(model_artifact_path),
             "test_predictions_path": str(test_predictions_path),
+            "config_path": str(config_path),
+            "splits_path": str(splits_path),
             "output_dir": str(output_path),
         }
+        config_payload = [
+            'backend_name = "tabicl"',
+            'task_type = "regression"',
+            f'target_column = "{target_column}"',
+            f'random_state = {random_state}',
+            f'split_type = "{split_type}"',
+            f'validation_protocol = "{validation_protocol}"',
+            f'checkpoint_version = "{checkpoint_cfg["checkpoint_version"]}"',
+        ]
+        config_path.write_text("\n".join(config_payload) + "\n")
+        splits_payload = {
+            "split_type": split_type,
+            "validation_protocol": validation_protocol,
+            "random_state": random_state,
+            "split_sizes": split_sizes,
+            "counts": {
+                "train": int(len(train_df)),
+                "val": int(len(val_df)),
+                "test": int(len(test_df)),
+            },
+            "indices": {
+                "train": train_df.index.astype(int).tolist(),
+                "val": val_df.index.astype(int).tolist(),
+                "test": test_df.index.astype(int).tolist(),
+            },
+        }
+        splits_path.write_text(json.dumps(splits_payload, indent=2) + "\n")
         with S3.open(str(summary_path), "w") as fh:
             json.dump(summary, fh, indent=2)
+        canonical_summary_path.write_text(json.dumps(summary, indent=2) + "\n")
 
         return {
             "backend_name": self.backend_name,
@@ -459,6 +492,9 @@ class TabICLBackend(PredictionBackend):
             "test_rows": int(len(test_df)),
             "test_predictions_path": str(test_predictions_path),
             "summary_path": str(summary_path),
+            "canonical_summary_path": str(canonical_summary_path),
+            "config_path": str(config_path),
+            "splits_path": str(splits_path),
             "save_model_weights": save_model_weights,
             "save_training_data": save_training_data,
             "save_kv_cache": save_kv_cache,

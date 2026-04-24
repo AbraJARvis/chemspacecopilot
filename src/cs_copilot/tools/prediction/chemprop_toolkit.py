@@ -1028,7 +1028,10 @@ class ChempropToolkit(Toolkit):
         copied_files: Dict[str, str] = {}
 
         if source_model_path.exists():
-            target_model_path = model_dir / source_model_path.name
+            target_name = source_model_path.name
+            if record.backend_name == "tabicl":
+                target_name = "best.pkl"
+            target_model_path = model_dir / target_name
             shutil.copy2(source_model_path, target_model_path)
             copied_files["model_path"] = _relative_posix(target_model_path, model_root)
         else:
@@ -1036,10 +1039,18 @@ class ChempropToolkit(Toolkit):
 
         optional_artifacts = {
             "config_path": run_dir / "config.toml",
-            "training_summary_path": run_dir / "cs_copilot_training_summary.json",
+            "training_summary_path": (
+                run_dir / "cs_copilot_training_summary.json"
+                if (run_dir / "cs_copilot_training_summary.json").exists()
+                else run_dir / "tabicl_training_summary.json"
+                if record.backend_name == "tabicl"
+                else run_dir / "cs_copilot_training_summary.json"
+            ),
             "splits_path": run_dir / "splits.json",
             "test_predictions_path": (
-                self._resolve_chemprop_run_artifacts(run_dir).get("test_predictions_path")
+                run_dir / "test_predictions.csv"
+                if record.backend_name == "tabicl"
+                else self._resolve_chemprop_run_artifacts(run_dir).get("test_predictions_path")
                 or run_dir / "model_0" / "test_predictions.csv"
             ),
             "reference_store_path": run_dir / "applicability_domain" / "reference_fingerprints.npz",
@@ -1067,11 +1078,16 @@ class ChempropToolkit(Toolkit):
 
         for key, source_path in optional_artifacts.items():
             if source_path.exists():
-                target_path = (
-                    model_dir / source_path.name
-                    if key == "config_path"
-                    else artifacts_dir / source_path.name
-                )
+                if key == "config_path":
+                    target_path = model_dir / "config.toml"
+                elif key == "training_summary_path":
+                    target_path = artifacts_dir / "cs_copilot_training_summary.json"
+                elif key == "splits_path":
+                    target_path = artifacts_dir / "splits.json"
+                elif key == "test_predictions_path":
+                    target_path = artifacts_dir / "test_predictions.csv"
+                else:
+                    target_path = artifacts_dir / source_path.name
                 shutil.copy2(source_path, target_path)
                 copied_files[key] = _relative_posix(target_path, model_root)
 
