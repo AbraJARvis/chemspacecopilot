@@ -169,6 +169,13 @@ class TabICLBackend(PredictionBackend):
         target_columns: List[str],
         extra_args: Dict[str, Any],
     ) -> List[str]:
+        excluded = set(target_columns)
+        numeric_columns = [
+            column
+            for column in df.columns
+            if column not in excluded and pd.api.types.is_numeric_dtype(df[column])
+        ]
+
         explicit = extra_args.get("feature_columns")
         if explicit:
             if isinstance(explicit, str):
@@ -176,14 +183,23 @@ class TabICLBackend(PredictionBackend):
             missing = [column for column in explicit if column not in df.columns]
             if missing:
                 raise InvalidPredictionInputError(f"Requested feature columns are missing: {missing}")
-            return list(explicit)
+            non_numeric = [
+                column for column in explicit if not pd.api.types.is_numeric_dtype(df[column])
+            ]
+            if non_numeric:
+                if set(non_numeric) == set(explicit) and numeric_columns:
+                    logger.warning(
+                        "Ignoring non-numeric explicit TabICL feature columns %s and falling back to numeric columns.",
+                        non_numeric,
+                    )
+                else:
+                    raise InvalidPredictionInputError(
+                        "TabICL feature_columns must be numeric columns only. "
+                        f"Non-numeric columns received: {non_numeric}"
+                    )
+            else:
+                return list(explicit)
 
-        excluded = set(target_columns)
-        numeric_columns = [
-            column
-            for column in df.columns
-            if column not in excluded and pd.api.types.is_numeric_dtype(df[column])
-        ]
         if not numeric_columns:
             raise InvalidPredictionInputError(
                 "No numeric feature columns were found for TabICL. "

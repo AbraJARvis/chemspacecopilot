@@ -85,21 +85,21 @@ class TabICLToolkit(Toolkit):
         if profile == "heavy_validation":
             return {
                 **base,
-                "batch_size": 256,
-                "n_estimators": 16,
-                "kv_cache": True,
-                "n_jobs": 16,
+                "batch_size": 64,
+                "n_estimators": 8,
+                "kv_cache": False,
+                "n_jobs": 8,
             }
         if profile == "local_standard":
             return {
                 **base,
-                "batch_size": 128,
-                "n_estimators": 8,
+                "batch_size": 64,
+                "n_estimators": 4,
                 "kv_cache": False,
             }
         return {
             **base,
-            "batch_size": 64,
+            "batch_size": 32,
             "n_estimators": 4,
             "kv_cache": False,
         }
@@ -127,19 +127,20 @@ class TabICLToolkit(Toolkit):
 
         if not allow_heavy_compute:
             if profile == "local_light":
-                merged["batch_size"] = min(int(merged.get("batch_size", 64)), 64)
+                merged["batch_size"] = min(int(merged.get("batch_size", 32)), 32)
                 merged["n_estimators"] = min(int(merged.get("n_estimators", 4)), 4)
                 merged["n_jobs"] = 0
                 merged["kv_cache"] = False
             elif profile == "local_standard":
-                merged["batch_size"] = min(int(merged.get("batch_size", 128)), 128)
-                merged["n_estimators"] = min(int(merged.get("n_estimators", 8)), 8)
+                merged["batch_size"] = min(int(merged.get("batch_size", 64)), 64)
+                merged["n_estimators"] = min(int(merged.get("n_estimators", 4)), 4)
                 merged["n_jobs"] = 0
 
         if profile == "heavy_validation":
-            merged["batch_size"] = max(int(merged.get("batch_size", 256)), 256)
-            merged["n_estimators"] = max(int(merged.get("n_estimators", 16)), 16)
-            merged["n_jobs"] = max(int(merged.get("n_jobs", 16)), 16)
+            merged["batch_size"] = max(int(merged.get("batch_size", 64)), 64)
+            merged["n_estimators"] = max(int(merged.get("n_estimators", 8)), 8)
+            merged["n_jobs"] = max(int(merged.get("n_jobs", 8)), 8)
+            merged["kv_cache"] = bool(merged.get("kv_cache", False))
 
         return {
             "compute_environment": compute_env,
@@ -372,6 +373,7 @@ class TabICLToolkit(Toolkit):
                 "random_state": split_run["seed"],
                 "validation_protocol": protocol_policy["protocol"],
             }
+            run_args.setdefault("disk_offload_dir", str((run_output_dir / "disk_offload").resolve()))
 
             single_result = self.backend.train_model(
                 train_csv=train_csv,
