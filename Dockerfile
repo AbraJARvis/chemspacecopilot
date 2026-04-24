@@ -28,11 +28,12 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 
 # Install Python dependencies via uv
-# Chemprop is installed as an additive runtime dependency for the prediction
-# agent so we can validate the backend inside the app container without making
-# the base project dependency graph mandatory for every environment.
+# Chemprop and TabICL are installed as additive runtime dependencies for the
+# prediction agent so we can validate both backends inside the app container
+# without making the base project dependency graph mandatory for every
+# environment.
 RUN uv sync --frozen --no-dev \
-    && uv pip install --python /app/.venv/bin/python "chemprop>=2.2.0"
+    && uv pip install --python /app/.venv/bin/python "chemprop>=2.2.0" "tabicl>=2.0.3"
 
 # Application source
 COPY . .
