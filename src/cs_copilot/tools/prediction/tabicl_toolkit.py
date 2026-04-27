@@ -261,8 +261,18 @@ class TabICLToolkit(Toolkit):
                     "challenging_qsar",
                 ],
                 "supported_split_families": ["random", "scaffold", "cluster_kmeans"],
+                "default_tabular_feature_policy": {
+                    "default_representation": "morgan_plus_rdkit",
+                    "local_light": {"rdkit_descriptor_set": "basic"},
+                    "local_standard": {"rdkit_descriptor_set": "basic"},
+                    "heavy_validation": {"rdkit_descriptor_set": "all"},
+                    "explicit_user_override": True,
+                },
                 "notes": [
                     "Supports Chemprop-style QSAR protocol names and split families.",
+                    "Default TabICL tabular features combine Morgan fingerprints with RDKit descriptors.",
+                    "Lighter profiles default to RDKit basic; heavy GPU-capable profiles default to RDKit all.",
+                    "If the user explicitly requests Morgan only or RDKit only, that override should win.",
                     "The `.ckpt` checkpoint is a backend resource, not a trained model artifact.",
                     "`validate_tabicl_model_path` is intended for saved trained models such as `.pkl`.",
                 ],
