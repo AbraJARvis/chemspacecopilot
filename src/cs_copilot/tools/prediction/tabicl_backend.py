@@ -549,6 +549,10 @@ class TabICLBackend(PredictionBackend):
             predictions_df["y_pred"].astype(float),
         )
 
+        train_rows = int(len(train_df))
+        val_rows = int(len(val_df))
+        test_rows = int(len(test_df))
+
         summary = {
             "backend_name": self.backend_name,
             "train_csv": train_csv,
@@ -556,9 +560,9 @@ class TabICLBackend(PredictionBackend):
             "target_column": target_column,
             "feature_columns": feature_columns,
             "feature_count": len(feature_columns),
-            "train_rows": int(len(train_df)),
-            "val_rows": int(len(val_df)),
-            "test_rows": int(len(test_df)),
+            "train_rows": train_rows,
+            "val_rows": val_rows,
+            "test_rows": test_rows,
             "split_type": split_type,
             "validation_protocol": validation_protocol,
             "split_sizes": split_sizes,
@@ -592,14 +596,7 @@ class TabICLBackend(PredictionBackend):
             json.dump(summary, fh, indent=2)
         canonical_summary_path.write_text(json.dumps(summary, indent=2) + "\n")
 
-        # TabICL can leave large CPU/GPU buffers resident in the Python process
-        # after a run. Clear the heaviest objects explicitly before returning.
-        del estimator
-        del dataset, working, train_df, val_df, test_df
-        del X_train, X_test, y_train, y_test, y_pred, predictions_df
-        _release_process_memory()
-
-        return {
+        result = {
             "backend_name": self.backend_name,
             "model_path": str(model_artifact_path),
             "output_dir": str(output_path),
@@ -613,9 +610,9 @@ class TabICLBackend(PredictionBackend):
             "split_type": split_type,
             "validation_protocol": validation_protocol,
             "split_sizes": split_sizes,
-            "train_rows": int(len(train_df)),
-            "val_rows": int(len(val_df)),
-            "test_rows": int(len(test_df)),
+            "train_rows": train_rows,
+            "val_rows": val_rows,
+            "test_rows": test_rows,
             "test_predictions_path": str(test_predictions_path),
             "summary_path": str(summary_path),
             "canonical_summary_path": str(canonical_summary_path),
@@ -628,3 +625,12 @@ class TabICLBackend(PredictionBackend):
             "completed_at": completed_at.isoformat(),
             "duration_seconds": round((completed_at - started_at).total_seconds(), 3),
         }
+
+        # TabICL can leave large CPU/GPU buffers resident in the Python process
+        # after a run. Clear the heaviest objects explicitly before returning.
+        del estimator
+        del dataset, working, train_df, val_df, test_df
+        del X_train, X_test, y_train, y_test, y_pred, predictions_df
+        _release_process_memory()
+
+        return result
