@@ -49,6 +49,22 @@ _BASIC_RDKIT_DESCRIPTOR_FUNCS = {
     "FractionCSP3": Descriptors.FractionCSP3,
 }
 
+_ALL_RDKIT_DESCRIPTOR_FUNCS = {
+    name: func
+    for name, func in Descriptors._descList
+}
+
+
+def _resolve_rdkit_descriptor_funcs(descriptor_set: str) -> Dict[str, Any]:
+    normalized = descriptor_set.strip().lower()
+    if normalized == "basic":
+        return _BASIC_RDKIT_DESCRIPTOR_FUNCS
+    if normalized == "all":
+        return _ALL_RDKIT_DESCRIPTOR_FUNCS
+    raise ValueError(
+        "Unsupported descriptor_set. Supported values are 'basic' and 'all'."
+    )
+
 
 def _build_base_output_dataframe(
     working: pd.DataFrame,
@@ -216,16 +232,13 @@ class MolecularFeatureToolkit(Toolkit):
         input_columns_to_keep: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
-        Transform a SMILES column into a tabular CSV of basic RDKit descriptors.
+        Transform a SMILES column into a tabular CSV of RDKit descriptors.
 
-        This V1 intentionally exposes a short, fixed descriptor set to keep the
-        output stable, testable, and easy to reason about.
+        Supported descriptor sets:
+        - `basic`: short, fixed descriptor set for lightweight workflows
+        - `all`: full RDKit descriptor list exposed by `Descriptors._descList`
         """
-        if descriptor_set != "basic":
-            raise ValueError(
-                "Only descriptor_set='basic' is supported in this V1 implementation. "
-                "Use 'basic' for now; richer descriptor sets can be added later."
-            )
+        descriptor_funcs = _resolve_rdkit_descriptor_funcs(descriptor_set)
 
         with S3.open(input_csv, "r") as fh:
             df = pd.read_csv(fh)
@@ -247,7 +260,7 @@ class MolecularFeatureToolkit(Toolkit):
             )
 
         descriptor_rows: List[Dict[str, float]] = []
-        descriptor_names = list(_BASIC_RDKIT_DESCRIPTOR_FUNCS.keys())
+        descriptor_names = list(descriptor_funcs.keys())
         descriptor_columns = [f"desc_{name}" for name in descriptor_names]
 
         for smiles in working["smiles"].tolist():
@@ -259,7 +272,7 @@ class MolecularFeatureToolkit(Toolkit):
             descriptor_rows.append(
                 {
                     f"desc_{name}": float(func(mol))
-                    for name, func in _BASIC_RDKIT_DESCRIPTOR_FUNCS.items()
+                    for name, func in descriptor_funcs.items()
                 }
             )
 

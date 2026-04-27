@@ -465,7 +465,7 @@ QSAR_TRAINING_INSTRUCTIONS = [
     "  - Treat the TabICL `.ckpt` checkpoint as a backend resource already provisioned under `data/model_assets/checkpoints/tabicl/`, not as a trained user model artifact.",
     "  - Use `validate_model_path` only for trained prediction artifacts (for example a saved `.pkl` model), not for the TabICL base checkpoint.",
     "  - Do not inspect `.json` training summaries with pandas dataframe tools. Treat them as structured artifacts, not CSV-like tables.",
-    "  - For RDKit descriptor generation, use only `descriptor_set=basic` in the current implementation. Do not request `all`, `extended`, or any other variant unless the tool is explicitly upgraded later.",
+    "  - For RDKit descriptor generation, prefer `descriptor_set=basic` for lightweight runs and use `descriptor_set=all` when the user explicitly asks for a richer tabular representation.",
     "  - Never try to call molecular feature tools through `run_dataframe_operation`; call tools such as `smiles_to_morgan_fingerprints` directly.",
     "  - Always inspect the local compute budget before training and select a training profile compatible with the machine.",
     "  - When a GPU-capable heavy compute environment is available, default to a speed-oriented mindset: prefer faster high-throughput settings over conservative ones unless the user explicitly asks for caution.",
