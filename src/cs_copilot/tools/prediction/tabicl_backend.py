@@ -14,6 +14,8 @@ import math
 import pickle
 import shutil
 import threading
+import gc
+import ctypes
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -36,6 +38,29 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TABICL_CHECKPOINT_DIR = Path("data/model_assets/checkpoints/tabicl").resolve()
 DEFAULT_TABICL_REGRESSOR_CHECKPOINT = "tabicl-regressor-v2-20260212.ckpt"
+
+
+def _release_process_memory() -> None:
+    """Best-effort CPU/GPU memory cleanup after a heavy TabICL run."""
+    gc.collect()
+
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            if hasattr(torch.cuda, "ipc_collect"):
+                torch.cuda.ipc_collect()
+    except Exception:
+        pass
+
+    # On glibc-based Linux systems, this can return free heap pages to the OS.
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        if hasattr(libc, "malloc_trim"):
+            libc.malloc_trim(0)
+    except Exception:
+        pass
 
 
 def _strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -566,6 +591,13 @@ class TabICLBackend(PredictionBackend):
         with S3.open(str(summary_path), "w") as fh:
             json.dump(summary, fh, indent=2)
         canonical_summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+
+        # TabICL can leave large CPU/GPU buffers resident in the Python process
+        # after a run. Clear the heaviest objects explicitly before returning.
+        del estimator
+        del dataset, working, train_df, val_df, test_df
+        del X_train, X_test, y_train, y_test, y_pred, predictions_df
+        _release_process_memory()
 
         return {
             "backend_name": self.backend_name,
