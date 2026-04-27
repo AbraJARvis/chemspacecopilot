@@ -17,7 +17,7 @@ from agno.tools.toolkit import Toolkit
 
 from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionTaskSpec
-from .chemprop_toolkit import _get_prediction_state
+from .chemprop_toolkit import _get_prediction_state, _write_active_training_marker
 from .qsar_plots import build_qsar_training_plots
 from .qsar_training_policy import (
     assess_protocol_results,
@@ -353,65 +353,104 @@ class TabICLToolkit(Toolkit):
         )
 
         prediction_state = _get_prediction_state(agent) if agent is not None else None
+        active_marker_path = root_output_path / ".training_in_progress"
+        active_run_record = {
+            "status": "running",
+            "backend_name": "tabicl",
+            "train_csv": train_csv,
+            "output_dir": resolved_output_dir,
+            "validation_protocol": protocol_policy["protocol"],
+            "training_profile": training_policy["training_profile"],
+            "created_at": trained_at.isoformat(),
+            "active_marker_path": str(active_marker_path),
+            "current_split_label": None,
+            "current_split_index": None,
+            "total_splits": len(protocol_policy["split_runs"]),
+            "progress_message": None,
+        }
+        if prediction_state is not None:
+            prediction_state["active_training_run"] = dict(active_run_record)
+        _write_active_training_marker(active_marker_path, active_run_record)
         split_results: List[Dict[str, Any]] = []
         primary_run: Optional[Dict[str, Any]] = None
         total_started_at = project_now()
         multi_run_protocol = len(protocol_policy["split_runs"]) > 1
 
-        for split_run in protocol_policy["split_runs"]:
-            label = split_run["label"]
-            run_output_dir = (
-                root_output_path / f"{safe_slug(label)}_split" if multi_run_protocol else root_output_path
-            )
-            run_output_dir.mkdir(parents=True, exist_ok=True)
-            started_at = project_now()
-            run_args = {
-                **training_policy["extra_args"],
-                "feature_columns": feature_columns,
-                "split_sizes": split_sizes,
-                "split_type": split_run["backend_split_type"],
-                "random_state": split_run["seed"],
-                "validation_protocol": protocol_policy["protocol"],
-            }
-            run_args.setdefault("disk_offload_dir", str((run_output_dir / "disk_offload").resolve()))
+        try:
+            for run_index, split_run in enumerate(protocol_policy["split_runs"], start=1):
+                label = split_run["label"]
+                run_output_dir = (
+                    root_output_path / f"{safe_slug(label)}_split" if multi_run_protocol else root_output_path
+                )
+                run_output_dir.mkdir(parents=True, exist_ok=True)
+                started_at = project_now()
+                run_args = {
+                    **training_policy["extra_args"],
+                    "feature_columns": feature_columns,
+                    "split_sizes": split_sizes,
+                    "split_type": split_run["backend_split_type"],
+                    "random_state": split_run["seed"],
+                    "validation_protocol": protocol_policy["protocol"],
+                    "heartbeat_path": str(active_marker_path),
+                    "heartbeat_label": label,
+                    "heartbeat_run_index": run_index,
+                    "heartbeat_total_runs": len(protocol_policy["split_runs"]),
+                }
+                run_args.setdefault("heartbeat_seconds", 120.0)
+                run_args.setdefault("disk_offload_dir", str((run_output_dir / "disk_offload").resolve()))
 
-            single_result = self.backend.train_model(
-                train_csv=train_csv,
-                output_dir=str(run_output_dir),
-                task=task,
-                extra_args=run_args,
-            )
+                active_run_record["current_split_label"] = label
+                active_run_record["current_split_index"] = run_index
+                active_run_record["progress_message"] = (
+                    f"TabICL training progress: run {run_index}/{len(protocol_policy['split_runs'])} - {label}"
+                )
+                if prediction_state is not None:
+                    prediction_state["active_training_run"] = dict(active_run_record)
+                _write_active_training_marker(active_marker_path, active_run_record)
 
-            if "scaffold" in label:
-                strategy = "scaffold"
-                strategy_family = "scaffold"
-            elif "kmeans" in label:
-                strategy = "cluster_kmeans"
-                strategy_family = "cluster_kmeans"
-            elif "random_seed_" in label:
-                strategy = label
-                strategy_family = "random"
-            else:
-                strategy = "random"
-                strategy_family = "random"
+                single_result = self.backend.train_model(
+                    train_csv=train_csv,
+                    output_dir=str(run_output_dir),
+                    task=task,
+                    extra_args=run_args,
+                )
 
-            completed_at = project_now()
-            single_result["strategy"] = strategy
-            single_result["strategy_family"] = strategy_family
-            single_result["strategy_label"] = label
-            single_result["backend_split_type"] = split_run["backend_split_type"]
-            single_result["seed"] = split_run["seed"]
-            single_result["validation_protocol"] = protocol_policy["protocol"]
-            single_result["output_dir"] = str(run_output_dir)
-            single_result["started_at"] = single_result.get("started_at") or started_at.isoformat()
-            single_result["completed_at"] = single_result.get("completed_at") or completed_at.isoformat()
-            single_result["duration_seconds"] = single_result.get("duration_seconds") or round(
-                (completed_at - started_at).total_seconds(), 3
-            )
-            split_results.append(single_result)
+                if "scaffold" in label:
+                    strategy = "scaffold"
+                    strategy_family = "scaffold"
+                elif "kmeans" in label:
+                    strategy = "cluster_kmeans"
+                    strategy_family = "cluster_kmeans"
+                elif "random_seed_" in label:
+                    strategy = label
+                    strategy_family = "random"
+                else:
+                    strategy = "random"
+                    strategy_family = "random"
 
-            if split_run.get("primary") or primary_run is None:
-                primary_run = single_result
+                completed_at = project_now()
+                single_result["strategy"] = strategy
+                single_result["strategy_family"] = strategy_family
+                single_result["strategy_label"] = label
+                single_result["backend_split_type"] = split_run["backend_split_type"]
+                single_result["seed"] = split_run["seed"]
+                single_result["validation_protocol"] = protocol_policy["protocol"]
+                single_result["output_dir"] = str(run_output_dir)
+                single_result["started_at"] = single_result.get("started_at") or started_at.isoformat()
+                single_result["completed_at"] = single_result.get("completed_at") or completed_at.isoformat()
+                single_result["duration_seconds"] = single_result.get("duration_seconds") or round(
+                    (completed_at - started_at).total_seconds(), 3
+                )
+                split_results.append(single_result)
+
+                if split_run.get("primary") or primary_run is None:
+                    primary_run = single_result
+        finally:
+            active_run_record["status"] = "completed" if primary_run is not None else "failed"
+            active_run_record["completed_at"] = project_now().isoformat()
+            if prediction_state is not None:
+                prediction_state["active_training_run"] = None
+            _write_active_training_marker(active_marker_path, active_run_record)
 
         if primary_run is None:
             raise ValueError("TabICL validation protocol did not produce a primary run.")

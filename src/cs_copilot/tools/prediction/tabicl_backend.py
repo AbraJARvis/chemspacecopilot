@@ -13,6 +13,7 @@ import logging
 import math
 import pickle
 import shutil
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -153,6 +154,11 @@ class TabICLBackend(PredictionBackend):
             "validation_protocol",
             "feature_columns",
             "split_payload",
+            "heartbeat_seconds",
+            "heartbeat_path",
+            "heartbeat_label",
+            "heartbeat_run_index",
+            "heartbeat_total_runs",
         }
         dropped = sorted(key for key in raw if key not in allowed)
         sanitized = {key: value for key, value in raw.items() if key in allowed}
@@ -398,11 +404,80 @@ class TabICLBackend(PredictionBackend):
                 init_kwargs[key] = sanitized_args[key]
 
         estimator = TabICLRegressor(**init_kwargs)
+        heartbeat_seconds = float(sanitized_args.get("heartbeat_seconds", 120.0))
+        heartbeat_path_raw = sanitized_args.get("heartbeat_path")
+        heartbeat_label = str(sanitized_args.get("heartbeat_label") or split_type)
+        heartbeat_run_index = sanitized_args.get("heartbeat_run_index")
+        heartbeat_total_runs = sanitized_args.get("heartbeat_total_runs")
+        heartbeat_path = Path(str(heartbeat_path_raw)).expanduser().resolve() if heartbeat_path_raw else None
+        heartbeat_stop = threading.Event()
+        heartbeat_thread: Optional[threading.Thread] = None
+
+        def _emit_heartbeat() -> None:
+            progress_message = None
+            if heartbeat_run_index and heartbeat_total_runs:
+                progress_message = (
+                    f"TabICL training progress: run {heartbeat_run_index}/{heartbeat_total_runs} - {heartbeat_label}"
+                )
+            payload = {
+                "status": "running",
+                "phase": "fit",
+                "backend_name": self.backend_name,
+                "label": heartbeat_label,
+                "run_index": heartbeat_run_index,
+                "total_runs": heartbeat_total_runs,
+                "progress_message": progress_message,
+                "split_type": split_type,
+                "validation_protocol": validation_protocol,
+                "train_csv": train_csv,
+                "output_dir": output_dir,
+                "started_at": started_at.isoformat(),
+                "last_heartbeat_at": project_now().isoformat(),
+                "elapsed_seconds": round((project_now() - started_at).total_seconds(), 3),
+                "target_column": target_column,
+                "feature_count": len(feature_columns),
+                "train_rows": int(len(train_df)),
+                "val_rows": int(len(val_df)),
+                "test_rows": int(len(test_df)),
+            }
+            if heartbeat_path is not None:
+                heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+                heartbeat_path.write_text(json.dumps(payload, indent=2) + "\n")
+            if progress_message:
+                logger.info("%s", progress_message)
+            else:
+                logger.info(
+                    "TabICL training heartbeat: label=%s split=%s elapsed=%.1fs train=%d val=%d test=%d features=%d output_dir=%s",
+                    heartbeat_label,
+                    split_type,
+                    payload["elapsed_seconds"],
+                    payload["train_rows"],
+                    payload["val_rows"],
+                    payload["test_rows"],
+                    payload["feature_count"],
+                    output_dir,
+                )
+
+        def _heartbeat_loop() -> None:
+            while not heartbeat_stop.wait(heartbeat_seconds):
+                _emit_heartbeat()
+
+        if heartbeat_seconds > 0:
+            heartbeat_thread = threading.Thread(
+                target=_heartbeat_loop,
+                name=f"tabicl-heartbeat-{heartbeat_label}",
+                daemon=True,
+            )
+            heartbeat_thread.start()
         try:
             estimator.fit(X_train, y_train)
             y_pred = pd.Series(estimator.predict(X_test), index=X_test.index, dtype=float)
         except Exception as exc:
             raise PredictionExecutionError(f"TabICL training failed: {exc}") from exc
+        finally:
+            if heartbeat_thread is not None:
+                heartbeat_stop.set()
+                heartbeat_thread.join(timeout=max(1.0, heartbeat_seconds))
 
         checkpoint_path = checkpoint_cfg["checkpoint_path"]
         persisted_checkpoint = self._persist_checkpoint_if_possible(estimator, checkpoint_path)
