@@ -7,6 +7,7 @@ Benchmark orchestration for multi-backend QSAR campaigns.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +19,8 @@ from .chemprop_toolkit import ChempropToolkit
 from .qsar_training_policy import describe_compute_environment, resolve_training_profile, safe_slug
 from .tabicl_toolkit import TabICLToolkit
 from ..features.molecular_feature_toolkit import MolecularFeatureToolkit
+
+logger = logging.getLogger(__name__)
 
 
 def _coerce_list(value: Optional[List[str] | str]) -> Optional[List[str]]:
@@ -684,21 +687,39 @@ class BenchmarkToolkit(Toolkit):
         candidate_results: List[Dict[str, Any]] = []
         persisted_model_mapping: List[Dict[str, Any]] = []
 
-        for candidate in candidates:
+        total_candidates = len(candidates)
+        for candidate_index, candidate in enumerate(candidates, start=1):
             candidate_dir = campaign_root / candidate["candidate_id"]
             candidate_dir.mkdir(parents=True, exist_ok=True)
-            result = self._train_candidate(
-                candidate=candidate,
-                train_csv=train_csv,
-                task_type=task_type,
-                smiles_column=smiles_column,
-                target_columns=target_columns,
-                benchmark_protocol=benchmark_protocol,
-                candidate_dir=candidate_dir,
-                allow_heavy_compute=allow_heavy_compute,
-                training_profile=training_profile,
-                agent=agent,
+            logger.info(
+                "Benchmark progress: candidate %d/%d - %s (backend=%s, representation=%s) starting.",
+                candidate_index,
+                total_candidates,
+                candidate["candidate_id"],
+                candidate["backend_name"],
+                candidate["representation_name"],
             )
+            try:
+                result = self._train_candidate(
+                    candidate=candidate,
+                    train_csv=train_csv,
+                    task_type=task_type,
+                    smiles_column=smiles_column,
+                    target_columns=target_columns,
+                    benchmark_protocol=benchmark_protocol,
+                    candidate_dir=candidate_dir,
+                    allow_heavy_compute=allow_heavy_compute,
+                    training_profile=training_profile,
+                    agent=agent,
+                )
+            except Exception:
+                logger.exception(
+                    "Benchmark progress: candidate %d/%d - %s failed.",
+                    candidate_index,
+                    total_candidates,
+                    candidate["candidate_id"],
+                )
+                raise
             persisted = self._register_and_persist_candidate(
                 candidate=candidate,
                 result=result,
@@ -722,6 +743,14 @@ class BenchmarkToolkit(Toolkit):
                 benchmark_protocol=benchmark_protocol,
             )
             candidate_rows.append(candidate_row)
+            logger.info(
+                "Benchmark progress: candidate %d/%d - %s completed (status=%s, hardest_split_r2=%s).",
+                candidate_index,
+                total_candidates,
+                candidate["candidate_id"],
+                persisted.get("status"),
+                candidate_row.get("hardest_split_r2"),
+            )
             persisted_model_mapping.append(
                 {
                     "candidate_id": candidate["candidate_id"],
