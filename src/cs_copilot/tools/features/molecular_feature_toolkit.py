@@ -71,14 +71,29 @@ def _build_base_output_dataframe(
     *,
     include_input_columns: bool,
     input_columns_to_keep: Optional[List[str]],
+    required_columns: Optional[List[str]] = None,
 ) -> pd.DataFrame:
+    required = list(required_columns or [])
     if input_columns_to_keep is not None:
-        missing_columns = [column for column in input_columns_to_keep if column not in working.columns]
+        requested_columns = list(input_columns_to_keep)
+        for column in required:
+            if column not in requested_columns:
+                requested_columns.insert(0, column)
+        missing_columns = [column for column in requested_columns if column not in working.columns]
         if missing_columns:
             raise ValueError(f"Requested input columns to keep are missing: {missing_columns}")
-        return working[input_columns_to_keep].copy()
+        return working[requested_columns].copy()
     if include_input_columns:
-        return working.copy()
+        if not required:
+            return working.copy()
+        ordered = [column for column in required if column in working.columns]
+        ordered.extend(column for column in working.columns if column not in ordered)
+        return working[ordered].copy()
+    if required:
+        missing_required = [column for column in required if column not in working.columns]
+        if missing_required:
+            raise ValueError(f"Required output columns are missing: {missing_required}")
+        return working[required].copy()
     return pd.DataFrame(index=working.index)
 
 
@@ -200,6 +215,7 @@ class MolecularFeatureToolkit(Toolkit):
             working,
             include_input_columns=include_input_columns,
             input_columns_to_keep=input_columns_to_keep,
+            required_columns=["smiles"],
         )
 
         output_df = pd.concat([base_df.reset_index(drop=True), feature_df.reset_index(drop=True)], axis=1)
@@ -281,6 +297,7 @@ class MolecularFeatureToolkit(Toolkit):
             working,
             include_input_columns=include_input_columns,
             input_columns_to_keep=input_columns_to_keep,
+            required_columns=["smiles"],
         )
         output_df = pd.concat(
             [base_df.reset_index(drop=True), descriptor_df.reset_index(drop=True)], axis=1
