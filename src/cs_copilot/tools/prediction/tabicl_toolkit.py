@@ -653,6 +653,7 @@ class TabICLToolkit(Toolkit):
         *,
         job_path: Path,
         worker_log_path: Path,
+        active_marker_path: Path,
     ) -> Dict[str, Any]:
         result_path = job_path.parent / "result.json"
         error_path = job_path.parent / "error.json"
@@ -664,6 +665,7 @@ class TabICLToolkit(Toolkit):
         ]
         worker_log_path.parent.mkdir(parents=True, exist_ok=True)
         start_time = time.monotonic()
+        last_progress_message: Optional[str] = None
         with worker_log_path.open("w", encoding="utf-8") as log_fh:
             process = subprocess.Popen(
                 command,
@@ -679,6 +681,16 @@ class TabICLToolkit(Toolkit):
                     result_seen_at = time.monotonic()
                 if return_code is not None:
                     break
+                if active_marker_path.exists():
+                    try:
+                        marker_payload = json.loads(active_marker_path.read_text())
+                    except Exception:
+                        marker_payload = None
+                    if isinstance(marker_payload, dict):
+                        progress_message = marker_payload.get("progress_message")
+                        if progress_message and progress_message != last_progress_message:
+                            logger.info("%s", progress_message)
+                            last_progress_message = progress_message
                 if result_seen_at is not None and (time.monotonic() - result_seen_at) >= 2.0:
                     logger.warning(
                         "TabICL worker produced result.json but remained alive; terminating worker pid=%s.",
@@ -794,6 +806,7 @@ class TabICLToolkit(Toolkit):
             result = self._run_training_worker(
                 job_path=job_path,
                 worker_log_path=worker_log_path,
+                active_marker_path=active_marker_path,
             )
         except Exception as exc:
             active_run_record["status"] = "failed"

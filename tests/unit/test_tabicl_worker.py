@@ -46,10 +46,12 @@ def test_run_training_worker_reads_result_json(tmp_path, monkeypatch):
     job_path = job_dir / "job.json"
     job_path.write_text(json.dumps({"train_csv": "dataset.csv"}))
     result_path = job_dir / "result.json"
+    marker_path = tmp_path / ".training_in_progress"
     expected = {"model_path": "model.pkl", "split_results": []}
 
     class FakeProcess:
         def __init__(self, *args, **kwargs):
+            marker_path.write_text(json.dumps({"progress_message": "TabICL training progress: run 1/2 - random"}))
             result_path.write_text(json.dumps(expected))
 
         def poll(self):
@@ -64,6 +66,7 @@ def test_run_training_worker_reads_result_json(tmp_path, monkeypatch):
     result = toolkit._run_training_worker(
         job_path=job_path,
         worker_log_path=job_dir / "worker.log",
+        active_marker_path=marker_path,
     )
 
     assert result["model_path"] == expected["model_path"]
