@@ -95,6 +95,18 @@ def test_training_profile_resolution_keeps_shared_names():
     assert heavy["profile"] == "heavy_validation"
 
 
+def test_tabicl_light_profiles_keep_n_jobs_compatible_with_predict():
+    from cs_copilot.tools.prediction.tabicl_toolkit import TabICLToolkit
+
+    toolkit = TabICLToolkit()
+
+    light = toolkit._apply_training_profile({"training_profile": "local_light"})
+    standard = toolkit._apply_training_profile({"training_profile": "local_standard"})
+
+    assert int(light["extra_args"]["n_jobs"]) >= 1
+    assert int(standard["extra_args"]["n_jobs"]) >= 1
+
+
 def test_random_split_payload_is_deterministic():
     df = _sample_tabular_df()
 

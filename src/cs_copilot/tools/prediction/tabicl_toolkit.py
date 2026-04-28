@@ -85,7 +85,7 @@ class TabICLToolkit(Toolkit):
             "split_sizes": [0.8, 0.1, 0.1],
             "split_type": "random",
             "random_state": 42,
-            "n_jobs": 0,
+            "n_jobs": 1,
             "verbose": False,
         }
         if profile == "heavy_validation":
@@ -135,12 +135,12 @@ class TabICLToolkit(Toolkit):
             if profile == "local_light":
                 merged["batch_size"] = min(int(merged.get("batch_size", 32)), 32)
                 merged["n_estimators"] = min(int(merged.get("n_estimators", 4)), 4)
-                merged["n_jobs"] = 0
+                merged["n_jobs"] = max(1, int(merged.get("n_jobs", 1)))
                 merged["kv_cache"] = False
             elif profile == "local_standard":
                 merged["batch_size"] = min(int(merged.get("batch_size", 64)), 64)
                 merged["n_estimators"] = min(int(merged.get("n_estimators", 4)), 4)
-                merged["n_jobs"] = 0
+                merged["n_jobs"] = max(1, int(merged.get("n_jobs", 1)))
 
         if profile == "heavy_validation":
             merged["batch_size"] = max(int(merged.get("batch_size", 64)), 64)
