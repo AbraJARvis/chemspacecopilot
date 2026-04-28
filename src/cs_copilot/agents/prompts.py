@@ -478,6 +478,8 @@ QSAR_TRAINING_INSTRUCTIONS = [
     "  - Default to `standard_qsar` validation when possible: one random split plus one scaffold-aware split.",
     "  - Use `challenging_qsar` when the user explicitly asks for stronger trustworthiness checks or when you need to probe whether scaffold validation is still optimistic.",
     "  - Use `fast_local` only for quick iteration or when the user explicitly prioritizes speed over stronger QSAR validation.",
+    "  - When the user explicitly asks for a comparative multi-backend evaluation, use `benchmark_fast_local`, `benchmark_standard_qsar`, `benchmark_robust_qsar`, or `benchmark_challenging_qsar` instead of improvising a comparison by hand.",
+    "  - In benchmark modes, every trained candidate model must be persisted and cataloged independently, exactly as if it had been trained alone.",
     "  - Preserve split artifacts, per-split test predictions, training summaries, and checkpoint paths.",
     "  - Build and persist the training-set applicability domain when the model can be trained successfully, and carry its summary forward in the training outputs.",
     "  - Canonical QSAR statuses are `experimental`, `workflow_demo`, `validated`, and `robust_validated`.",

@@ -106,23 +106,23 @@ def _canonical_model_id(
     dataset: str,
     protocol: str,
     backend: str,
+    representation: Optional[str],
     version: str,
     trained_at: datetime,
 ) -> str:
     version_token = version if str(version).startswith("v") else f"v{version}"
     date_token = trained_at.strftime("%d%m%Y")
     time_token = trained_at.strftime("%H%M%S")
-    return "_".join(
-        [
-            safe_slug(endpoint),
-            safe_slug(dataset),
-            safe_slug(protocol),
-            safe_slug(backend),
-            safe_slug(version_token),
-            date_token,
-            time_token,
-        ]
-    )
+    parts = [
+        safe_slug(endpoint),
+        safe_slug(dataset),
+        safe_slug(protocol),
+        safe_slug(backend),
+    ]
+    if representation:
+        parts.append(safe_slug(representation))
+    parts.extend([safe_slug(version_token), date_token, time_token])
+    return "_".join(parts)
 
 
 def _canonical_display_name(
@@ -131,18 +131,20 @@ def _canonical_display_name(
     dataset: str,
     protocol: str,
     backend: str,
+    representation: Optional[str],
     version: str,
 ) -> str:
     version_token = version if str(version).startswith("v") else f"v{version}"
-    return " ".join(
-        [
-            _safe_display_token(endpoint),
-            _safe_display_token(dataset),
-            _safe_display_token(protocol),
-            _safe_display_token(backend),
-            version_token,
-        ]
-    ).strip()
+    parts = [
+        _safe_display_token(endpoint),
+        _safe_display_token(dataset),
+        _safe_display_token(protocol),
+        _safe_display_token(backend),
+    ]
+    if representation:
+        parts.append(_safe_display_token(representation))
+    parts.append(version_token)
+    return " ".join(parts).strip()
 
 
 def _write_active_training_marker(marker_path: Path, payload: Dict[str, Any]) -> None:
@@ -1096,11 +1098,17 @@ class ChempropToolkit(Toolkit):
             if matching_training_run
             else "protocol"
         )
+        representation_name = (
+            (current.training_data_summary or {}).get("representation_name")
+            or (current.inference_profile or {}).get("representation_name")
+            or (current.selection_hints or {}).get("representation_name")
+        )
         canonical_model_id = _canonical_model_id(
             endpoint=endpoint_name,
             dataset=dataset_name,
             protocol=str(protocol_name or "protocol"),
             backend=current.backend_name,
+            representation=representation_name,
             version=str(resolved_version),
             trained_at=trained_at,
         )
@@ -1109,6 +1117,7 @@ class ChempropToolkit(Toolkit):
             dataset=dataset_name,
             protocol=str(protocol_name or "protocol"),
             backend=current.backend_name,
+            representation=representation_name,
             version=str(resolved_version),
         )
 

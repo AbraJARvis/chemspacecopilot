@@ -32,6 +32,7 @@ from .chemistry import (
 from .curation import DatasetCurationToolkit
 from .features import MolecularFeatureToolkit
 from .prediction import (
+    BenchmarkToolkit,
     CatalogRecommendation,
     ChempropBackend,
     ChempropToolkit,
@@ -72,6 +73,7 @@ __all__ = [
     "SynPlannerToolkit",
     "ChempropToolkit",
     "ChempropBackend",
+    "BenchmarkToolkit",
     "TabICLToolkit",
     "TabICLBackend",
     "PredictionModelCatalog",

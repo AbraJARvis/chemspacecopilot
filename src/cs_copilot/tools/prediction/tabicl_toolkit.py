@@ -7,7 +7,11 @@ Toolkit exposing TabICLv2-backed tabular QSAR workflows.
 from __future__ import annotations
 
 import json
+import logging
 import shutil
+import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -16,7 +20,7 @@ from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
 from .ad_builder import build_applicability_domain_from_training_data
-from .backend import PredictionTaskSpec
+from .backend import PredictionExecutionError, PredictionTaskSpec
 from .chemprop_toolkit import _get_prediction_state, _write_active_training_marker
 from .qsar_plots import build_qsar_training_plots
 from .qsar_training_policy import (
@@ -33,6 +37,8 @@ from .tabicl_backend import (
     DEFAULT_TABICL_REGRESSOR_CHECKPOINT,
     TabICLBackend,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -308,63 +314,34 @@ class TabICLToolkit(Toolkit):
             "is_backend_resource": True,
         }
 
-    def train_tabicl_model(
+    def _normalize_json_list_argument(
         self,
+        value: Optional[List[Any] | str],
+        *,
+        argument_name: str,
+    ) -> Optional[List[Any]]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            parsed = json.loads(value)
+            if not isinstance(parsed, list):
+                raise ValueError(f"{argument_name} must be a list or a JSON-encoded list.")
+            return parsed
+        return list(value)
+
+    def _build_active_run_record(
+        self,
+        *,
         train_csv: str,
-        task_type: str,
-        output_dir: str,
-        target_columns: List[str] | str,
-        feature_columns: Optional[List[str] | str] = None,
-        validation_protocol: Optional[str] = None,
-        split_type: str = "random",
-        split_sizes: Optional[List[float] | str] = None,
-        random_state: int = 42,
-        extra_args: Optional[Dict[str, Any]] = None,
-        agent: Optional[Agent] = None,
+        resolved_output_dir: str,
+        protocol_policy: Dict[str, Any],
+        training_policy: Dict[str, Any],
+        trained_at,
+        active_marker_path: Path,
+        worker_pid: Optional[int] = None,
+        worker_status: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Train a TabICLv2 regressor with Chemprop-style QSAR validation protocols."""
-        if isinstance(target_columns, str):
-            parsed = json.loads(target_columns)
-            if not isinstance(parsed, list):
-                raise ValueError("target_columns must be a list or a JSON-encoded list.")
-            target_columns = parsed
-        if isinstance(feature_columns, str):
-            parsed = json.loads(feature_columns)
-            if not isinstance(parsed, list):
-                raise ValueError("feature_columns must be a list or a JSON-encoded list.")
-            feature_columns = parsed
-        if isinstance(split_sizes, str):
-            parsed = json.loads(split_sizes)
-            if not isinstance(parsed, list):
-                raise ValueError("split_sizes must be a list or a JSON-encoded list.")
-            split_sizes = parsed
-
-        resolved_output_dir = str(Path(output_dir).expanduser().resolve())
-        root_output_path = Path(resolved_output_dir)
-        root_output_path.mkdir(parents=True, exist_ok=True)
-        trained_at = project_now()
-
-        requested_extra_args = dict(extra_args or {})
-        requested_extra_args.setdefault("feature_columns", feature_columns)
-        requested_extra_args.setdefault("split_sizes", split_sizes)
-        requested_extra_args.setdefault("random_state", random_state)
-        requested_extra_args.setdefault("split_type", split_type)
-        requested_extra_args.setdefault("validation_protocol", validation_protocol)
-
-        training_policy = self._apply_training_profile(requested_extra_args)
-        protocol_policy = self._resolve_validation_protocol(
-            requested_protocol=training_policy.get("validation_protocol"),
-            training_profile=training_policy["training_profile"],
-        )
-        task = PredictionTaskSpec(
-            task_type=task_type,
-            smiles_columns=["smiles"],
-            target_columns=list(target_columns),
-        )
-
-        prediction_state = _get_prediction_state(agent) if agent is not None else None
-        active_marker_path = root_output_path / ".training_in_progress"
-        active_run_record = {
+        return {
             "status": "running",
             "backend_name": "tabicl",
             "train_csv": train_csv,
@@ -377,10 +354,100 @@ class TabICLToolkit(Toolkit):
             "current_split_index": None,
             "total_splits": len(protocol_policy["split_runs"]),
             "progress_message": None,
+            "worker_pid": worker_pid,
+            "worker_status": worker_status,
         }
+
+    def _sync_training_run_state_from_result(
+        self,
+        *,
+        prediction_state: Optional[Dict[str, Any]],
+        train_csv: str,
+        resolved_output_dir: str,
+        task_type: str,
+        task: PredictionTaskSpec,
+        protocol_policy: Dict[str, Any],
+        training_policy: Dict[str, Any],
+        split_results: List[Dict[str, Any]],
+    ) -> None:
+        if prediction_state is None:
+            return
+        prediction_state["training_runs"].append(
+            {
+                "train_csv": train_csv,
+                "output_dir": resolved_output_dir,
+                "task_type": task_type,
+                "smiles_columns": task.smiles_columns,
+                "target_columns": task.target_columns,
+                "validation_protocol": protocol_policy["protocol"],
+                "training_profile": training_policy["training_profile"],
+                "split_runs": [
+                    {
+                        "label": item["strategy_label"],
+                        "strategy": item["strategy"],
+                        "strategy_family": item.get("strategy_family"),
+                        "output_dir": item["output_dir"],
+                        "seed": item["seed"],
+                    }
+                    for item in split_results
+                ],
+            }
+        )
+
+    def _run_protocol_training(
+        self,
+        *,
+        train_csv: str,
+        task_type: str,
+        resolved_output_dir: str,
+        target_columns: List[str],
+        feature_columns: Optional[List[str]],
+        split_type: str,
+        split_sizes: Optional[List[float]],
+        random_state: int,
+        extra_args: Optional[Dict[str, Any]],
+        prediction_state: Optional[Dict[str, Any]] = None,
+        active_marker_path: Optional[Path] = None,
+        worker_pid: Optional[int] = None,
+        worker_status: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        root_output_path = Path(resolved_output_dir)
+        root_output_path.mkdir(parents=True, exist_ok=True)
+        trained_at = project_now()
+
+        requested_extra_args = dict(extra_args or {})
+        requested_extra_args.setdefault("feature_columns", feature_columns)
+        requested_extra_args.setdefault("split_sizes", split_sizes)
+        requested_extra_args.setdefault("random_state", random_state)
+        requested_extra_args.setdefault("split_type", split_type)
+        requested_extra_args.setdefault("validation_protocol", requested_extra_args.get("validation_protocol"))
+
+        training_policy = self._apply_training_profile(requested_extra_args)
+        protocol_policy = self._resolve_validation_protocol(
+            requested_protocol=training_policy.get("validation_protocol"),
+            training_profile=training_policy["training_profile"],
+        )
+        task = PredictionTaskSpec(
+            task_type=task_type,
+            smiles_columns=["smiles"],
+            target_columns=list(target_columns),
+        )
+
+        marker_path = active_marker_path or (root_output_path / ".training_in_progress")
+        active_run_record = self._build_active_run_record(
+            train_csv=train_csv,
+            resolved_output_dir=resolved_output_dir,
+            protocol_policy=protocol_policy,
+            training_policy=training_policy,
+            trained_at=trained_at,
+            active_marker_path=marker_path,
+            worker_pid=worker_pid,
+            worker_status=worker_status,
+        )
         if prediction_state is not None:
             prediction_state["active_training_run"] = dict(active_run_record)
-        _write_active_training_marker(active_marker_path, active_run_record)
+        _write_active_training_marker(marker_path, active_run_record)
+
         split_results: List[Dict[str, Any]] = []
         primary_run: Optional[Dict[str, Any]] = None
         total_started_at = project_now()
@@ -401,7 +468,7 @@ class TabICLToolkit(Toolkit):
                     "split_type": split_run["backend_split_type"],
                     "random_state": split_run["seed"],
                     "validation_protocol": protocol_policy["protocol"],
-                    "heartbeat_path": str(active_marker_path),
+                    "heartbeat_path": str(marker_path),
                     "heartbeat_label": label,
                     "heartbeat_run_index": run_index,
                     "heartbeat_total_runs": len(protocol_policy["split_runs"]),
@@ -414,9 +481,10 @@ class TabICLToolkit(Toolkit):
                 active_run_record["progress_message"] = (
                     f"TabICL training progress: run {run_index}/{len(protocol_policy['split_runs'])} - {label}"
                 )
+                active_run_record["worker_status"] = "running"
                 if prediction_state is not None:
                     prediction_state["active_training_run"] = dict(active_run_record)
-                _write_active_training_marker(active_marker_path, active_run_record)
+                _write_active_training_marker(marker_path, active_run_record)
 
                 single_result = self.backend.train_model(
                     train_csv=train_csv,
@@ -458,9 +526,10 @@ class TabICLToolkit(Toolkit):
         finally:
             active_run_record["status"] = "completed" if primary_run is not None else "failed"
             active_run_record["completed_at"] = project_now().isoformat()
+            active_run_record["worker_status"] = "completed" if primary_run is not None else "failed"
             if prediction_state is not None:
                 prediction_state["active_training_run"] = None
-            _write_active_training_marker(active_marker_path, active_run_record)
+            _write_active_training_marker(marker_path, active_run_record)
 
         if primary_run is None:
             raise ValueError("TabICL validation protocol did not produce a primary run.")
@@ -552,28 +621,206 @@ class TabICLToolkit(Toolkit):
         summary_path.parent.mkdir(parents=True, exist_ok=True)
         summary_path.write_text(json.dumps(result, indent=2) + "\n")
 
-        if prediction_state is not None:
-            prediction_state["training_runs"].append(
-                {
-                    "train_csv": train_csv,
-                    "output_dir": resolved_output_dir,
-                    "task_type": task_type,
-                    "smiles_columns": task.smiles_columns,
-                    "target_columns": task.target_columns,
-                    "validation_protocol": protocol_policy["protocol"],
-                    "training_profile": training_policy["training_profile"],
-                    "split_runs": [
-                        {
-                            "label": item["strategy_label"],
-                            "strategy": item["strategy"],
-                            "strategy_family": item.get("strategy_family"),
-                            "output_dir": item["output_dir"],
-                            "seed": item["seed"],
-                        }
-                        for item in split_results
-                    ],
-                }
+        self._sync_training_run_state_from_result(
+            prediction_state=prediction_state,
+            train_csv=train_csv,
+            resolved_output_dir=resolved_output_dir,
+            task_type=task_type,
+            task=task,
+            protocol_policy=protocol_policy,
+            training_policy=training_policy,
+            split_results=split_results,
+        )
+        return result
+
+    def _write_worker_job(
+        self,
+        *,
+        job_dir: Path,
+        payload: Dict[str, Any],
+    ) -> Path:
+        job_dir.mkdir(parents=True, exist_ok=True)
+        for stale_name in ("result.json", "error.json", "worker.log"):
+            stale_path = job_dir / stale_name
+            if stale_path.exists():
+                stale_path.unlink()
+        job_path = job_dir / "job.json"
+        job_path.write_text(json.dumps(payload, indent=2) + "\n")
+        return job_path
+
+    def _run_training_worker(
+        self,
+        *,
+        job_path: Path,
+        worker_log_path: Path,
+    ) -> Dict[str, Any]:
+        result_path = job_path.parent / "result.json"
+        error_path = job_path.parent / "error.json"
+        command = [
+            sys.executable,
+            "-m",
+            "cs_copilot.tools.prediction.tabicl_train_worker",
+            str(job_path),
+        ]
+        worker_log_path.parent.mkdir(parents=True, exist_ok=True)
+        start_time = time.monotonic()
+        with worker_log_path.open("w", encoding="utf-8") as log_fh:
+            process = subprocess.Popen(
+                command,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                text=True,
             )
+
+            result_seen_at: Optional[float] = None
+            while True:
+                return_code = process.poll()
+                if result_path.exists() and result_seen_at is None:
+                    result_seen_at = time.monotonic()
+                if return_code is not None:
+                    break
+                if result_seen_at is not None and (time.monotonic() - result_seen_at) >= 2.0:
+                    logger.warning(
+                        "TabICL worker produced result.json but remained alive; terminating worker pid=%s.",
+                        process.pid,
+                    )
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5.0)
+                    except subprocess.TimeoutExpired:
+                        logger.warning("TabICL worker did not terminate cleanly; killing pid=%s.", process.pid)
+                        process.kill()
+                        process.wait(timeout=5.0)
+                    break
+                time.sleep(0.5)
+
+        duration_seconds = round(time.monotonic() - start_time, 3)
+        if result_path.exists():
+            result = json.loads(result_path.read_text())
+            result.setdefault("worker_duration_seconds", duration_seconds)
+            return result
+
+        if error_path.exists():
+            payload = json.loads(error_path.read_text())
+            message = payload.get("error_message") or "TabICL worker failed."
+            traceback_text = payload.get("traceback")
+            if traceback_text:
+                raise RuntimeError(f"{message}\n{traceback_text}")
+            raise RuntimeError(message)
+
+        log_excerpt = worker_log_path.read_text(encoding="utf-8") if worker_log_path.exists() else ""
+        raise RuntimeError(
+            "TabICL worker exited without producing result.json or error.json. "
+            f"worker_log={worker_log_path} details={log_excerpt[-4000:]}"
+        )
+
+    def train_tabicl_model(
+        self,
+        train_csv: str,
+        task_type: str,
+        output_dir: str,
+        target_columns: List[str] | str,
+        feature_columns: Optional[List[str] | str] = None,
+        validation_protocol: Optional[str] = None,
+        split_type: str = "random",
+        split_sizes: Optional[List[float] | str] = None,
+        random_state: int = 42,
+        extra_args: Optional[Dict[str, Any]] = None,
+        agent: Optional[Agent] = None,
+    ) -> Dict[str, Any]:
+        """Train a TabICLv2 regressor with Chemprop-style QSAR validation protocols."""
+        normalized_target_columns = self._normalize_json_list_argument(
+            target_columns,
+            argument_name="target_columns",
+        ) or []
+        normalized_feature_columns = self._normalize_json_list_argument(
+            feature_columns,
+            argument_name="feature_columns",
+        )
+        normalized_split_sizes = self._normalize_json_list_argument(
+            split_sizes,
+            argument_name="split_sizes",
+        )
+
+        resolved_output_dir = str(Path(output_dir).expanduser().resolve())
+        root_output_path = Path(resolved_output_dir)
+        root_output_path.mkdir(parents=True, exist_ok=True)
+
+        requested_extra_args = dict(extra_args or {})
+        requested_extra_args.setdefault("feature_columns", normalized_feature_columns)
+        requested_extra_args.setdefault("split_sizes", normalized_split_sizes)
+        requested_extra_args.setdefault("random_state", random_state)
+        requested_extra_args.setdefault("split_type", split_type)
+        requested_extra_args.setdefault("validation_protocol", validation_protocol)
+
+        training_policy = self._apply_training_profile(requested_extra_args)
+        protocol_policy = self._resolve_validation_protocol(
+            requested_protocol=training_policy.get("validation_protocol"),
+            training_profile=training_policy["training_profile"],
+        )
+        trained_at = project_now()
+        active_marker_path = root_output_path / ".training_in_progress"
+        prediction_state = _get_prediction_state(agent) if agent is not None else None
+
+        active_run_record = self._build_active_run_record(
+            train_csv=train_csv,
+            resolved_output_dir=resolved_output_dir,
+            protocol_policy=protocol_policy,
+            training_policy=training_policy,
+            trained_at=trained_at,
+            active_marker_path=active_marker_path,
+            worker_status="starting",
+        )
+        if prediction_state is not None:
+            prediction_state["active_training_run"] = dict(active_run_record)
+        _write_active_training_marker(active_marker_path, active_run_record)
+
+        job_dir = root_output_path / "_worker_job"
+        worker_log_path = job_dir / "worker.log"
+        job_payload = {
+            "train_csv": train_csv,
+            "task_type": task_type,
+            "output_dir": resolved_output_dir,
+            "target_columns": normalized_target_columns,
+            "feature_columns": normalized_feature_columns,
+            "split_type": split_type,
+            "split_sizes": normalized_split_sizes,
+            "random_state": random_state,
+            "extra_args": requested_extra_args,
+        }
+        job_path = self._write_worker_job(job_dir=job_dir, payload=job_payload)
+
+        try:
+            result = self._run_training_worker(
+                job_path=job_path,
+                worker_log_path=worker_log_path,
+            )
+        except Exception as exc:
+            active_run_record["status"] = "failed"
+            active_run_record["worker_status"] = "failed"
+            active_run_record["completed_at"] = project_now().isoformat()
+            if prediction_state is not None:
+                prediction_state["active_training_run"] = None
+            _write_active_training_marker(active_marker_path, active_run_record)
+            raise PredictionExecutionError(f"TabICL worker execution failed: {exc}") from exc
+
+        task = PredictionTaskSpec(
+            task_type=task_type,
+            smiles_columns=["smiles"],
+            target_columns=list(normalized_target_columns),
+        )
+        self._sync_training_run_state_from_result(
+            prediction_state=prediction_state,
+            train_csv=train_csv,
+            resolved_output_dir=resolved_output_dir,
+            task_type=task_type,
+            task=task,
+            protocol_policy=protocol_policy,
+            training_policy=training_policy,
+            split_results=list(result.get("split_results") or []),
+        )
+        if prediction_state is not None:
+            prediction_state["active_training_run"] = None
         return result
 
     def predict_with_tabicl_from_csv(
