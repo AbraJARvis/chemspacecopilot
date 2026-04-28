@@ -272,4 +272,5 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     assert set(["candidate_id", "model_id", "backend", "representation", "hardest_split_r2"]).issubset(
         set(leaderboard.columns)
     )
-
+    chemprop_row = leaderboard.loc[leaderboard["candidate_id"] == "chemprop_default"].iloc[0]
+    assert chemprop_row["representation"] == "molecular_graph"

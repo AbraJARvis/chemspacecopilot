@@ -1092,7 +1092,13 @@ class ChempropToolkit(Toolkit):
         except Exception:
             trained_at = project_now()
         train_csv_for_name = train_csv or summary_payload.get("train_csv") or current.source
-        endpoint_name, dataset_name = _extract_endpoint_and_dataset(train_csv_for_name, current.model_id)
+        benchmark_dataset_name = (current.training_data_summary or {}).get("benchmark_dataset_name")
+        benchmark_target_name = (current.training_data_summary or {}).get("benchmark_target_name")
+        if benchmark_dataset_name and benchmark_target_name:
+            endpoint_name = safe_slug(str(benchmark_dataset_name)) or "endpoint"
+            dataset_name = safe_slug(str(benchmark_target_name)) or "dataset"
+        else:
+            endpoint_name, dataset_name = _extract_endpoint_and_dataset(train_csv_for_name, current.model_id)
         protocol_name = (
             summary_payload.get("validation_protocol")
             or matching_training_run.get("validation_protocol")

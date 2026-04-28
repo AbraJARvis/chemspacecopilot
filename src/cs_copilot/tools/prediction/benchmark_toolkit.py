@@ -15,7 +15,7 @@ from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
 from .chemprop_toolkit import ChempropToolkit
-from .qsar_training_policy import describe_compute_environment, resolve_training_profile
+from .qsar_training_policy import describe_compute_environment, resolve_training_profile, safe_slug
 from .tabicl_toolkit import TabICLToolkit
 from ..features.molecular_feature_toolkit import MolecularFeatureToolkit
 
@@ -38,6 +38,35 @@ def _safe_float(value: Any) -> Optional[float]:
         return float(value)
     except Exception:
         return None
+
+
+def _benchmark_dataset_token(train_csv: str) -> str:
+    stem = Path(train_csv).stem.lower()
+    suffixes = (
+        "_tabular_qsar",
+        "_tabular",
+        "_normalized",
+        "_prepared",
+        "_curated",
+        "_cleaned",
+        "_dataset",
+        "_training",
+    )
+    for suffix in suffixes:
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    for trailing in ("_train", "_test"):
+        if stem.endswith(trailing):
+            stem = stem[: -len(trailing)]
+            break
+    return safe_slug(stem) or "dataset"
+
+
+def _benchmark_target_token(target_columns: List[str]) -> str:
+    if not target_columns:
+        return "target"
+    return safe_slug(str(target_columns[0])) or "target"
 
 
 class BenchmarkToolkit(Toolkit):
@@ -195,7 +224,7 @@ class BenchmarkToolkit(Toolkit):
                 {
                     "candidate_id": "chemprop_default",
                     "backend_name": "chemprop",
-                    "representation_name": "molecular_graph_default",
+                    "representation_name": "molecular_graph",
                 }
             )
         if "tabicl" in backends:
@@ -394,6 +423,8 @@ class BenchmarkToolkit(Toolkit):
                 "benchmark_mode": benchmark_mode,
                 "candidate_id": candidate["candidate_id"],
                 "representation_name": candidate["representation_name"],
+                "benchmark_dataset_name": _benchmark_dataset_token(train_csv),
+                "benchmark_target_name": _benchmark_target_token(target_columns),
                 "validation_protocol": benchmark_protocol,
                 "training_profile": training_profile,
                 "campaign_root": str(campaign_root),
