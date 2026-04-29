@@ -16,6 +16,7 @@ from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
 from .chemprop_toolkit import ChempropToolkit
+from .lightgbm_toolkit import LightGBMToolkit
 from .qsar_training_policy import describe_compute_environment, resolve_training_profile, safe_slug
 from .tabicl_toolkit import TabICLToolkit
 from ..features.molecular_feature_toolkit import MolecularFeatureToolkit
@@ -114,16 +115,44 @@ class BenchmarkToolkit(Toolkit):
             "descriptor_set": "all",
         },
     }
+    LIGHTGBM_VARIANT_SPECS = {
+        "lightgbm_morgan_only": {
+            "representation_name": "morgan_only",
+            "use_morgan": True,
+            "use_rdkit": False,
+            "descriptor_set": None,
+        },
+        "lightgbm_rdkit_basic_only": {
+            "representation_name": "rdkit_basic_only",
+            "use_morgan": False,
+            "use_rdkit": True,
+            "descriptor_set": "basic",
+        },
+        "lightgbm_morgan_rdkit_basic": {
+            "representation_name": "morgan_rdkit_basic",
+            "use_morgan": True,
+            "use_rdkit": True,
+            "descriptor_set": "basic",
+        },
+        "lightgbm_morgan_rdkit_all": {
+            "representation_name": "morgan_rdkit_all",
+            "use_morgan": True,
+            "use_rdkit": True,
+            "descriptor_set": "all",
+        },
+    }
 
     def __init__(
         self,
         *,
         chemprop_toolkit: Optional[ChempropToolkit] = None,
+        lightgbm_toolkit: Optional[LightGBMToolkit] = None,
         tabicl_toolkit: Optional[TabICLToolkit] = None,
         molecular_feature_toolkit: Optional[MolecularFeatureToolkit] = None,
     ):
         super().__init__("benchmark_prediction")
         self.chemprop_toolkit = chemprop_toolkit or ChempropToolkit()
+        self.lightgbm_toolkit = lightgbm_toolkit or LightGBMToolkit()
         self.tabicl_toolkit = tabicl_toolkit or TabICLToolkit()
         self.molecular_feature_toolkit = molecular_feature_toolkit or MolecularFeatureToolkit()
         self.register(self.benchmark_qsar_models)
@@ -160,6 +189,12 @@ class BenchmarkToolkit(Toolkit):
         if self.chemprop_toolkit.backend.is_available():
             available.append("chemprop")
         if (
+            self.lightgbm_toolkit.backend.is_available()
+            and task_type == "regression"
+            and len(target_columns) == 1
+        ):
+            available.append("lightgbm")
+        if (
             self.tabicl_toolkit.backend.is_available()
             and task_type == "regression"
             and len(target_columns) == 1
@@ -174,6 +209,38 @@ class BenchmarkToolkit(Toolkit):
                 )
             return filtered
         return available
+
+    def _expand_lightgbm_candidates(
+        self,
+        *,
+        include_candidate_variants: bool,
+        training_profile: str,
+    ) -> List[Dict[str, Any]]:
+        if include_candidate_variants:
+            variant_ids = [
+                "lightgbm_morgan_only",
+                "lightgbm_rdkit_basic_only",
+                "lightgbm_morgan_rdkit_basic",
+                "lightgbm_morgan_rdkit_all",
+            ]
+        else:
+            variant_ids = [
+                "lightgbm_morgan_rdkit_all"
+                if training_profile == "heavy_validation"
+                else "lightgbm_morgan_rdkit_basic"
+            ]
+
+        candidates: List[Dict[str, Any]] = []
+        for candidate_id in variant_ids:
+            spec = dict(self.LIGHTGBM_VARIANT_SPECS[candidate_id])
+            candidates.append(
+                {
+                    "candidate_id": candidate_id,
+                    "backend_name": "lightgbm",
+                    **spec,
+                }
+            )
+        return candidates
 
     def _expand_tabicl_candidates(
         self,
@@ -238,6 +305,13 @@ class BenchmarkToolkit(Toolkit):
                     "representation_name": "molecular_graph",
                 }
             )
+        if "lightgbm" in backends:
+            candidates.extend(
+                self._expand_lightgbm_candidates(
+                    include_candidate_variants=include_candidate_variants,
+                    training_profile=training_profile,
+                )
+            )
         if "tabicl" in backends:
             candidates.extend(
                 self._expand_tabicl_candidates(
@@ -248,7 +322,7 @@ class BenchmarkToolkit(Toolkit):
             )
         return candidates
 
-    def _prepare_tabicl_candidate_dataset(
+    def _prepare_tabular_candidate_dataset(
         self,
         *,
         candidate: Dict[str, Any],
@@ -356,13 +430,27 @@ class BenchmarkToolkit(Toolkit):
             result["candidate_train_csv"] = train_csv
             return result
 
-        prepared = self._prepare_tabicl_candidate_dataset(
+        prepared = self._prepare_tabular_candidate_dataset(
             candidate=candidate,
             train_csv=train_csv,
             smiles_column=smiles_column,
             target_columns=target_columns,
             candidate_dir=candidate_dir,
         )
+        if candidate["backend_name"] == "lightgbm":
+            result = self.lightgbm_toolkit.train_lightgbm_model(
+                train_csv=prepared["train_csv"],
+                task_type=task_type,
+                output_dir=str(candidate_dir),
+                target_columns=list(target_columns),
+                validation_protocol=benchmark_protocol,
+                extra_args=requested_extra_args,
+                agent=agent,
+            )
+            result["representation_name"] = prepared["representation_name"]
+            result["candidate_train_csv"] = prepared["train_csv"]
+            return result
+
         result = self.tabicl_toolkit.train_tabicl_model(
             train_csv=prepared["train_csv"],
             task_type=task_type,
@@ -444,6 +532,9 @@ class BenchmarkToolkit(Toolkit):
             },
             inference_profile={
                 "feature_columns": list(result.get("feature_columns") or []),
+                "categorical_feature_columns": list(
+                    result.get("categorical_feature_columns") or []
+                ),
                 "representation_name": candidate["representation_name"],
             },
             selection_hints={

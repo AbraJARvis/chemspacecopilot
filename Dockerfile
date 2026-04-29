@@ -33,7 +33,7 @@ COPY pyproject.toml uv.lock README.md ./
 # without making the base project dependency graph mandatory for every
 # environment.
 RUN uv sync --frozen --no-dev \
-    && uv pip install --python /app/.venv/bin/python "chemprop>=2.2.0" "tabicl>=2.0.3"
+    && uv pip install --python /app/.venv/bin/python "chemprop>=2.2.0" "lightgbm>=4.5.0" "tabicl>=2.0.3"
 
 # Application source
 COPY . .

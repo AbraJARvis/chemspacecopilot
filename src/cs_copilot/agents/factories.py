@@ -21,6 +21,7 @@ from cs_copilot.tools import (
     ChemicalSimilarityToolkit,
     DatasetCurationToolkit,
     GTMToolkit,
+    LightGBMToolkit,
     MolecularFeatureToolkit,
     PeptideWAEToolkit,
     PointerPandasTools,
@@ -688,6 +689,7 @@ class QSARTrainingFactory(BaseAgentFactory):
             tools=[
                 BenchmarkToolkit(),
                 ChempropToolkit(),
+                LightGBMToolkit(),
                 TabICLToolkit(),
                 MolecularFeatureToolkit(),
                 PointerPandasTools(),

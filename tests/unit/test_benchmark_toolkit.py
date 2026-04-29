@@ -9,6 +9,7 @@ import pandas as pd
 from cs_copilot.tools.prediction import catalog as catalog_module
 from cs_copilot.tools.prediction.benchmark_toolkit import BenchmarkToolkit
 from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
+from cs_copilot.tools.prediction.lightgbm_toolkit import LightGBMToolkit
 from cs_copilot.tools.prediction.tabicl_toolkit import TabICLToolkit
 
 
@@ -94,6 +95,23 @@ def test_expand_candidates_includes_heavy_tabicl_all():
     assert "tabicl_morgan_rdkit_all" in candidate_ids
 
 
+def test_expand_candidates_includes_heavy_lightgbm_all():
+    toolkit = BenchmarkToolkit()
+    candidates = toolkit._expand_candidates(
+        task_type="regression",
+        target_columns=["Y"],
+        requested_backends=["lightgbm"],
+        include_candidate_variants=True,
+        requested_tabicl_variants=None,
+        training_profile="heavy_validation",
+    )
+    candidate_ids = [item["candidate_id"] for item in candidates]
+    assert "lightgbm_morgan_only" in candidate_ids
+    assert "lightgbm_rdkit_basic_only" in candidate_ids
+    assert "lightgbm_morgan_rdkit_basic" in candidate_ids
+    assert "lightgbm_morgan_rdkit_all" in candidate_ids
+
+
 def test_rank_summary_rows_prefers_hardest_split_then_gap():
     toolkit = BenchmarkToolkit()
     ranked = toolkit._rank_summary_rows(
@@ -135,12 +153,15 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     )
 
     chemprop_toolkit = ChempropToolkit()
+    lightgbm_toolkit = LightGBMToolkit()
     tabicl_toolkit = TabICLToolkit()
     monkeypatch.setattr(chemprop_toolkit.backend, "is_available", lambda: True)
+    monkeypatch.setattr(lightgbm_toolkit.backend, "is_available", lambda: True)
     monkeypatch.setattr(tabicl_toolkit.backend, "is_available", lambda: True)
 
     toolkit = BenchmarkToolkit(
         chemprop_toolkit=chemprop_toolkit,
+        lightgbm_toolkit=lightgbm_toolkit,
         tabicl_toolkit=tabicl_toolkit,
     )
 
@@ -159,7 +180,7 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
         },
     )
 
-    def fake_prepare_tabicl_candidate_dataset(*, candidate, train_csv, smiles_column, target_columns, candidate_dir):
+    def fake_prepare_tabular_candidate_dataset(*, candidate, train_csv, smiles_column, target_columns, candidate_dir):
         output = candidate_dir / f"{candidate['candidate_id']}_tabular.csv"
         pd.DataFrame(
             {
@@ -171,7 +192,7 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
         ).to_csv(output, index=False)
         return {"train_csv": str(output), "representation_name": candidate["representation_name"]}
 
-    monkeypatch.setattr(toolkit, "_prepare_tabicl_candidate_dataset", fake_prepare_tabicl_candidate_dataset)
+    monkeypatch.setattr(toolkit, "_prepare_tabular_candidate_dataset", fake_prepare_tabular_candidate_dataset)
 
     def fake_chemprop_train_model(self, train_csv, task_type, output_dir, smiles_columns=None, target_columns=None, extra_args=None, agent=None):
         root = Path(output_dir)
@@ -239,7 +260,60 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
         )
         return result
 
+    def fake_lightgbm_train_model(
+        self,
+        train_csv,
+        task_type,
+        output_dir,
+        target_columns,
+        feature_columns=None,
+        categorical_feature_columns=None,
+        validation_protocol=None,
+        extra_args=None,
+        agent=None,
+    ):
+        root = Path(output_dir)
+        model_path, test_predictions_path, config_path, splits_path = _write_fake_training_outputs(
+            root,
+            model_name="best.pkl",
+            model_suffix=".pkl",
+        )
+        (root / "test_predictions.csv").write_text(test_predictions_path.read_text())
+        result = {
+            "model_path": str(model_path),
+            "summary_path": str(root / "cs_copilot_training_summary.json"),
+            "config_path": str(config_path),
+            "splits_path": str(splits_path),
+            "test_predictions_path": str(root / "test_predictions.csv"),
+            "validation_assessment": _fake_validation_assessment("standard_qsar", 0.57, "scaffold", 0.49),
+            "split_results": [
+                {"strategy_label": "random", "metrics": {"test": {"r2": 0.57, "rmse": 0.72, "mae": 0.52, "mse": 0.52}}},
+                {"strategy_label": "scaffold", "metrics": {"test": {"r2": 0.49, "rmse": 0.78, "mae": 0.57, "mse": 0.61}}},
+            ],
+            "training_durations": {"total_duration_seconds": 9.0},
+            "metrics": {"test": {"r2": 0.57}},
+            "feature_columns": ["feature_a", "feature_b"],
+            "categorical_feature_columns": [],
+            "applicability_domain": {},
+            "train_csv": train_csv,
+            "trained_at": "2026-04-27T12:00:00+02:00",
+        }
+        (root / "cs_copilot_training_summary.json").write_text(json.dumps(result))
+        agent.session_state["prediction_models"]["training_runs"].append(
+            {
+                "train_csv": train_csv,
+                "output_dir": str(root.resolve()),
+                "task_type": task_type,
+                "smiles_columns": ["smiles"],
+                "target_columns": target_columns,
+                "validation_protocol": validation_protocol or "standard_qsar",
+                "training_profile": "heavy_validation",
+            }
+        )
+        return result
+
     monkeypatch.setattr(ChempropToolkit, "train_model", fake_chemprop_train_model)
+    monkeypatch.setattr(LightGBMToolkit, "train_lightgbm_model", fake_lightgbm_train_model)
     monkeypatch.setattr(TabICLToolkit, "train_tabicl_model", fake_tabicl_train_model)
 
     agent = _fake_agent()
@@ -260,6 +334,10 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
 
     candidate_ids = {item["candidate_id"] for item in result["persisted_model_mapping"]}
     assert "chemprop_default" in candidate_ids
+    assert "lightgbm_morgan_only" in candidate_ids
+    assert "lightgbm_rdkit_basic_only" in candidate_ids
+    assert "lightgbm_morgan_rdkit_basic" in candidate_ids
+    assert "lightgbm_morgan_rdkit_all" in candidate_ids
     assert "tabicl_morgan_only" in candidate_ids
     assert "tabicl_rdkit_basic_only" in candidate_ids
     assert "tabicl_morgan_rdkit_basic" in candidate_ids
