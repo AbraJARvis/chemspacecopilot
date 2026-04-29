@@ -71,6 +71,10 @@ def test_resolve_benchmark_protocol_contract():
     assert toolkit._resolve_benchmark_protocol("benchmark_standard_qsar") == "standard_qsar"
     assert toolkit._resolve_benchmark_protocol("benchmark_robust_qsar") == "robust_qsar"
     assert toolkit._resolve_benchmark_protocol("benchmark_challenging_qsar") == "challenging_qsar"
+    assert toolkit._resolve_benchmark_protocol("fast_local") == "fast_local"
+    assert toolkit._resolve_benchmark_protocol("standard_qsar") == "standard_qsar"
+    assert toolkit._resolve_benchmark_protocol("robust_qsar") == "robust_qsar"
+    assert toolkit._resolve_benchmark_protocol("challenging_qsar") == "challenging_qsar"
 
 
 def test_expand_candidates_includes_heavy_tabicl_all():

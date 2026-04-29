@@ -81,6 +81,12 @@ class BenchmarkToolkit(Toolkit):
         "benchmark_robust_qsar": "robust_qsar",
         "benchmark_challenging_qsar": "challenging_qsar",
     }
+    BENCHMARK_MODE_ALIASES = {
+        "fast_local": "benchmark_fast_local",
+        "standard_qsar": "benchmark_standard_qsar",
+        "robust_qsar": "benchmark_robust_qsar",
+        "challenging_qsar": "benchmark_challenging_qsar",
+    }
 
     TABICL_VARIANT_SPECS = {
         "tabicl_morgan_only": {
@@ -124,11 +130,13 @@ class BenchmarkToolkit(Toolkit):
 
     def _resolve_benchmark_protocol(self, benchmark_mode: str) -> str:
         normalized = benchmark_mode.strip().lower()
+        normalized = self.BENCHMARK_MODE_ALIASES.get(normalized, normalized)
         protocol = self.BENCHMARK_MODE_TO_PROTOCOL.get(normalized)
         if protocol is None:
             raise ValueError(
                 "Unsupported benchmark_mode. Expected one of "
-                f"{sorted(self.BENCHMARK_MODE_TO_PROTOCOL)}."
+                f"{sorted(self.BENCHMARK_MODE_TO_PROTOCOL)} "
+                f"or aliases {sorted(self.BENCHMARK_MODE_ALIASES)}."
             )
         return protocol
 
