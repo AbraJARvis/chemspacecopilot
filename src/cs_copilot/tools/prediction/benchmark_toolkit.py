@@ -382,6 +382,7 @@ class BenchmarkToolkit(Toolkit):
         *,
         candidate: Dict[str, Any],
         result: Dict[str, Any],
+        train_csv: str,
         benchmark_mode: str,
         benchmark_protocol: str,
         campaign_root: Path,
@@ -723,6 +724,7 @@ class BenchmarkToolkit(Toolkit):
             persisted = self._register_and_persist_candidate(
                 candidate=candidate,
                 result=result,
+                train_csv=train_csv,
                 benchmark_mode=benchmark_mode,
                 benchmark_protocol=benchmark_protocol,
                 campaign_root=campaign_root,
