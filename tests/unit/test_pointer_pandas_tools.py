@@ -4,7 +4,7 @@
 import pandas as pd
 import pytest
 
-from cs_copilot.tools.io.pointer_pandas_tools import PointerPandasTools, _coerce_columns
+from cs_copilot.tools.io.pointer_pandas_tools import PointerPandasTools, _coerce_columns, _preview
 
 
 class TestCoerceColumns:
@@ -217,6 +217,16 @@ class TestPointerPandasTools:
         if "sample" in result:
             assert result["length"] == 3
             assert result["name"] == "canonical_smiles"
+
+    def test_preview_handles_empty_dataframe_with_columns(self):
+        """Reading CSV headers with nrows=0 should not crash preview rendering."""
+        empty_df = pd.DataFrame(columns=["smiles", "pEC50", "f1"])
+
+        preview = _preview(empty_df)
+
+        assert "shape=(0, 3)" in preview
+        assert "<empty dataframe preview;" in preview
+        assert "smiles" in preview
 
     def test_describe_with_comma_separated_columns(self, tools, sample_df):
         """Test describe operation with comma-separated columns."""

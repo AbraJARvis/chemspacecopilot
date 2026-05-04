@@ -179,6 +179,12 @@ class ChempropBackend(PredictionBackend):
             "save_preds",
             "save_checkpoints",
             "dataset_id",
+            "activity_cliff_feedback",
+            "activity_cliff_feedback_loops",
+            "activity_cliff_step_percentile",
+            "activity_cliff_similarity_threshold",
+            "activity_cliff_k_neighbors",
+            "activity_cliff_oof_folds",
         }
         dropped_args = sorted(arg for arg in unsupported_args if arg in sanitized)
         for arg in dropped_args:

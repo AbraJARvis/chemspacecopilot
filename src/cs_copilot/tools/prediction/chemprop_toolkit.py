@@ -2022,7 +2022,7 @@ class ChempropToolkit(Toolkit):
                 smiles_columns=normalized_smiles_columns,
                 target_columns=normalized_target_columns,
                 reaction_columns=normalized_reaction_columns,
-                extra_args=merged_extra_args,
+                extra_args=strip_activity_cliff_args(merged_extra_args),
                 agent=agent,
             )
 

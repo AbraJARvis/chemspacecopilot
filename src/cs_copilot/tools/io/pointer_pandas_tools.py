@@ -100,6 +100,14 @@ _DEDICATED_TOOL_OPERATIONS = {"smiles_to_morgan_fingerprints", "smiles_to_rdkit_
 def _preview(df: pd.DataFrame) -> str:
     """Generate a preview string for a DataFrame."""
     head = df.iloc[:SAMPLE_ROWS, :SAMPLE_COLS]
+    if head.empty:
+        column_preview = ", ".join(str(col) for col in head.columns[:SAMPLE_COLS])
+        if not column_preview:
+            column_preview = "<no columns>"
+        return (
+            f"(preview rows={SAMPLE_ROWS}, cols={SAMPLE_COLS}, shape={df.shape})\n"
+            f"<empty dataframe preview; columns={column_preview}>"
+        )
     return (
         f"(preview rows={SAMPLE_ROWS}, cols={SAMPLE_COLS}, shape={df.shape})\n"
         + head.to_markdown(maxcolwidths=[MAX_COL_WIDTH])

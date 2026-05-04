@@ -264,3 +264,30 @@ def test_resolve_catalog_record_accepts_display_name_alias(monkeypatch):
     resolved = toolkit._resolve_catalog_record("pxr_pEC50_LightGBM")
 
     assert resolved.model_id == record.model_id
+
+
+def test_train_model_without_feedback_strips_activity_cliff_args(monkeypatch, tmp_path):
+    toolkit = ChempropToolkit()
+    captured: dict[str, object] = {}
+
+    def fake_train_model_single(**kwargs):
+        captured.update(kwargs)
+        return {"summary_path": str(tmp_path / "summary.json")}
+
+    monkeypatch.setattr(toolkit, "_train_model_single", fake_train_model_single)
+
+    toolkit.train_model(
+        train_csv=str(tmp_path / "train.csv"),
+        task_type="regression",
+        output_dir=str(tmp_path / "out"),
+        smiles_columns=["smiles"],
+        target_columns=["pEC50"],
+        activity_cliff_feedback=False,
+        extra_args={"epochs": 25},
+    )
+
+    extra_args = captured["extra_args"]
+    assert extra_args["epochs"] == 25
+    assert "activity_cliff_feedback" not in extra_args
+    assert "activity_cliff_feedback_loops" not in extra_args
+    assert "activity_cliff_step_percentile" not in extra_args
