@@ -24,6 +24,17 @@ from scipy.stats import kendalltau, spearmanr
 from cs_copilot.storage import S3
 from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
 
+from .activity_cliffs import (
+    MIN_TRAINING_ROWS,
+    build_activity_cliff_comparison_metrics,
+    build_random_oof_splits,
+    choose_recommended_variant,
+    compute_activity_cliff_annotation,
+    merge_activity_cliff_args,
+    parse_activity_cliff_config,
+    strip_activity_cliff_args,
+    write_activity_cliff_artifacts,
+)
 from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionModelRecord, PredictionTaskSpec
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
@@ -41,7 +52,7 @@ from .qsar_training_policy import (
     safe_slug,
     summarize_training_durations,
 )
-from .qsar_plots import build_qsar_training_plots
+from .qsar_plots import build_activity_cliff_feedback_plots, build_qsar_training_plots
 from .tabicl_backend import TabICLBackend
 
 def _get_prediction_state(agent: Agent) -> Dict[str, Any]:
@@ -1582,28 +1593,82 @@ class ChempropToolkit(Toolkit):
             "columns": list(standardized.columns),
         }
 
-    def train_model(
+    def _run_oof_predictions(
         self,
+        *,
+        train_csv: str,
+        task: PredictionTaskSpec,
+        target_column: str,
+        training_policy: Dict[str, Any],
+        cliff_config: Any,
+        random_state: int,
+        output_dir: Path,
+    ) -> pd.Series:
+        dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
+        folds = build_random_oof_splits(
+            n_rows=len(dataset),
+            n_folds=cliff_config.oof_folds,
+            random_state=random_state,
+        )
+        oof_predictions = pd.Series(index=dataset.index, dtype=float)
+        base_args = {
+            **strip_activity_cliff_args(training_policy["extra_args"]),
+            **self._training_defaults_for_profile("local_light"),
+            "validation_protocol": "activity_cliff_oof",
+            "num_replicates": 1,
+            "ensemble_size": 1,
+            "num_workers": 0,
+        }
+        for fold_index, split_payload in enumerate(folds, start=1):
+            fold_dir = output_dir / "_activity_cliff_oof" / f"fold_{fold_index}"
+            fold_dir.mkdir(parents=True, exist_ok=True)
+            train_frame = dataset.iloc[split_payload["train"]].reset_index(drop=True)
+            val_frame = dataset.iloc[split_payload["val"]].reset_index(drop=True)
+            test_frame = dataset.iloc[split_payload["test"]].reset_index(drop=True)
+            train_path = fold_dir / "train.csv"
+            val_path = fold_dir / "val.csv"
+            test_path = fold_dir / "test.csv"
+            train_frame.to_csv(train_path, index=False)
+            val_frame.to_csv(val_path, index=False)
+            test_frame.to_csv(test_path, index=False)
+            self.backend.train_model(
+                train_csv=str(train_path),
+                output_dir=str(fold_dir),
+                task=task,
+                extra_args={
+                    **base_args,
+                    "data_seed": random_state + fold_index,
+                    "split_type": "random",
+                    "separate_val_path": str(val_path),
+                    "separate_test_path": str(test_path),
+                },
+            )
+            resolved_artifacts = self._resolve_chemprop_run_artifacts(fold_dir)
+            preds_path = resolved_artifacts.get("test_predictions_path")
+            if preds_path is None or not preds_path.exists():
+                raise ValueError("Activity-cliff OOF predictions were not produced for Chemprop.")
+            predictions = _strip_unnamed_columns(pd.read_csv(preds_path))
+            pred_series = pd.to_numeric(predictions[target_column], errors="coerce")
+            test_indices = split_payload["test"]
+            if len(pred_series) != len(test_indices):
+                raise ValueError("Activity-cliff OOF predictions length mismatch for Chemprop.")
+            oof_predictions.iloc[test_indices] = pred_series.to_numpy(dtype=float)
+        if oof_predictions.isna().any():
+            raise ValueError("Activity-cliff OOF predictions were incomplete for Chemprop.")
+        return oof_predictions.astype(float)
+
+    def _train_model_single(
+        self,
+        *,
         train_csv: str,
         task_type: str,
         output_dir: str,
-        smiles_columns: Optional[List[str] | str] = None,
-        target_columns: Optional[List[str] | str] = None,
-        reaction_columns: Optional[List[str] | str] = None,
-        extra_args: Optional[Dict[str, Any]] = None,
-        agent: Optional[Agent] = None,
+        smiles_columns: Optional[List[str]],
+        target_columns: Optional[List[str]],
+        reaction_columns: Optional[List[str]],
+        extra_args: Optional[Dict[str, Any]],
+        agent: Optional[Agent],
     ) -> Dict[str, Any]:
-        """Launch Chemprop training and persist a lightweight training record."""
-        if isinstance(smiles_columns, str):
-            parsed = json.loads(smiles_columns)
-            smiles_columns = parsed if isinstance(parsed, list) else [str(parsed)]
-        if isinstance(target_columns, str):
-            parsed = json.loads(target_columns)
-            target_columns = parsed if isinstance(parsed, list) else [str(parsed)]
-        if isinstance(reaction_columns, str):
-            parsed = json.loads(reaction_columns)
-            reaction_columns = parsed if isinstance(parsed, list) else [str(parsed)]
-
         resolved_output_dir = str(Path(output_dir).expanduser().resolve())
         root_output_path = Path(resolved_output_dir)
         active_marker_path = root_output_path / ".training_in_progress"
@@ -1644,7 +1709,6 @@ class ChempropToolkit(Toolkit):
         primary_run: Optional[Dict[str, Any]] = None
         primary_output_dir: Optional[Path] = None
         total_started_at = project_now()
-
         multi_run_protocol = len(protocol_policy["split_runs"]) > 1
 
         try:
@@ -1779,6 +1843,7 @@ class ChempropToolkit(Toolkit):
             result["trained_at"] = trained_at.isoformat()
             result["trained_date"] = trained_at.strftime("%d/%m/%Y")
             result["trained_time"] = trained_at.strftime("%H:%M:%S")
+            result["train_csv"] = train_csv
 
             training_summary_path = Path(resolved_output_dir) / "cs_copilot_training_summary.json"
             training_summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1829,25 +1894,173 @@ class ChempropToolkit(Toolkit):
                     bundle_files.append(Path(ad_summary[ad_key]).expanduser())
             for plot_path in plot_artifacts.values():
                 bundle_files.append(Path(plot_path).expanduser())
-            bundle = _bundle_artifacts(
-                bundle_path,
-                bundle_files,
-            )
+            bundle = _bundle_artifacts(bundle_path, bundle_files)
             result["bundle_file_ref"] = str(bundle)
             return result
         except Exception as exc:
             active_run_record["status"] = "failed"
             active_run_record["error"] = str(exc)
-            if prediction_state is not None:
-                prediction_state["active_training_run"] = dict(active_run_record)
-            if qsar_training_state is not None:
-                qsar_training_state["active_run"] = dict(active_run_record)
-            _write_active_training_marker(active_marker_path, active_run_record)
             raise
         finally:
-            if active_marker_path.exists():
-                active_marker_path.unlink()
+            active_run_record["completed_at"] = project_now().isoformat()
             if prediction_state is not None:
                 prediction_state["active_training_run"] = None
             if qsar_training_state is not None:
                 qsar_training_state["active_run"] = None
+            _write_active_training_marker(active_marker_path, active_run_record)
+
+    def train_model(
+        self,
+        train_csv: str,
+        task_type: str,
+        output_dir: str,
+        smiles_columns: Optional[List[str] | str] = None,
+        target_columns: Optional[List[str] | str] = None,
+        reaction_columns: Optional[List[str] | str] = None,
+        activity_cliff_feedback: bool = False,
+        activity_cliff_feedback_loops: int = 1,
+        activity_cliff_step_percentile: float = 5.0,
+        activity_cliff_similarity_threshold: float = 0.70,
+        activity_cliff_k_neighbors: int = 10,
+        activity_cliff_oof_folds: int = 5,
+        extra_args: Optional[Dict[str, Any]] = None,
+        agent: Optional[Agent] = None,
+    ) -> Dict[str, Any]:
+        """Launch Chemprop training and persist a lightweight training record."""
+        if isinstance(smiles_columns, str):
+            parsed = json.loads(smiles_columns)
+            smiles_columns = parsed if isinstance(parsed, list) else [str(parsed)]
+        if isinstance(target_columns, str):
+            parsed = json.loads(target_columns)
+            target_columns = parsed if isinstance(parsed, list) else [str(parsed)]
+        if isinstance(reaction_columns, str):
+            parsed = json.loads(reaction_columns)
+            reaction_columns = parsed if isinstance(parsed, list) else [str(parsed)]
+        merged_extra_args = merge_activity_cliff_args(
+            extra_args=extra_args,
+            activity_cliff_feedback=activity_cliff_feedback,
+            activity_cliff_feedback_loops=activity_cliff_feedback_loops,
+            activity_cliff_step_percentile=activity_cliff_step_percentile,
+            activity_cliff_similarity_threshold=activity_cliff_similarity_threshold,
+            activity_cliff_k_neighbors=activity_cliff_k_neighbors,
+            activity_cliff_oof_folds=activity_cliff_oof_folds,
+        )
+        feedback_config = parse_activity_cliff_config(merged_extra_args)
+        normalized_smiles_columns = smiles_columns or ["smiles"]
+        normalized_target_columns = target_columns or []
+        normalized_reaction_columns = reaction_columns or []
+
+        if not feedback_config.enabled:
+            return self._train_model_single(
+                train_csv=train_csv,
+                task_type=task_type,
+                output_dir=output_dir,
+                smiles_columns=normalized_smiles_columns,
+                target_columns=normalized_target_columns,
+                reaction_columns=normalized_reaction_columns,
+                extra_args=merged_extra_args,
+                agent=agent,
+            )
+
+        resolved_output_dir = str(Path(output_dir).expanduser().resolve())
+        root_output_path = Path(resolved_output_dir)
+        root_output_path.mkdir(parents=True, exist_ok=True)
+        training_policy = self._apply_training_profile(merged_extra_args)
+        task = PredictionTaskSpec(
+            task_type=task_type,
+            smiles_columns=normalized_smiles_columns,
+            target_columns=normalized_target_columns,
+            reaction_columns=normalized_reaction_columns,
+        )
+        target_column = normalized_target_columns[0]
+        oof_predictions = self._run_oof_predictions(
+            train_csv=train_csv,
+            task=task,
+            target_column=target_column,
+            training_policy=training_policy,
+            cliff_config=feedback_config,
+            random_state=int((strip_activity_cliff_args(merged_extra_args)).get("data_seed", 42)),
+            output_dir=root_output_path,
+        )
+        base_dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
+        annotated_df = compute_activity_cliff_annotation(
+            dataset=base_dataset,
+            smiles_column=normalized_smiles_columns[0],
+            target_column=target_column,
+            oof_predictions=oof_predictions,
+            similarity_threshold=feedback_config.similarity_threshold,
+            k_neighbors=feedback_config.k_neighbors,
+        )
+        cliff_summary = write_activity_cliff_artifacts(
+            annotated_df=annotated_df,
+            target_column=target_column,
+            output_dir=str(root_output_path / "activity_cliff_feedback"),
+            loops=feedback_config.loops,
+            step_percentile=feedback_config.step_percentile,
+            min_training_rows=MIN_TRAINING_ROWS,
+        )
+
+        variants: List[Dict[str, Any]] = []
+        baseline_result = self._train_model_single(
+            train_csv=train_csv,
+            task_type=task_type,
+            output_dir=str(root_output_path / "baseline_top_0"),
+            smiles_columns=normalized_smiles_columns,
+            target_columns=normalized_target_columns,
+            reaction_columns=normalized_reaction_columns,
+            extra_args=strip_activity_cliff_args(merged_extra_args),
+            agent=agent,
+        )
+        variants.append(
+            {
+                "variant_id": "baseline_top_0",
+                "removed_percent": 0.0,
+                "removed_count": 0,
+                "filtered_training_csv": train_csv,
+                "training_result": baseline_result,
+            }
+        )
+        for item in cliff_summary["variants"]:
+            training_result = self._train_model_single(
+                train_csv=item["filtered_training_csv"],
+                task_type=task_type,
+                output_dir=str(root_output_path / item["variant_id"]),
+                smiles_columns=normalized_smiles_columns,
+                target_columns=normalized_target_columns,
+                reaction_columns=normalized_reaction_columns,
+                extra_args=strip_activity_cliff_args(merged_extra_args),
+                agent=agent,
+            )
+            variants.append({**item, "training_result": training_result})
+
+        recommended_variant = choose_recommended_variant(variants)
+        feedback_plots = build_activity_cliff_feedback_plots(
+            train_csv=train_csv,
+            target_column=target_column,
+            annotated_training_csv=cliff_summary["annotated_training_csv"],
+            variants=variants,
+            output_dir=str(root_output_path / "activity_cliff_feedback" / "plots"),
+        )
+        comparison_metrics = build_activity_cliff_comparison_metrics(variants)
+        selected_result = dict(recommended_variant["training_result"])
+        selected_result["activity_cliff_feedback"] = {
+            "enabled": True,
+            "loops_requested": feedback_config.loops,
+            "step_percentile": feedback_config.step_percentile,
+            "annotated_training_csv": cliff_summary["annotated_training_csv"],
+            "filtered_training_csvs": [item["filtered_training_csv"] for item in variants[1:]],
+            "ranked_molecule_count": cliff_summary["ranked_molecule_count"],
+            "variants": variants,
+            "recommended_variant": recommended_variant["variant_id"],
+            "comparison_metrics": comparison_metrics,
+            "plot_artifacts": feedback_plots,
+            "summary_path": cliff_summary["summary_path"],
+            "warnings": cliff_summary.get("warnings") or [],
+        }
+        selected_result["plot_artifacts"] = {
+            **(selected_result.get("plot_artifacts") or {}),
+            **feedback_plots,
+        }
+        summary_path = Path(selected_result["summary_path"])
+        summary_path.write_text(json.dumps(selected_result, indent=2) + "\n")
+        return selected_result

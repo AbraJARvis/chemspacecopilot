@@ -755,11 +755,18 @@ class BenchmarkToolkit(Toolkit):
         output_dir: str = ".files/benchmark_output",
         allow_heavy_compute: bool = False,
         training_profile: Optional[str] = None,
+        activity_cliff_feedback: bool = False,
+        activity_cliff_feedback_loops: int = 0,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Run a multi-backend benchmark campaign for a QSAR-ready dataset."""
         if agent is None:
             raise ValueError("Agent is required when running a benchmark campaign")
+        if activity_cliff_feedback or activity_cliff_feedback_loops:
+            raise ValueError(
+                "Activity-cliff feedback loops are not supported in benchmark_qsar_models V1. "
+                "Use standard training toolkits instead."
+            )
 
         target_columns = _coerce_list(target_columns) or []
         requested_backends = _coerce_list(backends)

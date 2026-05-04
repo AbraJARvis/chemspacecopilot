@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import matplotlib
+import numpy as np
 
 matplotlib.use("Agg")
 
@@ -327,6 +328,102 @@ def _plot_seed_performance(split_results: List[Dict[str, Any]], output_path: Pat
     return str(output_path)
 
 
+def _plot_activity_cliff_histogram(
+    annotated_frame: pd.DataFrame,
+    variants: List[Dict[str, Any]],
+    output_path: Path,
+) -> Optional[str]:
+    if "activity_cliff_suspicion_score" not in annotated_frame.columns:
+        return None
+    values = pd.to_numeric(
+        annotated_frame["activity_cliff_suspicion_score"], errors="coerce"
+    ).dropna()
+    if values.empty:
+        return None
+
+    fig, ax = plt.subplots(figsize=(7.0, 4.5))
+    ax.hist(values, bins=30, color="#224f75", edgecolor="white", alpha=0.9)
+    ordered = values.sort_values(ascending=False).reset_index(drop=True)
+    colors = ["#b54a4a", "#d98b36", "#258d9a", "#6b8e23", "#6a5acd"]
+    for idx, variant in enumerate(variants):
+        removed_count = int(variant.get("removed_count") or 0)
+        if removed_count <= 0 or removed_count > len(ordered):
+            continue
+        threshold = float(ordered.iloc[removed_count - 1])
+        label = f"Top {float(variant.get('removed_percent') or 0):.0f}%"
+        ax.axvline(
+            threshold,
+            color=colors[idx % len(colors)],
+            linestyle="--",
+            linewidth=1.4,
+            label=f"Seuil {label} = {threshold:.3f}",
+        )
+    ax.set_title("Distribution du score de suspicion activity cliff")
+    ax.set_xlabel("Activity cliff suspicion score")
+    ax.set_ylabel("Nombre de composes")
+    ax.grid(alpha=0.2, linestyle="--")
+    ax.legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
+    plt.close(fig)
+    return str(output_path)
+
+
+def _plot_error_coverage_curve(
+    variant_frames: List[Dict[str, Any]],
+    output_path: Path,
+) -> Optional[str]:
+    usable = [item for item in variant_frames if item.get("frame") is not None]
+    if not usable:
+        return None
+
+    all_abs_residuals: List[float] = []
+    for item in usable:
+        frame = item["frame"]
+        all_abs_residuals.extend(frame["residual"].abs().astype(float).tolist())
+    if not all_abs_residuals:
+        return None
+
+    max_error = max(all_abs_residuals)
+    if max_error <= 0:
+        max_error = 1.0
+    thresholds = np.linspace(0.0, max_error, 200)
+
+    fig, ax = plt.subplots(figsize=(7.0, 4.8))
+    palette = ["#224f75", "#258d9a", "#d98b36", "#b54a4a", "#6a5acd", "#6b8e23"]
+    for idx, item in enumerate(usable):
+        frame = item["frame"]
+        residuals = frame["residual"].abs().astype(float).to_numpy()
+        coverages = [float(np.mean(residuals <= thr) * 100.0) for thr in thresholds]
+        color = palette[idx % len(palette)]
+        label = str(item.get("label") or f"variant_{idx}")
+        ax.plot(thresholds, coverages, color=color, linewidth=1.8, label=label)
+        rmse = float((frame["residual"].pow(2).mean()) ** 0.5)
+        cov_1x = float(np.mean(residuals <= rmse) * 100.0)
+        cov_2x = float(np.mean(residuals <= (2.0 * rmse)) * 100.0)
+        ax.axvline(rmse, color=color, linestyle="--", linewidth=1.0, alpha=0.75)
+        ax.text(
+            rmse,
+            min(99.0, cov_1x + 3.0),
+            f"1xRMSE={cov_1x:.1f}%\n2xRMSE={cov_2x:.1f}%",
+            color=color,
+            fontsize=7,
+            ha="left",
+            va="bottom",
+            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7, edgecolor=color),
+        )
+    ax.set_title("Couverture cumulative en fonction du seuil d'erreur")
+    ax.set_xlabel("Seuil d'erreur absolue")
+    ax.set_ylabel("Coverage cumulative (%)")
+    ax.set_ylim(0, 100)
+    ax.grid(alpha=0.2, linestyle="--")
+    ax.legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
+    plt.close(fig)
+    return str(output_path)
+
+
 def build_qsar_training_plots(
     *,
     train_csv: str,
@@ -390,5 +487,52 @@ def build_qsar_training_plots(
     rendered_seed_plot = _plot_seed_performance(split_results, seed_plot_path)
     if rendered_seed_plot:
         generated["seed_performance_comparison"] = rendered_seed_plot
+
+    return generated
+
+
+def build_activity_cliff_feedback_plots(
+    *,
+    train_csv: str,
+    target_column: str,
+    annotated_training_csv: str,
+    variants: List[Dict[str, Any]],
+    output_dir: str,
+) -> Dict[str, str]:
+    output_path = Path(output_dir).expanduser().resolve()
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    annotated_frame = pd.read_csv(Path(annotated_training_csv).expanduser())
+    generated: Dict[str, str] = {}
+
+    histogram_path = output_path / "activity_cliff_histogram.png"
+    rendered_hist = _plot_activity_cliff_histogram(annotated_frame, variants, histogram_path)
+    if rendered_hist:
+        generated["activity_cliff_histogram"] = rendered_hist
+
+    variant_frames: List[Dict[str, Any]] = []
+    for item in variants:
+        training_result = item.get("training_result") or {}
+        variant_train_csv = training_result.get("train_csv") or train_csv
+        predictions_path = Path(training_result.get("test_predictions_path") or "")
+        splits_path = Path(training_result.get("splits_path") or "")
+        if not predictions_path.exists() or not splits_path.exists():
+            continue
+        split_payload = json.loads(splits_path.read_text())
+        dataset = pd.read_csv(Path(variant_train_csv).expanduser())
+        frame = _load_split_truth_and_predictions(
+            dataset=dataset,
+            split_payload=split_payload,
+            predictions_path=predictions_path,
+            target_column=target_column,
+        )
+        if frame is None or frame.empty:
+            continue
+        variant_frames.append({"label": item.get("variant_id"), "frame": frame})
+
+    curve_path = output_path / "error_coverage_curve.png"
+    rendered_curve = _plot_error_coverage_curve(variant_frames, curve_path)
+    if rendered_curve:
+        generated["error_coverage_curve"] = rendered_curve
 
     return generated

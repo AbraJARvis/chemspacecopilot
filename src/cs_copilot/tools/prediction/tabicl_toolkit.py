@@ -19,10 +19,21 @@ import pandas as pd
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
+from .activity_cliffs import (
+    MIN_TRAINING_ROWS,
+    build_activity_cliff_comparison_metrics,
+    build_random_oof_splits,
+    choose_recommended_variant,
+    compute_activity_cliff_annotation,
+    merge_activity_cliff_args,
+    parse_activity_cliff_config,
+    strip_activity_cliff_args,
+    write_activity_cliff_artifacts,
+)
 from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionExecutionError, PredictionTaskSpec
 from .chemprop_toolkit import _get_prediction_state, _write_active_training_marker
-from .qsar_plots import build_qsar_training_plots
+from .qsar_plots import build_activity_cliff_feedback_plots, build_qsar_training_plots
 from .qsar_training_policy import (
     assess_protocol_results,
     describe_compute_environment,
@@ -726,41 +737,84 @@ class TabICLToolkit(Toolkit):
             f"worker_log={worker_log_path} details={log_excerpt[-4000:]}"
         )
 
-    def train_tabicl_model(
+    def _run_oof_predictions(
         self,
+        *,
+        train_csv: str,
+        target_column: str,
+        feature_columns: Optional[List[str]],
+        training_policy: Dict[str, Any],
+        cliff_config: Any,
+        random_state: int,
+        output_dir: Path,
+    ) -> pd.Series:
+        dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
+        folds = build_random_oof_splits(
+            n_rows=len(dataset),
+            n_folds=cliff_config.oof_folds,
+            random_state=random_state,
+        )
+        oof_predictions = pd.Series(index=dataset.index, dtype=float)
+        base_args = {
+            **strip_activity_cliff_args(training_policy["extra_args"]),
+            **self._training_defaults_for_profile("local_light"),
+            "feature_columns": feature_columns,
+            "validation_protocol": "activity_cliff_oof",
+            "heartbeat_seconds": 999999.0,
+        }
+        task = PredictionTaskSpec(
+            task_type="regression",
+            smiles_columns=["smiles"],
+            target_columns=[target_column],
+        )
+        for fold_index, split_payload in enumerate(folds, start=1):
+            fold_dir = output_dir / "_activity_cliff_oof" / f"fold_{fold_index}"
+            fold_dir.mkdir(parents=True, exist_ok=True)
+            fold_result = self.backend.train_model(
+                train_csv=train_csv,
+                output_dir=str(fold_dir),
+                task=task,
+                extra_args={
+                    **base_args,
+                    "random_state": random_state + fold_index,
+                    "split_payload": [split_payload],
+                    "split_type": "random",
+                },
+            )
+            predictions = _strip_unnamed_columns(
+                pd.read_csv(Path(fold_result["test_predictions_path"]).expanduser())
+            )
+            pred_series = pd.to_numeric(predictions[target_column], errors="coerce")
+            test_indices = split_payload["test"]
+            if len(pred_series) != len(test_indices):
+                raise ValueError("Activity-cliff OOF predictions length mismatch for TabICL.")
+            oof_predictions.iloc[test_indices] = pred_series.to_numpy(dtype=float)
+        if oof_predictions.isna().any():
+            raise ValueError("Activity-cliff OOF predictions were incomplete for TabICL.")
+        return oof_predictions.astype(float)
+
+    def _train_tabicl_single(
+        self,
+        *,
         train_csv: str,
         task_type: str,
         output_dir: str,
-        target_columns: List[str] | str,
-        feature_columns: Optional[List[str] | str] = None,
-        validation_protocol: Optional[str] = None,
-        split_type: str = "random",
-        split_sizes: Optional[List[float] | str] = None,
-        random_state: int = 42,
-        extra_args: Optional[Dict[str, Any]] = None,
-        agent: Optional[Agent] = None,
+        target_columns: List[str],
+        feature_columns: Optional[List[str]],
+        validation_protocol: Optional[str],
+        split_type: str,
+        split_sizes: Optional[List[float]],
+        random_state: int,
+        extra_args: Optional[Dict[str, Any]],
+        agent: Optional[Agent],
     ) -> Dict[str, Any]:
-        """Train a TabICLv2 regressor with Chemprop-style QSAR validation protocols."""
-        normalized_target_columns = self._normalize_json_list_argument(
-            target_columns,
-            argument_name="target_columns",
-        ) or []
-        normalized_feature_columns = self._normalize_json_list_argument(
-            feature_columns,
-            argument_name="feature_columns",
-        )
-        normalized_split_sizes = self._normalize_json_list_argument(
-            split_sizes,
-            argument_name="split_sizes",
-        )
-
         resolved_output_dir = str(Path(output_dir).expanduser().resolve())
         root_output_path = Path(resolved_output_dir)
         root_output_path.mkdir(parents=True, exist_ok=True)
 
         requested_extra_args = dict(extra_args or {})
-        requested_extra_args.setdefault("feature_columns", normalized_feature_columns)
-        requested_extra_args.setdefault("split_sizes", normalized_split_sizes)
+        requested_extra_args.setdefault("feature_columns", feature_columns)
+        requested_extra_args.setdefault("split_sizes", split_sizes)
         requested_extra_args.setdefault("random_state", random_state)
         requested_extra_args.setdefault("split_type", split_type)
         requested_extra_args.setdefault("validation_protocol", validation_protocol)
@@ -793,10 +847,10 @@ class TabICLToolkit(Toolkit):
             "train_csv": train_csv,
             "task_type": task_type,
             "output_dir": resolved_output_dir,
-            "target_columns": normalized_target_columns,
-            "feature_columns": normalized_feature_columns,
+            "target_columns": target_columns,
+            "feature_columns": feature_columns,
             "split_type": split_type,
-            "split_sizes": normalized_split_sizes,
+            "split_sizes": split_sizes,
             "random_state": random_state,
             "extra_args": requested_extra_args,
         }
@@ -820,7 +874,7 @@ class TabICLToolkit(Toolkit):
         task = PredictionTaskSpec(
             task_type=task_type,
             smiles_columns=["smiles"],
-            target_columns=list(normalized_target_columns),
+            target_columns=list(target_columns),
         )
         self._sync_training_run_state_from_result(
             prediction_state=prediction_state,
@@ -835,6 +889,167 @@ class TabICLToolkit(Toolkit):
         if prediction_state is not None:
             prediction_state["active_training_run"] = None
         return result
+
+    def train_tabicl_model(
+        self,
+        train_csv: str,
+        task_type: str,
+        output_dir: str,
+        target_columns: List[str] | str,
+        feature_columns: Optional[List[str] | str] = None,
+        validation_protocol: Optional[str] = None,
+        split_type: str = "random",
+        split_sizes: Optional[List[float] | str] = None,
+        random_state: int = 42,
+        activity_cliff_feedback: bool = False,
+        activity_cliff_feedback_loops: int = 1,
+        activity_cliff_step_percentile: float = 5.0,
+        activity_cliff_similarity_threshold: float = 0.70,
+        activity_cliff_k_neighbors: int = 10,
+        activity_cliff_oof_folds: int = 5,
+        extra_args: Optional[Dict[str, Any]] = None,
+        agent: Optional[Agent] = None,
+    ) -> Dict[str, Any]:
+        """Train a TabICLv2 regressor with Chemprop-style QSAR validation protocols."""
+        normalized_target_columns = self._normalize_json_list_argument(
+            target_columns,
+            argument_name="target_columns",
+        ) or []
+        normalized_feature_columns = self._normalize_json_list_argument(
+            feature_columns,
+            argument_name="feature_columns",
+        )
+        normalized_split_sizes = self._normalize_json_list_argument(
+            split_sizes,
+            argument_name="split_sizes",
+        )
+        merged_extra_args = merge_activity_cliff_args(
+            extra_args=extra_args,
+            activity_cliff_feedback=activity_cliff_feedback,
+            activity_cliff_feedback_loops=activity_cliff_feedback_loops,
+            activity_cliff_step_percentile=activity_cliff_step_percentile,
+            activity_cliff_similarity_threshold=activity_cliff_similarity_threshold,
+            activity_cliff_k_neighbors=activity_cliff_k_neighbors,
+            activity_cliff_oof_folds=activity_cliff_oof_folds,
+        )
+        feedback_config = parse_activity_cliff_config(merged_extra_args)
+        if not feedback_config.enabled:
+            return self._train_tabicl_single(
+                train_csv=train_csv,
+                task_type=task_type,
+                output_dir=output_dir,
+                target_columns=normalized_target_columns,
+                feature_columns=normalized_feature_columns,
+                validation_protocol=validation_protocol,
+                split_type=split_type,
+                split_sizes=normalized_split_sizes,
+                random_state=random_state,
+                extra_args=merged_extra_args,
+                agent=agent,
+            )
+
+        resolved_output_dir = str(Path(output_dir).expanduser().resolve())
+        root_output_path = Path(resolved_output_dir)
+        root_output_path.mkdir(parents=True, exist_ok=True)
+        training_policy = self._apply_training_profile(dict(merged_extra_args))
+        target_column = normalized_target_columns[0]
+        oof_predictions = self._run_oof_predictions(
+            train_csv=train_csv,
+            target_column=target_column,
+            feature_columns=normalized_feature_columns,
+            training_policy=training_policy,
+            cliff_config=feedback_config,
+            random_state=random_state,
+            output_dir=root_output_path,
+        )
+        base_dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
+        annotated_df = compute_activity_cliff_annotation(
+            dataset=base_dataset,
+            smiles_column="smiles",
+            target_column=target_column,
+            oof_predictions=oof_predictions,
+            similarity_threshold=feedback_config.similarity_threshold,
+            k_neighbors=feedback_config.k_neighbors,
+        )
+        cliff_summary = write_activity_cliff_artifacts(
+            annotated_df=annotated_df,
+            target_column=target_column,
+            output_dir=str(root_output_path / "activity_cliff_feedback"),
+            loops=feedback_config.loops,
+            step_percentile=feedback_config.step_percentile,
+            min_training_rows=MIN_TRAINING_ROWS,
+        )
+
+        variants: List[Dict[str, Any]] = []
+        baseline_result = self._train_tabicl_single(
+            train_csv=train_csv,
+            task_type=task_type,
+            output_dir=str(root_output_path / "baseline_top_0"),
+            target_columns=normalized_target_columns,
+            feature_columns=normalized_feature_columns,
+            validation_protocol=validation_protocol,
+            split_type=split_type,
+            split_sizes=normalized_split_sizes,
+            random_state=random_state,
+            extra_args=strip_activity_cliff_args(merged_extra_args),
+            agent=agent,
+        )
+        variants.append(
+            {
+                "variant_id": "baseline_top_0",
+                "removed_percent": 0.0,
+                "removed_count": 0,
+                "filtered_training_csv": train_csv,
+                "training_result": baseline_result,
+            }
+        )
+        for item in cliff_summary["variants"]:
+            training_result = self._train_tabicl_single(
+                train_csv=item["filtered_training_csv"],
+                task_type=task_type,
+                output_dir=str(root_output_path / item["variant_id"]),
+                target_columns=normalized_target_columns,
+                feature_columns=normalized_feature_columns,
+                validation_protocol=validation_protocol,
+                split_type=split_type,
+                split_sizes=normalized_split_sizes,
+                random_state=random_state,
+                extra_args=strip_activity_cliff_args(merged_extra_args),
+                agent=agent,
+            )
+            variants.append({**item, "training_result": training_result})
+
+        recommended_variant = choose_recommended_variant(variants)
+        feedback_plots = build_activity_cliff_feedback_plots(
+            train_csv=train_csv,
+            target_column=target_column,
+            annotated_training_csv=cliff_summary["annotated_training_csv"],
+            variants=variants,
+            output_dir=str(root_output_path / "activity_cliff_feedback" / "plots"),
+        )
+        comparison_metrics = build_activity_cliff_comparison_metrics(variants)
+        selected_result = dict(recommended_variant["training_result"])
+        selected_result["activity_cliff_feedback"] = {
+            "enabled": True,
+            "loops_requested": feedback_config.loops,
+            "step_percentile": feedback_config.step_percentile,
+            "annotated_training_csv": cliff_summary["annotated_training_csv"],
+            "filtered_training_csvs": [item["filtered_training_csv"] for item in variants[1:]],
+            "ranked_molecule_count": cliff_summary["ranked_molecule_count"],
+            "variants": variants,
+            "recommended_variant": recommended_variant["variant_id"],
+            "comparison_metrics": comparison_metrics,
+            "plot_artifacts": feedback_plots,
+            "summary_path": cliff_summary["summary_path"],
+            "warnings": cliff_summary.get("warnings") or [],
+        }
+        selected_result["plot_artifacts"] = {
+            **(selected_result.get("plot_artifacts") or {}),
+            **feedback_plots,
+        }
+        summary_path = Path(selected_result["summary_path"])
+        summary_path.write_text(json.dumps(selected_result, indent=2) + "\n")
+        return selected_result
 
     def predict_with_tabicl_from_csv(
         self,

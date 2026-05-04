@@ -978,6 +978,11 @@ AGENT_TEAM_INSTRUCTIONS = [
     "    • Acknowledge that these capabilities belong to the isolated QSAR sub-system",
     "    • Do not attempt to execute those steps inside the 7-agent general team",
     "    • Hand off to the dedicated QSAR route when available in the application layer",
+    "  - Activity-cliff feedback loops are available only when the user requests them explicitly during QSAR training:",
+    "    • '1 feedback loop' means baseline + one filtered retrain at top 5% removal",
+    "    • '2 feedback loops' means baseline + top 5% + top 10%",
+    "    • The step size is 5% per loop in V1",
+    "    • This activity-cliff loop is supported for standard QSAR training only, not for benchmark mode in V1",
     # Analysis → Report workflow pattern
     "**CRITICAL WORKFLOW PATTERN** (GTM → Chemoinformatician → Report):",
     "  - GTM Agent produces source_mols DataFrame → session_state['gtm_cache']",

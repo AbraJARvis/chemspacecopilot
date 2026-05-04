@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from cs_copilot.tools.prediction import catalog as catalog_module
 from cs_copilot.tools.prediction.benchmark_toolkit import BenchmarkToolkit
@@ -76,6 +77,18 @@ def test_resolve_benchmark_protocol_contract():
     assert toolkit._resolve_benchmark_protocol("standard_qsar") == "standard_qsar"
     assert toolkit._resolve_benchmark_protocol("robust_qsar") == "robust_qsar"
     assert toolkit._resolve_benchmark_protocol("challenging_qsar") == "challenging_qsar"
+
+
+def test_benchmark_rejects_activity_cliff_feedback_v1():
+    toolkit = BenchmarkToolkit()
+    with pytest.raises(ValueError, match="Activity-cliff feedback loops are not supported"):
+        toolkit.benchmark_qsar_models(
+            train_csv="dataset.csv",
+            task_type="regression",
+            target_columns=["Y"],
+            activity_cliff_feedback=True,
+            agent=_fake_agent(),
+        )
 
 
 def test_expand_candidates_includes_heavy_tabicl_all():
