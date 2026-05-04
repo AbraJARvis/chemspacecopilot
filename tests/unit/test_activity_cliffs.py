@@ -27,21 +27,22 @@ def test_merge_and_parse_activity_cliff_args_round_trip():
         extra_args={"epochs": 10},
         activity_cliff_feedback=True,
         activity_cliff_feedback_loops=2,
-        activity_cliff_step_percentile=7.5,
         activity_cliff_similarity_threshold=0.8,
         activity_cliff_k_neighbors=6,
         activity_cliff_oof_folds=4,
+        activity_cliff_index="sali",
     )
 
     config = parse_activity_cliff_config(merged)
 
     assert config == ActivityCliffConfig(
-        enabled=True,
+        mode="with_feedback_loops",
         loops=2,
-        step_percentile=7.5,
+        index_name="sali",
         similarity_threshold=0.8,
         k_neighbors=6,
         oof_folds=4,
+        sali_flag_threshold=0.35,
     )
     assert merged["epochs"] == 10
 
@@ -79,26 +80,46 @@ def test_compute_activity_cliff_annotation_normalizes_scores():
     )
 
     for column in (
-        "activity_cliff_score",
+        "activity_cliff_local_sali_raw",
+        "activity_cliff_local_sali_norm",
         "activity_cliff_residual_norm",
-        "activity_cliff_suspicion_score",
         "activity_cliff_neighbor_count",
+        "activity_cliff_priority_tier",
     ):
         assert column in annotated.columns
-    assert annotated["activity_cliff_score"].between(0.0, 1.0).all()
+    assert annotated["activity_cliff_local_sali_norm"].between(0.0, 1.0).all()
     assert annotated["activity_cliff_residual_norm"].between(0.0, 1.0).all()
-    assert annotated["activity_cliff_suspicion_score"].between(0.0, 1.0).all()
+    assert set(annotated["activity_cliff_priority_tier"].unique()).issubset(
+        {"none", "low", "medium", "high"}
+    )
 
 
-def test_write_activity_cliff_artifacts_generates_cumulative_thresholds(tmp_path):
+def test_write_activity_cliff_artifacts_generates_tier_loops(tmp_path):
     annotated = pd.DataFrame(
         {
             "smiles": [f"CC{i}" for i in range(20)],
             "Y": [float(i) for i in range(20)],
-            "activity_cliff_score": [0.9 - i * 0.01 for i in range(20)],
+            "activity_cliff_index_name": ["sali"] * 20,
+            "activity_cliff_local_sali_raw": [9.0 - i * 0.1 for i in range(20)],
+            "activity_cliff_local_sali_norm": [0.95 - i * 0.02 for i in range(20)],
             "activity_cliff_residual_norm": [0.8 - i * 0.01 for i in range(20)],
-            "activity_cliff_suspicion_score": [0.7 - i * 0.01 for i in range(20)],
             "activity_cliff_neighbor_count": [3] * 20,
+            "activity_cliff_max_similarity": [0.8] * 20,
+            "activity_cliff_max_activity_gap": [1.0] * 20,
+            "activity_cliff_flag": [True] * 8 + [False] * 12,
+            "activity_cliff_priority_tier": [
+                "high",
+                "high",
+                "medium",
+                "medium",
+                "low",
+                "low",
+                "low",
+                "low",
+            ]
+            + ["none"] * 12,
+            "activity_cliff_reason_codes": ["FLAGGED_BY_SALI"] * 20,
+            "activity_cliff_filter_justification": ["justified"] * 20,
         }
     )
 
@@ -106,16 +127,17 @@ def test_write_activity_cliff_artifacts_generates_cumulative_thresholds(tmp_path
         annotated_df=annotated,
         target_column="Y",
         output_dir=str(tmp_path),
-        loops=2,
-        step_percentile=5.0,
+        loops=3,
         min_training_rows=10,
     )
 
-    assert len(summary["variants"]) == 2
-    assert summary["variants"][0]["variant_id"] == "filtered_top_5"
-    assert summary["variants"][1]["variant_id"] == "filtered_top_10"
-    assert summary["variants"][0]["removed_count"] == 1
-    assert summary["variants"][1]["removed_count"] == 2
+    assert len(summary["variants"]) == 3
+    assert summary["variants"][0]["variant_id"] == "filtered_loop_1_drop_high"
+    assert summary["variants"][1]["variant_id"] == "filtered_loop_2_drop_high_medium"
+    assert summary["variants"][2]["variant_id"] == "filtered_loop_3_drop_high_medium_low"
+    assert summary["variants"][0]["removed_count"] == 2
+    assert summary["variants"][1]["removed_count"] == 4
+    assert summary["variants"][2]["removed_count"] == 8
     assert (tmp_path / "activity_cliff_annotated_training.csv").exists()
     assert (tmp_path / "activity_cliff_summary.json").exists()
 
@@ -123,24 +145,24 @@ def test_write_activity_cliff_artifacts_generates_cumulative_thresholds(tmp_path
 def test_choose_recommended_variant_prefers_higher_r2_then_lower_rmse():
     variants = [
         {
-            "variant_id": "baseline_top_0",
+            "variant_id": "baseline_loop_0",
             "training_result": {"metrics": {"test": {"r2": 0.7, "rmse": 0.5}}},
         },
         {
-            "variant_id": "filtered_top_5",
+            "variant_id": "filtered_loop_1_drop_high",
             "training_result": {"metrics": {"test": {"r2": 0.7, "rmse": 0.4}}},
         },
         {
-            "variant_id": "filtered_top_10",
+            "variant_id": "filtered_loop_2_drop_high_medium",
             "training_result": {"metrics": {"test": {"r2": 0.8, "rmse": 0.6}}},
         },
     ]
 
     selected = choose_recommended_variant(variants)
 
-    assert selected["variant_id"] == "filtered_top_10"
+    assert selected["variant_id"] == "filtered_loop_2_drop_high_medium"
     comparison = build_activity_cliff_comparison_metrics(variants)
-    assert comparison[0]["variant_id"] == "baseline_top_0"
+    assert comparison[0]["variant_id"] == "baseline_loop_0"
 
 
 def test_parse_activity_cliff_config_rejects_invalid_loops():
@@ -153,12 +175,12 @@ def test_parse_activity_cliff_config_rejects_invalid_loops():
         )
 
 
-def test_parse_activity_cliff_config_rejects_inverted_retained_percentile_step():
-    with pytest.raises(ValueError, match="retained-percentile input such as 95 instead of 5"):
+def test_parse_activity_cliff_config_rejects_more_than_three_loops():
+    with pytest.raises(ValueError, match="cannot exceed 3"):
         parse_activity_cliff_config(
             {
                 "activity_cliff_feedback": True,
-                "activity_cliff_step_percentile": 95,
+                "activity_cliff_feedback_loops": 4,
             }
         )
 
@@ -166,11 +188,11 @@ def test_parse_activity_cliff_config_rejects_inverted_retained_percentile_step()
 def test_activity_cliff_variant_token_from_summary_payload():
     assert _activity_cliff_variant_token({}) is None
     assert _activity_cliff_variant_token(
-        {"activity_cliff_feedback": {"enabled": True, "recommended_variant": "baseline_top_0"}}
-    ) == "ac_top_0"
+        {"activity_cliff_feedback": {"enabled": True, "recommended_variant": "baseline_loop_0"}}
+    ) == "ac_loop0_baseline"
     assert _activity_cliff_variant_token(
-        {"activity_cliff_feedback": {"enabled": True, "recommended_variant": "filtered_top_10"}}
-    ) == "ac_top_10"
+        {"activity_cliff_feedback": {"enabled": True, "recommended_variant": "filtered_loop_2_drop_high_medium"}}
+    ) == "ac_loop_2_drop_high_medium"
 
 
 def test_build_activity_cliff_feedback_plots_generates_variant_specific_artifacts(tmp_path):
@@ -185,15 +207,22 @@ def test_build_activity_cliff_feedback_plots_generates_variant_specific_artifact
 
     annotated_csv = tmp_path / "annotated.csv"
     annotated_df = train_df.copy()
-    annotated_df["activity_cliff_score"] = [0.8] * len(annotated_df)
+    annotated_df["activity_cliff_index_name"] = ["sali"] * len(annotated_df)
+    annotated_df["activity_cliff_local_sali_raw"] = [3.0] * len(annotated_df)
+    annotated_df["activity_cliff_local_sali_norm"] = [0.8] * len(annotated_df)
     annotated_df["activity_cliff_residual_norm"] = [0.4] * len(annotated_df)
-    annotated_df["activity_cliff_suspicion_score"] = [0.3] * len(annotated_df)
     annotated_df["activity_cliff_neighbor_count"] = [2] * len(annotated_df)
+    annotated_df["activity_cliff_max_similarity"] = [0.85] * len(annotated_df)
+    annotated_df["activity_cliff_max_activity_gap"] = [1.0] * len(annotated_df)
+    annotated_df["activity_cliff_flag"] = [True] * len(annotated_df)
+    annotated_df["activity_cliff_priority_tier"] = ["high"] * 5 + ["medium"] * 5 + ["low"] * 10
+    annotated_df["activity_cliff_reason_codes"] = ["FLAGGED_BY_SALI"] * len(annotated_df)
+    annotated_df["activity_cliff_filter_justification"] = ["justified"] * len(annotated_df)
     annotated_df.to_csv(annotated_csv, index=False)
 
     split_payload = [{"train": list(range(10)), "val": [10, 11], "test": [12, 13, 14, 15]}]
     variants = []
-    for variant_id, removed_count in (("baseline_top_0", 0), ("filtered_top_5", 1)):
+    for variant_id, removed_count in (("baseline_loop_0", 0), ("filtered_loop_1_drop_high", 1)):
         variant_dir = tmp_path / variant_id
         variant_dir.mkdir(parents=True, exist_ok=True)
         splits_path = variant_dir / "splits.json"
@@ -205,7 +234,8 @@ def test_build_activity_cliff_feedback_plots_generates_variant_specific_artifact
         variants.append(
             {
                 "variant_id": variant_id,
-                "removed_percent": float(removed_count * 5),
+                "loop_index": removed_count,
+                "removed_tiers": [] if removed_count == 0 else ["high"],
                 "removed_count": removed_count,
                 "filtered_training_csv": str(variant_train_csv),
                 "training_result": {
@@ -234,13 +264,16 @@ def test_build_activity_cliff_feedback_plots_generates_variant_specific_artifact
     )
 
     assert "target_distribution__input_dataset" in generated
-    assert "target_distribution__baseline_top_0" in generated
-    assert "target_distribution__filtered_top_5" in generated
-    assert "parity_plot_random_rmse__baseline_top_0" in generated
-    assert "parity_plot_random_rmse__filtered_top_5" in generated
-    assert "residuals_plot_random__baseline_top_0" in generated
-    assert "residuals_plot_random__filtered_top_5" in generated
+    assert "target_distribution__baseline_loop_0" in generated
+    assert "target_distribution__filtered_loop_1_drop_high" in generated
+    assert "parity_plot_random_rmse__baseline_loop_0" in generated
+    assert "parity_plot_random_rmse__filtered_loop_1_drop_high" in generated
+    assert "residuals_plot_random__baseline_loop_0" in generated
+    assert "residuals_plot_random__filtered_loop_1_drop_high" in generated
     assert "error_coverage_curve" in generated
+    assert "activity_cliff_tier_distribution" in generated
+    assert "activity_gap_vs_similarity" in generated
+    assert "residual_vs_sali" in generated
 
 
 def test_resolve_catalog_record_accepts_display_name_alias(monkeypatch):

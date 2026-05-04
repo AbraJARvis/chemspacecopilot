@@ -185,6 +185,8 @@ class ChempropBackend(PredictionBackend):
             "activity_cliff_similarity_threshold",
             "activity_cliff_k_neighbors",
             "activity_cliff_oof_folds",
+            "activity_cliff_index",
+            "activity_cliff_sali_flag_threshold",
         }
         dropped_args = sorted(arg for arg in unsupported_args if arg in sanitized)
         for arg in dropped_args:

@@ -338,10 +338,10 @@ def _plot_activity_cliff_histogram(
     variants: List[Dict[str, Any]],
     output_path: Path,
 ) -> Optional[str]:
-    if "activity_cliff_suspicion_score" not in annotated_frame.columns:
+    if "activity_cliff_local_sali_norm" not in annotated_frame.columns:
         return None
     values = pd.to_numeric(
-        annotated_frame["activity_cliff_suspicion_score"], errors="coerce"
+        annotated_frame["activity_cliff_local_sali_norm"], errors="coerce"
     ).dropna()
     if values.empty:
         return None
@@ -355,7 +355,7 @@ def _plot_activity_cliff_histogram(
         if removed_count <= 0 or removed_count > len(ordered):
             continue
         threshold = float(ordered.iloc[removed_count - 1])
-        label = f"Top {float(variant.get('removed_percent') or 0):.0f}%"
+        label = str(variant.get("variant_id") or f"variant_{idx}")
         ax.axvline(
             threshold,
             color=colors[idx % len(colors)],
@@ -363,8 +363,8 @@ def _plot_activity_cliff_histogram(
             linewidth=1.4,
             label=f"Seuil {label} = {threshold:.3f}",
         )
-    ax.set_title("Distribution du score de suspicion activity cliff")
-    ax.set_xlabel("Activity cliff suspicion score")
+    ax.set_title("Distribution du score SALI local normalise")
+    ax.set_xlabel("Activity cliff local SALI norm")
     ax.set_ylabel("Nombre de composes")
     ax.grid(alpha=0.2, linestyle="--")
     ax.legend(frameon=False, fontsize=8)
@@ -443,12 +443,13 @@ def _plot_error_coverage_curve(
 
 def _variant_loop_label(variant_id: str) -> str:
     token = str(variant_id or "").strip()
-    if token == "baseline_top_0":
+    if token == "baseline_loop_0":
         return "loop 0"
-    if token.startswith("filtered_top_"):
+    if token.startswith("filtered_loop_"):
         try:
-            removed_percent = int(token.replace("filtered_top_", ""))
-            return f"loop {max(1, removed_percent // 5)}"
+            prefix = token.replace("filtered_loop_", "", 1)
+            loop_number = int(prefix.split("_", 1)[0])
+            return f"loop {loop_number}"
         except Exception:
             return token
     return token
@@ -554,6 +555,84 @@ def build_activity_cliff_feedback_plots(
     rendered_hist = _plot_activity_cliff_histogram(annotated_frame, variants, histogram_path)
     if rendered_hist:
         generated["activity_cliff_histogram"] = rendered_hist
+
+    if "activity_cliff_priority_tier" in annotated_frame.columns:
+        tier_counts = (
+            annotated_frame["activity_cliff_priority_tier"]
+            .fillna("none")
+            .astype(str)
+            .value_counts()
+            .reindex(["none", "low", "medium", "high"], fill_value=0)
+        )
+        if int(tier_counts.sum()) > 0:
+            tier_path = output_path / "activity_cliff_tier_distribution.png"
+            fig, ax = plt.subplots(figsize=(6.8, 4.2))
+            ax.bar(
+                tier_counts.index.tolist(),
+                tier_counts.astype(int).tolist(),
+                color=["#cccccc", "#6b8e23", "#d98b36", "#b54a4a"],
+                alpha=0.9,
+            )
+            ax.set_title("Distribution des tiers activity cliffs")
+            ax.set_xlabel("Tier")
+            ax.set_ylabel("Nombre de composes")
+            ax.grid(alpha=0.2, linestyle="--", axis="y")
+            fig.tight_layout()
+            fig.savefig(tier_path, dpi=PLOT_DPI, bbox_inches="tight")
+            plt.close(fig)
+            generated["activity_cliff_tier_distribution"] = str(tier_path)
+
+    if {
+        "activity_cliff_max_similarity",
+        "activity_cliff_max_activity_gap",
+    }.issubset(annotated_frame.columns):
+        scatter_df = annotated_frame[
+            ["activity_cliff_max_similarity", "activity_cliff_max_activity_gap"]
+        ].apply(pd.to_numeric, errors="coerce").dropna()
+        if not scatter_df.empty:
+            gap_path = output_path / "activity_gap_vs_similarity.png"
+            fig, ax = plt.subplots(figsize=(6.8, 4.6))
+            ax.scatter(
+                scatter_df["activity_cliff_max_similarity"],
+                scatter_df["activity_cliff_max_activity_gap"],
+                color="#258d9a",
+                alpha=0.45,
+                s=28,
+            )
+            ax.set_title("Activity gap vs similarite locale")
+            ax.set_xlabel("Similarite maximale")
+            ax.set_ylabel("Ecart d'activite maximal")
+            ax.grid(alpha=0.2, linestyle="--")
+            fig.tight_layout()
+            fig.savefig(gap_path, dpi=PLOT_DPI, bbox_inches="tight")
+            plt.close(fig)
+            generated["activity_gap_vs_similarity"] = str(gap_path)
+
+    if {
+        "activity_cliff_local_sali_norm",
+        "activity_cliff_residual_norm",
+    }.issubset(annotated_frame.columns):
+        scatter_df = annotated_frame[
+            ["activity_cliff_local_sali_norm", "activity_cliff_residual_norm"]
+        ].apply(pd.to_numeric, errors="coerce").dropna()
+        if not scatter_df.empty:
+            sali_path = output_path / "residual_vs_sali.png"
+            fig, ax = plt.subplots(figsize=(6.8, 4.6))
+            ax.scatter(
+                scatter_df["activity_cliff_local_sali_norm"],
+                scatter_df["activity_cliff_residual_norm"],
+                color="#224f75",
+                alpha=0.45,
+                s=28,
+            )
+            ax.set_title("Residuel OOF vs SALI local")
+            ax.set_xlabel("Local SALI norm")
+            ax.set_ylabel("Residual norm")
+            ax.grid(alpha=0.2, linestyle="--")
+            fig.tight_layout()
+            fig.savefig(sali_path, dpi=PLOT_DPI, bbox_inches="tight")
+            plt.close(fig)
+            generated["residual_vs_sali"] = str(sali_path)
 
     variant_frames: List[Dict[str, Any]] = []
     for item in variants:

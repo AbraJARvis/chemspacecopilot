@@ -902,11 +902,12 @@ class TabICLToolkit(Toolkit):
         split_sizes: Optional[List[float] | str] = None,
         random_state: int = 42,
         activity_cliff_feedback: bool = False,
-        activity_cliff_feedback_loops: int = 1,
+        activity_cliff_feedback_loops: int = 0,
         activity_cliff_step_percentile: float = 5.0,
         activity_cliff_similarity_threshold: float = 0.70,
         activity_cliff_k_neighbors: int = 10,
         activity_cliff_oof_folds: int = 5,
+        activity_cliff_index: str = "sali",
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -931,9 +932,22 @@ class TabICLToolkit(Toolkit):
             activity_cliff_similarity_threshold=activity_cliff_similarity_threshold,
             activity_cliff_k_neighbors=activity_cliff_k_neighbors,
             activity_cliff_oof_folds=activity_cliff_oof_folds,
+            activity_cliff_index=activity_cliff_index,
         )
         feedback_config = parse_activity_cliff_config(merged_extra_args)
-        if not feedback_config.enabled:
+
+        resolved_output_dir = str(Path(output_dir).expanduser().resolve())
+        root_output_path = Path(resolved_output_dir)
+        root_output_path.mkdir(parents=True, exist_ok=True)
+        training_policy = self._apply_training_profile(dict(merged_extra_args))
+        target_column = normalized_target_columns[0]
+        base_dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
+        ac_supported = (
+            task_type == "regression"
+            and len(normalized_target_columns) == 1
+            and "smiles" in base_dataset.columns
+        )
+        if not ac_supported:
             return self._train_tabicl_single(
                 train_csv=train_csv,
                 task_type=task_type,
@@ -944,15 +958,9 @@ class TabICLToolkit(Toolkit):
                 split_type=split_type,
                 split_sizes=normalized_split_sizes,
                 random_state=random_state,
-                extra_args=merged_extra_args,
+                extra_args=strip_activity_cliff_args(merged_extra_args),
                 agent=agent,
             )
-
-        resolved_output_dir = str(Path(output_dir).expanduser().resolve())
-        root_output_path = Path(resolved_output_dir)
-        root_output_path.mkdir(parents=True, exist_ok=True)
-        training_policy = self._apply_training_profile(dict(merged_extra_args))
-        target_column = normalized_target_columns[0]
         oof_predictions = self._run_oof_predictions(
             train_csv=train_csv,
             target_column=target_column,
@@ -962,7 +970,6 @@ class TabICLToolkit(Toolkit):
             random_state=random_state,
             output_dir=root_output_path,
         )
-        base_dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
         annotated_df = compute_activity_cliff_annotation(
             dataset=base_dataset,
             smiles_column="smiles",
@@ -970,21 +977,25 @@ class TabICLToolkit(Toolkit):
             oof_predictions=oof_predictions,
             similarity_threshold=feedback_config.similarity_threshold,
             k_neighbors=feedback_config.k_neighbors,
+            sali_flag_threshold=feedback_config.sali_flag_threshold,
+            index_name=feedback_config.index_name,
         )
         cliff_summary = write_activity_cliff_artifacts(
             annotated_df=annotated_df,
             target_column=target_column,
             output_dir=str(root_output_path / "activity_cliff_feedback"),
             loops=feedback_config.loops,
-            step_percentile=feedback_config.step_percentile,
             min_training_rows=MIN_TRAINING_ROWS,
         )
 
         variants: List[Dict[str, Any]] = []
+        baseline_output_dir = (
+            resolved_output_dir if not feedback_config.feedback_enabled else str(root_output_path / "baseline_loop_0")
+        )
         baseline_result = self._train_tabicl_single(
             train_csv=train_csv,
             task_type=task_type,
-            output_dir=str(root_output_path / "baseline_top_0"),
+            output_dir=baseline_output_dir,
             target_columns=normalized_target_columns,
             feature_columns=normalized_feature_columns,
             validation_protocol=validation_protocol,
@@ -996,11 +1007,17 @@ class TabICLToolkit(Toolkit):
         )
         variants.append(
             {
-                "variant_id": "baseline_top_0",
-                "removed_percent": 0.0,
+                "variant_id": "baseline_loop_0",
+                "loop_index": 0,
+                "removed_tiers": [],
                 "removed_count": 0,
+                "remaining_rows": int(len(base_dataset)),
                 "filtered_training_csv": train_csv,
                 "training_result": baseline_result,
+                "persisted_model_id": str(
+                    baseline_result.get("model_id")
+                    or Path(baseline_result.get("model_path") or baseline_output_dir).stem
+                ),
             }
         )
         for item in cliff_summary["variants"]:
@@ -1017,7 +1034,16 @@ class TabICLToolkit(Toolkit):
                 extra_args=strip_activity_cliff_args(merged_extra_args),
                 agent=agent,
             )
-            variants.append({**item, "training_result": training_result})
+            variants.append(
+                {
+                    **item,
+                    "training_result": training_result,
+                    "persisted_model_id": str(
+                        training_result.get("model_id")
+                        or Path(training_result.get("model_path") or item["variant_id"]).stem
+                    ),
+                }
+            )
 
         recommended_variant = choose_recommended_variant(variants)
         feedback_plots = build_activity_cliff_feedback_plots(
@@ -1031,11 +1057,13 @@ class TabICLToolkit(Toolkit):
         selected_result = dict(recommended_variant["training_result"])
         selected_result["activity_cliff_feedback"] = {
             "enabled": True,
+            "mode": feedback_config.mode,
+            "index_name": feedback_config.index_name,
             "loops_requested": feedback_config.loops,
-            "step_percentile": feedback_config.step_percentile,
             "annotated_training_csv": cliff_summary["annotated_training_csv"],
-            "filtered_training_csvs": [item["filtered_training_csv"] for item in variants[1:]],
-            "ranked_molecule_count": cliff_summary["ranked_molecule_count"],
+            "flagged_count": cliff_summary["flagged_count"],
+            "priority_counts": cliff_summary["priority_counts"],
+            "tiering_policy": cliff_summary["tiering_policy"],
             "variants": variants,
             "recommended_variant": recommended_variant["variant_id"],
             "comparison_metrics": comparison_metrics,
@@ -1047,6 +1075,8 @@ class TabICLToolkit(Toolkit):
             **(selected_result.get("plot_artifacts") or {}),
             **feedback_plots,
         }
+        selected_result["summary_path"] = str(root_output_path / "tabicl_training_summary.json")
+        selected_result["canonical_summary_path"] = selected_result["summary_path"]
         summary_path = Path(selected_result["summary_path"])
         summary_path.write_text(json.dumps(selected_result, indent=2) + "\n")
         return selected_result
