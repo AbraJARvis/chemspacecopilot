@@ -94,6 +94,10 @@ def _safe_display_token(value: str) -> str:
     return " ".join(part.capitalize() for part in token.split())
 
 
+def _normalize_catalog_lookup_token(value: Optional[str]) -> str:
+    return safe_slug(str(value or "")).replace("_", "")
+
+
 def _extract_endpoint_and_dataset(train_csv: Optional[str], fallback_model_id: str) -> tuple[str, str]:
     source = Path(train_csv or fallback_model_id).stem.lower()
     for suffix in ("_curated", "_cleaned", "_dataset", "_training"):
@@ -887,6 +891,44 @@ class ChempropToolkit(Toolkit):
         payload["model_path_exists"] = Path(record.model_path).expanduser().exists()
         return payload
 
+    def _resolve_catalog_record(self, model_ref: str) -> PredictionModelRecord:
+        self.catalog.refresh_from_internal_store(persist=True)
+        try:
+            return self.catalog.get_model(model_ref)
+        except ValueError:
+            pass
+
+        records = self.catalog.list_models()
+        exact_display_matches = [
+            record for record in records if (record.display_name or "") == model_ref
+        ]
+        if len(exact_display_matches) == 1:
+            return exact_display_matches[0]
+        if len(exact_display_matches) > 1:
+            raise ValueError(
+                f"Ambiguous catalog model reference `{model_ref}`: multiple models share this display name."
+            )
+
+        normalized_ref = _normalize_catalog_lookup_token(model_ref)
+        normalized_matches = [
+            record
+            for record in records
+            if normalized_ref
+            and normalized_ref
+            in {
+                _normalize_catalog_lookup_token(record.model_id),
+                _normalize_catalog_lookup_token(record.display_name),
+            }
+        ]
+        if len(normalized_matches) == 1:
+            return normalized_matches[0]
+        if len(normalized_matches) > 1:
+            raise ValueError(
+                f"Ambiguous catalog model reference `{model_ref}`: multiple catalog entries match it."
+            )
+
+        raise ValueError(f"Unknown catalog model reference: {model_ref}")
+
     def list_catalog_models(
         self,
         allowed_statuses: Optional[List[str]] = None,
@@ -907,7 +949,7 @@ class ChempropToolkit(Toolkit):
 
     def summarize_catalog_model(self, model_id: str) -> Dict[str, Any]:
         """Return the catalog metadata for one model, enriched with runtime checks."""
-        return self._annotate_record(self.catalog.get_model(model_id))
+        return self._annotate_record(self._resolve_catalog_record(model_id))
 
     def recommend_catalog_model(
         self,
@@ -947,8 +989,7 @@ class ChempropToolkit(Toolkit):
         if agent is None:
             raise ValueError("Agent is required to register a catalog model")
 
-        self.catalog.refresh_from_internal_store(persist=True)
-        record = self.catalog.get_model(model_id)
+        record = self._resolve_catalog_record(model_id)
         return self.register_model(
             model_id=record.model_id,
             model_path=record.model_path,

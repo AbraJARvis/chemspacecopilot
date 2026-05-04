@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from cs_copilot.tools.prediction.chemprop_toolkit import _activity_cliff_variant_token
+from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
 from cs_copilot.tools.prediction.activity_cliffs import (
     ActivityCliffConfig,
     build_activity_cliff_comparison_metrics,
@@ -17,6 +18,8 @@ from cs_copilot.tools.prediction.activity_cliffs import (
     write_activity_cliff_artifacts,
 )
 from cs_copilot.tools.prediction.qsar_plots import build_activity_cliff_feedback_plots
+from cs_copilot.tools.prediction.backend import PredictionTaskSpec
+from cs_copilot.tools.prediction.catalog import PredictionModelRecord
 
 
 def test_merge_and_parse_activity_cliff_args_round_trip():
@@ -228,3 +231,26 @@ def test_build_activity_cliff_feedback_plots_generates_variant_specific_artifact
     assert "residuals_plot_random__baseline_top_0" in generated
     assert "residuals_plot_random__filtered_top_5" in generated
     assert "error_coverage_curve" in generated
+
+
+def test_resolve_catalog_record_accepts_display_name_alias(monkeypatch):
+    toolkit = ChempropToolkit()
+    record = PredictionModelRecord(
+        model_id="activity_cliff_filtered_top_10_standard_qsar_lightgbm_v1_04052026_140000",
+        backend_name="lightgbm",
+        model_path="/tmp/best.pkl",
+        task=PredictionTaskSpec(
+            task_type="regression",
+            smiles_columns=["smiles"],
+            target_columns=["pEC50"],
+        ),
+        display_name="pxr_pEC50_LightGBM",
+    )
+
+    monkeypatch.setattr(toolkit.catalog, "refresh_from_internal_store", lambda persist=True: 0)
+    monkeypatch.setattr(toolkit.catalog, "get_model", lambda model_id: (_ for _ in ()).throw(ValueError(model_id)))
+    monkeypatch.setattr(toolkit.catalog, "list_models", lambda: [record])
+
+    resolved = toolkit._resolve_catalog_record("pxr_pEC50_LightGBM")
+
+    assert resolved.model_id == record.model_id
