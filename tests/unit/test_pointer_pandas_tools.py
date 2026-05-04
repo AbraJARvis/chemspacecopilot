@@ -161,6 +161,31 @@ class TestPointerPandasTools:
             "standard_value",
         ]
 
+    def test_get_item_alias_behaves_like_getitem(self, tools, sample_df):
+        """Test get_item alias for __getitem__."""
+        tools.dataframes["test_df"] = sample_df
+
+        result = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="get_item",
+            operation_parameters={"key": ["molecule_chembl_id", "canonical_smiles"]},
+        )
+
+        result_df = tools.dataframes[result["dataframe_name"]]
+        assert result_df.shape == (3, 2)
+        assert list(result_df.columns) == ["molecule_chembl_id", "canonical_smiles"]
+
+    def test_columns_tolist_alias_returns_column_names(self, tools, sample_df):
+        """Test columns.tolist alias returns a simple list of columns."""
+        tools.dataframes["test_df"] = sample_df
+
+        result = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="columns.tolist",
+        )
+
+        assert result == list(sample_df.columns)
+
     def test_loc_with_columns(self, tools, sample_df):
         """Test loc with columns parameter."""
         tools.dataframes["test_df"] = sample_df

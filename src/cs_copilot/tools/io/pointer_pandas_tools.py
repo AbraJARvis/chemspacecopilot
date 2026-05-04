@@ -67,6 +67,10 @@ _OPERATION_ALIASES = {
     "t": "transpose",
     "unique_values": "unique",  # LLM confusion
     "get_unique": "unique",
+    "getitem": "__getitem__",
+    "get_item": "__getitem__",
+    "columns.tolist": "columns",
+    "index.tolist": "index",
 }
 
 _NUMERIC_ONLY_OPS = {"sum", "mean", "median", "std", "var"}
