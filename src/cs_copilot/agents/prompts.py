@@ -982,6 +982,8 @@ AGENT_TEAM_INSTRUCTIONS = [
     "    • '1 feedback loop' means baseline + one filtered retrain at top 5% removal",
     "    • '2 feedback loops' means baseline + top 5% + top 10%",
     "    • The step size is 5% per loop in V1",
+    "    • Do not override advanced activity-cliff parameters unless the user explicitly asks for them; keep the V1 defaults (`step_percentile=5`, `k_neighbors=10`, `oof_folds=5`)",
+    "    • `activity_cliff_step_percentile` is a removal percentage per loop, never a retained percentile such as 95 or 99",
     "    • This activity-cliff loop is supported for standard QSAR training only, not for benchmark mode in V1",
     # Analysis → Report workflow pattern
     "**CRITICAL WORKFLOW PATTERN** (GTM → Chemoinformatician → Report):",

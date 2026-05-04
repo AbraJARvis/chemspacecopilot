@@ -71,6 +71,12 @@ def parse_activity_cliff_config(
         raise ValueError("activity_cliff_feedback_loops must be >= 1 when activity_cliff_feedback is enabled.")
     if step_percentile <= 0:
         raise ValueError("activity_cliff_step_percentile must be > 0.")
+    if step_percentile > 50:
+        raise ValueError(
+            "activity_cliff_step_percentile represents the percent of compounds removed at each loop "
+            "(for example 5.0 for a 5% removal step). Values above 50 are rejected in V1 because they "
+            "usually indicate an inverted retained-percentile input such as 95 instead of 5."
+        )
     if not (0.0 < similarity_threshold <= 1.0):
         raise ValueError("activity_cliff_similarity_threshold must be in (0, 1].")
     if k_neighbors < 1:

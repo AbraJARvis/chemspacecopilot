@@ -153,6 +153,16 @@ def test_parse_activity_cliff_config_rejects_invalid_loops():
         )
 
 
+def test_parse_activity_cliff_config_rejects_inverted_retained_percentile_step():
+    with pytest.raises(ValueError, match="retained-percentile input such as 95 instead of 5"):
+        parse_activity_cliff_config(
+            {
+                "activity_cliff_feedback": True,
+                "activity_cliff_step_percentile": 95,
+            }
+        )
+
+
 def test_activity_cliff_variant_token_from_summary_payload():
     assert _activity_cliff_variant_token({}) is None
     assert _activity_cliff_variant_token(
