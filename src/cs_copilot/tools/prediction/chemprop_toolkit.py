@@ -160,6 +160,21 @@ def _canonical_display_name(
     return " ".join(parts).strip()
 
 
+def _activity_cliff_variant_token(summary_payload: Dict[str, Any]) -> Optional[str]:
+    feedback = summary_payload.get("activity_cliff_feedback") or {}
+    if not isinstance(feedback, dict) or not feedback.get("enabled"):
+        return None
+    variant_id = str(feedback.get("recommended_variant") or "").strip().lower()
+    if not variant_id:
+        return "ac"
+    if variant_id == "baseline_top_0":
+        return "ac_top_0"
+    if variant_id.startswith("filtered_top_"):
+        suffix = variant_id.replace("filtered_top_", "", 1)
+        return f"ac_top_{safe_slug(suffix)}"
+    return f"ac_{safe_slug(variant_id)}"
+
+
 def _write_active_training_marker(marker_path: Path, payload: Dict[str, Any]) -> None:
     marker_path.parent.mkdir(parents=True, exist_ok=True)
     marker_path.write_text(json.dumps(payload, indent=2))
@@ -1124,6 +1139,13 @@ class ChempropToolkit(Toolkit):
             or (current.inference_profile or {}).get("representation_name")
             or (current.selection_hints or {}).get("representation_name")
         )
+        activity_cliff_token = _activity_cliff_variant_token(summary_payload)
+        if activity_cliff_token:
+            representation_name = (
+                f"{representation_name}_{activity_cliff_token}"
+                if representation_name
+                else activity_cliff_token
+            )
         canonical_model_id = _canonical_model_id(
             endpoint=endpoint_name,
             dataset=dataset_name,
@@ -1199,6 +1221,7 @@ class ChempropToolkit(Toolkit):
                 "endpoint_name": endpoint_name,
                 "dataset_name": dataset_name,
                 "validation_protocol": str(protocol_name or "protocol"),
+                **({"activity_cliff_variant": activity_cliff_token} if activity_cliff_token else {}),
             },
             inference_profile={
                 **current.inference_profile,

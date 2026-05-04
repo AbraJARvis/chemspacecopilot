@@ -67,14 +67,19 @@ def _load_split_truth_and_predictions(
     return frame
 
 
-def _plot_target_distribution(values: pd.Series, output_path: Path) -> None:
+def _plot_target_distribution(
+    values: pd.Series,
+    output_path: Path,
+    *,
+    title: str = "Distribution de la cible apres curation",
+) -> None:
     fig, ax = plt.subplots(figsize=(7, 4.5))
     ax.hist(values, bins=30, color="#224f75", edgecolor="white", alpha=0.9)
     mean_value = float(values.mean())
     median_value = float(values.median())
     ax.axvline(mean_value, color="#258d9a", linestyle="--", linewidth=1.5, label=f"Moyenne = {mean_value:.2f}")
     ax.axvline(median_value, color="#d98b36", linestyle="-.", linewidth=1.5, label=f"Mediane = {median_value:.2f}")
-    ax.set_title("Distribution de la cible apres curation")
+    ax.set_title(title)
     ax.set_xlabel("Valeur cible Y (unitless_log_scale)")
     ax.set_ylabel("Nombre de composes")
     ax.grid(alpha=0.2, linestyle="--")
@@ -389,8 +394,10 @@ def _plot_error_coverage_curve(
         max_error = 1.0
     thresholds = np.linspace(0.0, max_error, 200)
 
-    fig, ax = plt.subplots(figsize=(7.0, 4.8))
+    fig, ax = plt.subplots(figsize=(8.6, 4.8))
+    fig.subplots_adjust(right=0.72)
     palette = ["#224f75", "#258d9a", "#d98b36", "#b54a4a", "#6a5acd", "#6b8e23"]
+    coverage_summary_lines: List[str] = []
     for idx, item in enumerate(usable):
         frame = item["frame"]
         residuals = frame["residual"].abs().astype(float).to_numpy()
@@ -401,27 +408,54 @@ def _plot_error_coverage_curve(
         rmse = float((frame["residual"].pow(2).mean()) ** 0.5)
         cov_1x = float(np.mean(residuals <= rmse) * 100.0)
         cov_2x = float(np.mean(residuals <= (2.0 * rmse)) * 100.0)
-        ax.axvline(rmse, color=color, linestyle="--", linewidth=1.0, alpha=0.75)
-        ax.text(
+        ax.axvline(
             rmse,
-            min(99.0, cov_1x + 3.0),
-            f"1xRMSE={cov_1x:.1f}%\n2xRMSE={cov_2x:.1f}%",
             color=color,
-            fontsize=7,
-            ha="left",
-            va="bottom",
-            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7, edgecolor=color),
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.75,
+            label=f"RMSE {label}",
+        )
+        coverage_summary_lines.append(
+            f"{label}: 1x RMSE={cov_1x:.1f}% | 2x RMSE={cov_2x:.1f}%"
         )
     ax.set_title("Couverture cumulative en fonction du seuil d'erreur")
     ax.set_xlabel("Seuil d'erreur absolue")
     ax.set_ylabel("Coverage cumulative (%)")
     ax.set_ylim(0, 100)
     ax.grid(alpha=0.2, linestyle="--")
-    ax.legend(frameon=False, fontsize=8)
+    ax.legend(frameon=False, fontsize=8, loc="upper left")
+    if coverage_summary_lines:
+        fig.text(
+            0.745,
+            0.88,
+            "\n".join(coverage_summary_lines),
+            ha="left",
+            va="top",
+            fontsize=8,
+            bbox=dict(boxstyle="round,pad=0.35", facecolor="white", alpha=0.9, edgecolor="#cccccc"),
+        )
     fig.tight_layout()
     fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
     plt.close(fig)
     return str(output_path)
+
+
+def _variant_loop_label(variant_id: str) -> str:
+    token = str(variant_id or "").strip()
+    if token == "baseline_top_0":
+        return "loop 0"
+    if token.startswith("filtered_top_"):
+        try:
+            removed_percent = int(token.replace("filtered_top_", ""))
+            return f"loop {max(1, removed_percent // 5)}"
+        except Exception:
+            return token
+    return token
+
+
+def _build_variant_plot_key(base_key: str, variant_id: str) -> str:
+    return f"{base_key}__{variant_id}"
 
 
 def build_qsar_training_plots(
@@ -505,6 +539,17 @@ def build_activity_cliff_feedback_plots(
     annotated_frame = pd.read_csv(Path(annotated_training_csv).expanduser())
     generated: Dict[str, str] = {}
 
+    input_dataset = pd.read_csv(Path(train_csv).expanduser())
+    input_target_values = pd.to_numeric(input_dataset[target_column], errors="coerce").dropna()
+    if not input_target_values.empty:
+        input_target_plot = output_path / "target_distribution_input_dataset.png"
+        _plot_target_distribution(
+            input_target_values,
+            input_target_plot,
+            title="Distribution de la cible — dataset d'entree",
+        )
+        generated["target_distribution__input_dataset"] = str(input_target_plot)
+
     histogram_path = output_path / "activity_cliff_histogram.png"
     rendered_hist = _plot_activity_cliff_histogram(annotated_frame, variants, histogram_path)
     if rendered_hist:
@@ -520,6 +565,50 @@ def build_activity_cliff_feedback_plots(
             continue
         split_payload = json.loads(splits_path.read_text())
         dataset = pd.read_csv(Path(variant_train_csv).expanduser())
+        variant_target_values = pd.to_numeric(dataset[target_column], errors="coerce").dropna()
+        variant_id = str(item.get("variant_id") or "variant")
+        loop_label = _variant_loop_label(variant_id)
+        if not variant_target_values.empty:
+            target_plot = output_path / f"target_distribution_{variant_id}.png"
+            _plot_target_distribution(
+                variant_target_values,
+                target_plot,
+                title=f"Distribution de la cible — {variant_id} ({loop_label})",
+            )
+            generated[_build_variant_plot_key("target_distribution", variant_id)] = str(target_plot)
+
+        split_results = training_result.get("split_results") or []
+        for split_result in split_results:
+            strategy_label = _normalize_strategy_label(split_result)
+            if strategy_label not in {"random", "scaffold", "cluster_kmeans"}:
+                continue
+            split_predictions_path = Path(split_result.get("test_predictions_path") or "")
+            split_splits_path = Path(split_result.get("splits_path") or "")
+            if not split_predictions_path.exists() or not split_splits_path.exists():
+                continue
+            split_payload = json.loads(split_splits_path.read_text())
+            split_frame = _load_split_truth_and_predictions(
+                dataset=dataset,
+                split_payload=split_payload,
+                predictions_path=split_predictions_path,
+                target_column=target_column,
+            )
+            if split_frame is None or split_frame.empty:
+                continue
+
+            title_label = f"{strategy_label}, {variant_id}, {loop_label}"
+            parity_path_rmse = output_path / f"parity_plot_{strategy_label}_rmse_{variant_id}.png"
+            _plot_parity(split_frame, title_label, parity_path_rmse, band_metric="rmse")
+            generated[_build_variant_plot_key(f"parity_plot_{strategy_label}_rmse", variant_id)] = str(
+                parity_path_rmse
+            )
+
+            residuals_path = output_path / f"residuals_plot_{strategy_label}_{variant_id}.png"
+            _plot_residuals(split_frame, title_label, residuals_path)
+            generated[_build_variant_plot_key(f"residuals_plot_{strategy_label}", variant_id)] = str(
+                residuals_path
+            )
+
         frame = _load_split_truth_and_predictions(
             dataset=dataset,
             split_payload=split_payload,
@@ -528,7 +617,7 @@ def build_activity_cliff_feedback_plots(
         )
         if frame is None or frame.empty:
             continue
-        variant_frames.append({"label": item.get("variant_id"), "frame": frame})
+        variant_frames.append({"label": variant_id, "frame": frame})
 
     curve_path = output_path / "error_coverage_curve.png"
     rendered_curve = _plot_error_coverage_curve(variant_frames, curve_path)

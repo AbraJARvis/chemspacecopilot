@@ -5,6 +5,7 @@ import json
 import pandas as pd
 import pytest
 
+from cs_copilot.tools.prediction.chemprop_toolkit import _activity_cliff_variant_token
 from cs_copilot.tools.prediction.activity_cliffs import (
     ActivityCliffConfig,
     build_activity_cliff_comparison_metrics,
@@ -15,6 +16,7 @@ from cs_copilot.tools.prediction.activity_cliffs import (
     parse_activity_cliff_config,
     write_activity_cliff_artifacts,
 )
+from cs_copilot.tools.prediction.qsar_plots import build_activity_cliff_feedback_plots
 
 
 def test_merge_and_parse_activity_cliff_args_round_trip():
@@ -146,3 +148,83 @@ def test_parse_activity_cliff_config_rejects_invalid_loops():
                 "activity_cliff_feedback_loops": 0,
             }
         )
+
+
+def test_activity_cliff_variant_token_from_summary_payload():
+    assert _activity_cliff_variant_token({}) is None
+    assert _activity_cliff_variant_token(
+        {"activity_cliff_feedback": {"enabled": True, "recommended_variant": "baseline_top_0"}}
+    ) == "ac_top_0"
+    assert _activity_cliff_variant_token(
+        {"activity_cliff_feedback": {"enabled": True, "recommended_variant": "filtered_top_10"}}
+    ) == "ac_top_10"
+
+
+def test_build_activity_cliff_feedback_plots_generates_variant_specific_artifacts(tmp_path):
+    train_df = pd.DataFrame(
+        {
+            "smiles": [f"CC{i}" for i in range(20)],
+            "Y": [float(i) / 10.0 + 4.0 for i in range(20)],
+        }
+    )
+    train_csv = tmp_path / "train.csv"
+    train_df.to_csv(train_csv, index=False)
+
+    annotated_csv = tmp_path / "annotated.csv"
+    annotated_df = train_df.copy()
+    annotated_df["activity_cliff_score"] = [0.8] * len(annotated_df)
+    annotated_df["activity_cliff_residual_norm"] = [0.4] * len(annotated_df)
+    annotated_df["activity_cliff_suspicion_score"] = [0.3] * len(annotated_df)
+    annotated_df["activity_cliff_neighbor_count"] = [2] * len(annotated_df)
+    annotated_df.to_csv(annotated_csv, index=False)
+
+    split_payload = [{"train": list(range(10)), "val": [10, 11], "test": [12, 13, 14, 15]}]
+    variants = []
+    for variant_id, removed_count in (("baseline_top_0", 0), ("filtered_top_5", 1)):
+        variant_dir = tmp_path / variant_id
+        variant_dir.mkdir(parents=True, exist_ok=True)
+        splits_path = variant_dir / "splits.json"
+        splits_path.write_text(json.dumps(split_payload))
+        preds_path = variant_dir / "test_predictions.csv"
+        pd.DataFrame({"Y": [4.8, 4.9, 5.0, 5.1]}).to_csv(preds_path, index=False)
+        variant_train_csv = tmp_path / f"{variant_id}.csv"
+        train_df.iloc[removed_count:].reset_index(drop=True).to_csv(variant_train_csv, index=False)
+        variants.append(
+            {
+                "variant_id": variant_id,
+                "removed_percent": float(removed_count * 5),
+                "removed_count": removed_count,
+                "filtered_training_csv": str(variant_train_csv),
+                "training_result": {
+                    "train_csv": str(variant_train_csv),
+                    "test_predictions_path": str(preds_path),
+                    "splits_path": str(splits_path),
+                    "split_results": [
+                        {
+                            "strategy_label": "random",
+                            "strategy": "random",
+                            "strategy_family": "random",
+                            "test_predictions_path": str(preds_path),
+                            "splits_path": str(splits_path),
+                        }
+                    ],
+                },
+            }
+        )
+
+    generated = build_activity_cliff_feedback_plots(
+        train_csv=str(train_csv),
+        target_column="Y",
+        annotated_training_csv=str(annotated_csv),
+        variants=variants,
+        output_dir=str(tmp_path / "plots"),
+    )
+
+    assert "target_distribution__input_dataset" in generated
+    assert "target_distribution__baseline_top_0" in generated
+    assert "target_distribution__filtered_top_5" in generated
+    assert "parity_plot_random_rmse__baseline_top_0" in generated
+    assert "parity_plot_random_rmse__filtered_top_5" in generated
+    assert "residuals_plot_random__baseline_top_0" in generated
+    assert "residuals_plot_random__filtered_top_5" in generated
+    assert "error_coverage_curve" in generated
