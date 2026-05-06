@@ -100,10 +100,10 @@ _DEDICATED_TOOL_OPERATIONS = {"smiles_to_morgan_fingerprints", "smiles_to_rdkit_
 def _preview(df: pd.DataFrame) -> str:
     """Generate a preview string for a DataFrame."""
     head = df.iloc[:SAMPLE_ROWS, :SAMPLE_COLS]
-    return (
-        f"(preview rows={SAMPLE_ROWS}, cols={SAMPLE_COLS}, shape={df.shape})\n"
-        + head.to_markdown(maxcolwidths=[MAX_COL_WIDTH])
-    )
+    header = f"(preview rows={SAMPLE_ROWS}, cols={SAMPLE_COLS}, shape={df.shape})\n"
+    if head.empty:
+        return header + f"Empty DataFrame with columns: {list(head.columns)}"
+    return header + head.to_markdown(maxcolwidths=[MAX_COL_WIDTH])
 
 
 def _normalize_csv(params: dict) -> dict:

@@ -532,6 +532,8 @@ MODEL_REGISTRY_INSTRUCTIONS = [
     "  - Preserve applicability-domain artifacts and summaries when they are available from the training handoff.",
     "Step 3: Persist only what the evidence supports.",
     "  - Use `persist_registered_model` for persistent catalog registration.",
+    "  - Never call `register_catalog_model` during training governance; it is only for loading an already-persistent catalog model into an inference session.",
+    "  - After `persist_registered_model`, use the returned canonical `model_id`; do not invent a display-like model_id for a second registration call.",
     "  - Canonical statuses are `experimental`, `workflow_demo`, `validated`, and `robust_validated`.",
     "  - Allow `validated` only for `standard_qsar` or `challenging_qsar` when Dataset Gate, Hardest Split Gate, and Robustness Gap Gate all pass.",
     "  - Allow `robust_validated` only for `robust_qsar` when Dataset Gate, Hardest Split Gate, Robustness Gap Gate, and Random Stability Gate all pass.",

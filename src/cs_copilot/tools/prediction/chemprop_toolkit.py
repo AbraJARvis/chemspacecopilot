@@ -1046,7 +1046,21 @@ class ChempropToolkit(Toolkit):
             raise ValueError("Agent is required to register a catalog model")
 
         self.catalog.refresh_from_internal_store(persist=True)
-        record = self.catalog.get_model(model_id)
+        try:
+            record = self.catalog.get_model(model_id)
+        except ValueError as exc:
+            available_ids = [record.model_id for record in self.catalog.list_models()]
+            return {
+                "registered": False,
+                "error": str(exc),
+                "model_id": model_id,
+                "available_model_ids": available_ids,
+                "usage_hint": (
+                    "register_catalog_model only accepts an existing persistent catalog model_id. "
+                    "For a newly trained session model, call persist_registered_model and use its returned "
+                    "canonical model_id instead of inventing a display name."
+                ),
+            }
         return self.register_model(
             model_id=record.model_id,
             model_path=record.model_path,
