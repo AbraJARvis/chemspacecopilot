@@ -84,7 +84,6 @@ class BenchmarkToolkit(Toolkit):
     }
     BENCHMARK_MODE_ALIASES = {
         "fast_local": "benchmark_fast_local",
-        "standard_qsar": "benchmark_standard_qsar",
         "robust_qsar": "benchmark_robust_qsar",
         "challenging_qsar": "benchmark_challenging_qsar",
     }

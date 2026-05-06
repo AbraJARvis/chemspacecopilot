@@ -689,6 +689,7 @@ class ChempropToolkit(Toolkit):
             "applicability_domain_path": run_dir / "applicability_domain" / "applicability_domain.json",
         }
         plot_sources: Dict[str, Path] = {}
+        extra_artifact_sources: Dict[str, Path] = {}
 
         if source_artifacts:
             for key in (
@@ -706,6 +707,9 @@ class ChempropToolkit(Toolkit):
             for plot_name, raw_path in (source_artifacts.get("plot_artifacts") or {}).items():
                 if raw_path:
                     plot_sources[plot_name] = Path(str(raw_path)).expanduser()
+            for artifact_name, raw_path in (source_artifacts.get("extra_artifacts") or {}).items():
+                if raw_path:
+                    extra_artifact_sources[artifact_name] = Path(str(raw_path)).expanduser()
 
         for key, source_path in optional_artifacts.items():
             if source_path.exists():
@@ -734,6 +738,19 @@ class ChempropToolkit(Toolkit):
                 copied_plot_artifacts[plot_name] = _relative_posix(target_path, model_root)
             if copied_plot_artifacts:
                 copied_files["plot_artifacts"] = copied_plot_artifacts
+
+        copied_extra_artifacts: Dict[str, str] = {}
+        if extra_artifact_sources:
+            extra_dir = artifacts_dir / "activity_cliff_feedback"
+            extra_dir.mkdir(parents=True, exist_ok=True)
+            for artifact_name, source_path in extra_artifact_sources.items():
+                if not source_path.exists():
+                    continue
+                target_path = extra_dir / source_path.name
+                shutil.copy2(source_path, target_path)
+                copied_extra_artifacts[artifact_name] = _relative_posix(target_path, model_root)
+            if copied_extra_artifacts:
+                copied_files["activity_cliff_artifacts"] = copied_extra_artifacts
 
         if train_csv:
             source_train_csv = Path(train_csv).expanduser()
@@ -783,6 +800,8 @@ class ChempropToolkit(Toolkit):
             }
         if copied_plot_artifacts:
             metadata["plot_artifacts"] = copied_plot_artifacts
+        if copied_extra_artifacts:
+            metadata["activity_cliff_artifacts"] = copied_extra_artifacts
         metadata_path = model_root / "metadata.json"
         metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
 
@@ -1214,6 +1233,22 @@ class ChempropToolkit(Toolkit):
             "reference_manifest_path": applicability_domain.get("reference_manifest_path"),
             "applicability_domain_path": applicability_domain.get("applicability_domain_path"),
             "plot_artifacts": summary_payload.get("plot_artifacts") or {},
+            "extra_artifacts": {
+                key: value
+                for key, value in {
+                    "annotated_training_csv": ((summary_payload.get("activity_cliff_feedback") or {}).get("annotated_training_csv")),
+                    "activity_cliff_summary_path": ((summary_payload.get("activity_cliff_feedback") or {}).get("summary_path")),
+                    **{
+                        f"variant_{idx}_filtered_training_csv": item.get("filtered_training_csv")
+                        for idx, item in enumerate(
+                            ((summary_payload.get("activity_cliff_feedback") or {}).get("variants") or []),
+                            start=1,
+                        )
+                        if item.get("filtered_training_csv")
+                    },
+                }.items()
+                if value
+            },
         }
 
         materialized = self._materialize_internal_model(
@@ -1263,6 +1298,20 @@ class ChempropToolkit(Toolkit):
                 "dataset_name": dataset_name,
                 "validation_protocol": str(protocol_name or "protocol"),
                 **({"activity_cliff_variant": activity_cliff_token} if activity_cliff_token else {}),
+                **(
+                    {
+                        "activity_cliff_feedback": {
+                            "enabled": bool((summary_payload.get("activity_cliff_feedback") or {}).get("enabled")),
+                            "mode": (summary_payload.get("activity_cliff_feedback") or {}).get("mode"),
+                            "index_name": (summary_payload.get("activity_cliff_feedback") or {}).get("index_name"),
+                            "flagged_count": (summary_payload.get("activity_cliff_feedback") or {}).get("flagged_count"),
+                            "priority_counts": (summary_payload.get("activity_cliff_feedback") or {}).get("priority_counts"),
+                            "recommended_variant": (summary_payload.get("activity_cliff_feedback") or {}).get("recommended_variant"),
+                        }
+                    }
+                    if summary_payload.get("activity_cliff_feedback")
+                    else {}
+                ),
             },
             inference_profile={
                 **current.inference_profile,
