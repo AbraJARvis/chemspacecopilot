@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from cs_copilot.storage import S3
+from cs_copilot.tools.activity_cliffs import ACTIVITY_CLIFF_ANNOTATION_PREFIX
 
 from .backend import (
     BackendNotAvailableError,
@@ -199,6 +200,16 @@ class LightGBMBackend(PredictionBackend):
 
         if explicit:
             feature_columns = [str(column) for column in explicit]
+            leaked = [
+                column
+                for column in feature_columns
+                if column.startswith(ACTIVITY_CLIFF_ANNOTATION_PREFIX)
+            ]
+            if leaked:
+                raise InvalidPredictionInputError(
+                    "Activity-cliff annotation columns cannot be used as LightGBM features. "
+                    f"Invalid columns: {leaked}"
+                )
             categorical_feature_columns = self._resolve_categorical_feature_columns(
                 df,
                 feature_columns=feature_columns,
@@ -223,7 +234,9 @@ class LightGBMBackend(PredictionBackend):
         numeric_columns = [
             column
             for column in df.columns
-            if column not in excluded and pd.api.types.is_numeric_dtype(df[column])
+            if column not in excluded
+            and not str(column).startswith(ACTIVITY_CLIFF_ANNOTATION_PREFIX)
+            and pd.api.types.is_numeric_dtype(df[column])
         ]
         categorical_feature_columns = self._resolve_categorical_feature_columns(
             df,

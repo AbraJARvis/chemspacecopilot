@@ -15,6 +15,7 @@ from agno.models.base import Model  # Agno v2 base class
 
 from cs_copilot.tools import (
     AutoencoderToolkit,
+    ActivityCliffToolkit,
     BenchmarkToolkit,
     ChemblToolkit,
     ChempropToolkit,
@@ -688,6 +689,7 @@ class QSARTrainingFactory(BaseAgentFactory):
             """,
             tools=[
                 BenchmarkToolkit(),
+                ActivityCliffToolkit(),
                 ChempropToolkit(),
                 LightGBMToolkit(),
                 TabICLToolkit(),

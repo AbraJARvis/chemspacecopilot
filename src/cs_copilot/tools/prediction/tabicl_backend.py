@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from cs_copilot.storage import S3
+from cs_copilot.tools.activity_cliffs import ACTIVITY_CLIFF_ANNOTATION_PREFIX
 
 from .backend import (
     BackendNotAvailableError,
@@ -204,7 +205,9 @@ class TabICLBackend(PredictionBackend):
         numeric_columns = [
             column
             for column in df.columns
-            if column not in excluded and pd.api.types.is_numeric_dtype(df[column])
+            if column not in excluded
+            and not str(column).startswith(ACTIVITY_CLIFF_ANNOTATION_PREFIX)
+            and pd.api.types.is_numeric_dtype(df[column])
         ]
 
         explicit = extra_args.get("feature_columns")
@@ -214,6 +217,16 @@ class TabICLBackend(PredictionBackend):
             missing = [column for column in explicit if column not in df.columns]
             if missing:
                 raise InvalidPredictionInputError(f"Requested feature columns are missing: {missing}")
+            leaked = [
+                column
+                for column in explicit
+                if str(column).startswith(ACTIVITY_CLIFF_ANNOTATION_PREFIX)
+            ]
+            if leaked:
+                raise InvalidPredictionInputError(
+                    "Activity-cliff annotation columns cannot be used as TabICL features. "
+                    f"Invalid columns: {leaked}"
+                )
             non_numeric = [
                 column for column in explicit if not pd.api.types.is_numeric_dtype(df[column])
             ]

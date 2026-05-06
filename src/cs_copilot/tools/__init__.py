@@ -22,6 +22,7 @@ Main Classes and Functions:
 
 # Analysis toolkits
 from .analysis import RobustnessAnalysisToolkit
+from .activity_cliffs import ActivityCliffToolkit
 from .chemistry import (
     AutoencoderToolkit,
     BaseChemistryToolkit,
@@ -69,6 +70,7 @@ __all__ = [
     "BaseChemistryToolkit",
     "ChemicalSimilarityToolkit",
     "DatasetCurationToolkit",
+    "ActivityCliffToolkit",
     "MolecularFeatureToolkit",
     "AutoencoderToolkit",
     "PeptideWAEToolkit",

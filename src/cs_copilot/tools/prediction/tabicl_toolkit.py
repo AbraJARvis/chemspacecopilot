@@ -19,6 +19,8 @@ import pandas as pd
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
+from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, split_activity_cliff_args
+
 from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionExecutionError, PredictionTaskSpec
 from .chemprop_toolkit import _get_prediction_state, _write_active_training_marker
@@ -737,6 +739,12 @@ class TabICLToolkit(Toolkit):
         split_type: str = "random",
         split_sizes: Optional[List[float] | str] = None,
         random_state: int = 42,
+        activity_cliff_index: str = "sali",
+        activity_cliff_feedback: bool = False,
+        activity_cliff_feedback_loops: int = 0,
+        activity_cliff_similarity_threshold: float = 0.70,
+        activity_cliff_top_k_neighbors: int = 10,
+        activity_cliff_flag_threshold: float = 0.35,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -758,12 +766,42 @@ class TabICLToolkit(Toolkit):
         root_output_path = Path(resolved_output_dir)
         root_output_path.mkdir(parents=True, exist_ok=True)
 
-        requested_extra_args = dict(extra_args or {})
+        requested_extra_args, extra_activity_args = split_activity_cliff_args(extra_args)
+        activity_args = {
+            "activity_cliff_index": activity_cliff_index,
+            "activity_cliff_feedback": activity_cliff_feedback,
+            "activity_cliff_feedback_loops": activity_cliff_feedback_loops,
+            "activity_cliff_similarity_threshold": activity_cliff_similarity_threshold,
+            "activity_cliff_top_k_neighbors": activity_cliff_top_k_neighbors,
+            "activity_cliff_flag_threshold": activity_cliff_flag_threshold,
+            **extra_activity_args,
+        }
         requested_extra_args.setdefault("feature_columns", normalized_feature_columns)
         requested_extra_args.setdefault("split_sizes", normalized_split_sizes)
         requested_extra_args.setdefault("random_state", random_state)
         requested_extra_args.setdefault("split_type", split_type)
         requested_extra_args.setdefault("validation_protocol", validation_protocol)
+
+        target_column = normalized_target_columns[0] if normalized_target_columns else None
+        activity_cliffs: Dict[str, Any] = {}
+        if task_type == "regression" and len(normalized_target_columns) == 1 and target_column:
+            try:
+                activity_cliffs = prepare_activity_cliff_context(
+                    train_csv=train_csv,
+                    output_dir=resolved_output_dir,
+                    smiles_column="smiles",
+                    target_column=target_column,
+                    **activity_args,
+                )
+            except Exception as exc:
+                if activity_args.get("activity_cliff_index") != "sali":
+                    raise
+                activity_cliffs = {
+                    "enabled": False,
+                    "mode": "skipped",
+                    "index_name": activity_args.get("activity_cliff_index", "sali"),
+                    "warnings": [f"Activity-cliff annotation skipped: {exc}"],
+                }
 
         training_policy = self._apply_training_profile(requested_extra_args)
         protocol_policy = self._resolve_validation_protocol(
@@ -834,6 +872,21 @@ class TabICLToolkit(Toolkit):
         )
         if prediction_state is not None:
             prediction_state["active_training_run"] = None
+        result["activity_cliffs"] = activity_cliffs
+        result["plot_artifacts"] = {
+            **(result.get("plot_artifacts") or {}),
+            **(activity_cliffs.get("plot_artifacts") or {}),
+        }
+        summary_path = result.get("canonical_summary_path") or result.get("summary_path")
+        if summary_path:
+            summary_file = Path(str(summary_path)).expanduser()
+            try:
+                payload = json.loads(summary_file.read_text()) if summary_file.exists() else {}
+            except Exception:
+                payload = {}
+            payload.update(result)
+            summary_file.parent.mkdir(parents=True, exist_ok=True)
+            summary_file.write_text(json.dumps(payload, indent=2) + "\n")
         return result
 
     def predict_with_tabicl_from_csv(

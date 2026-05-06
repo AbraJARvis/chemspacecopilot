@@ -23,6 +23,7 @@ from scipy.stats import kendalltau, spearmanr
 
 from cs_copilot.storage import S3
 from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
+from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, split_activity_cliff_args
 
 from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionModelRecord, PredictionTaskSpec
@@ -659,6 +660,7 @@ class ChempropToolkit(Toolkit):
             "applicability_domain_path": run_dir / "applicability_domain" / "applicability_domain.json",
         }
         plot_sources: Dict[str, Path] = {}
+        activity_cliff_sources: Dict[str, Path] = {}
 
         if source_artifacts:
             for key in (
@@ -676,6 +678,24 @@ class ChempropToolkit(Toolkit):
             for plot_name, raw_path in (source_artifacts.get("plot_artifacts") or {}).items():
                 if raw_path:
                     plot_sources[plot_name] = Path(str(raw_path)).expanduser()
+            activity_payload = source_artifacts.get("activity_cliffs") or {}
+            for key in (
+                "annotated_training_csv",
+                "summary_path",
+                "clean_training_csv",
+            ):
+                raw_path = activity_payload.get(key)
+                if raw_path:
+                    activity_cliff_sources[key] = Path(str(raw_path)).expanduser()
+            for variant in activity_payload.get("variants") or []:
+                raw_path = variant.get("filtered_training_csv")
+                if raw_path:
+                    activity_cliff_sources[f"variant_{variant.get('variant_id')}"] = Path(
+                        str(raw_path)
+                    ).expanduser()
+            for plot_name, raw_path in (activity_payload.get("plot_artifacts") or {}).items():
+                if raw_path:
+                    activity_cliff_sources[f"plot_{plot_name}"] = Path(str(raw_path)).expanduser()
 
         for key, source_path in optional_artifacts.items():
             if source_path.exists():
@@ -702,8 +722,23 @@ class ChempropToolkit(Toolkit):
                 target_path = plots_dir / source_path.name
                 shutil.copy2(source_path, target_path)
                 copied_plot_artifacts[plot_name] = _relative_posix(target_path, model_root)
-            if copied_plot_artifacts:
-                copied_files["plot_artifacts"] = copied_plot_artifacts
+        if copied_plot_artifacts:
+            copied_files["plot_artifacts"] = copied_plot_artifacts
+
+        copied_activity_cliff_artifacts: Dict[str, str] = {}
+        if activity_cliff_sources:
+            activity_dir = artifacts_dir / "activity_cliffs"
+            activity_dir.mkdir(parents=True, exist_ok=True)
+            for artifact_name, source_path in activity_cliff_sources.items():
+                if not source_path.exists():
+                    continue
+                target_path = activity_dir / source_path.name
+                shutil.copy2(source_path, target_path)
+                copied_activity_cliff_artifacts[artifact_name] = _relative_posix(
+                    target_path, model_root
+                )
+            if copied_activity_cliff_artifacts:
+                copied_files["activity_cliffs"] = copied_activity_cliff_artifacts
 
         if train_csv:
             source_train_csv = Path(train_csv).expanduser()
@@ -753,6 +788,17 @@ class ChempropToolkit(Toolkit):
             }
         if copied_plot_artifacts:
             metadata["plot_artifacts"] = copied_plot_artifacts
+        if copied_activity_cliff_artifacts:
+            activity_payload = (source_artifacts or {}).get("activity_cliffs") or {}
+            metadata["activity_cliffs"] = {
+                "enabled": bool(activity_payload.get("enabled")),
+                "mode": activity_payload.get("mode"),
+                "index_name": activity_payload.get("index_name"),
+                "flagged_count": activity_payload.get("flagged_count"),
+                "priority_counts": activity_payload.get("priority_counts"),
+                "recommended_variant": activity_payload.get("recommended_variant"),
+                "artifacts": copied_activity_cliff_artifacts,
+            }
         metadata_path = model_root / "metadata.json"
         metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
 
@@ -825,6 +871,9 @@ class ChempropToolkit(Toolkit):
             }
         if artifacts.get("plot_artifacts"):
             payload["plot_artifacts"] = artifacts.get("plot_artifacts")
+        if artifacts.get("activity_cliffs") and record.training_data_summary.get("activity_cliffs"):
+            payload["activity_cliffs"] = record.training_data_summary.get("activity_cliffs")
+            payload["activity_cliffs"]["artifacts"] = artifacts.get("activity_cliffs")
         if governance_assessment:
             payload["governance_assessment"] = governance_assessment
         if status_reason:
@@ -1140,6 +1189,7 @@ class ChempropToolkit(Toolkit):
             "reference_manifest_path": applicability_domain.get("reference_manifest_path"),
             "applicability_domain_path": applicability_domain.get("applicability_domain_path"),
             "plot_artifacts": summary_payload.get("plot_artifacts") or {},
+            "activity_cliffs": summary_payload.get("activity_cliffs") or {},
         }
 
         materialized = self._materialize_internal_model(
@@ -1188,6 +1238,16 @@ class ChempropToolkit(Toolkit):
                 "endpoint_name": endpoint_name,
                 "dataset_name": dataset_name,
                 "validation_protocol": str(protocol_name or "protocol"),
+                "activity_cliffs": {
+                    "enabled": bool((summary_payload.get("activity_cliffs") or {}).get("enabled")),
+                    "mode": (summary_payload.get("activity_cliffs") or {}).get("mode"),
+                    "index_name": (summary_payload.get("activity_cliffs") or {}).get("index_name"),
+                    "flagged_count": (summary_payload.get("activity_cliffs") or {}).get("flagged_count"),
+                    "priority_counts": (summary_payload.get("activity_cliffs") or {}).get("priority_counts"),
+                    "recommended_variant": (summary_payload.get("activity_cliffs") or {}).get("recommended_variant"),
+                }
+                if summary_payload.get("activity_cliffs")
+                else {},
             },
             inference_profile={
                 **current.inference_profile,
@@ -1590,6 +1650,12 @@ class ChempropToolkit(Toolkit):
         smiles_columns: Optional[List[str] | str] = None,
         target_columns: Optional[List[str] | str] = None,
         reaction_columns: Optional[List[str] | str] = None,
+        activity_cliff_index: str = "sali",
+        activity_cliff_feedback: bool = False,
+        activity_cliff_feedback_loops: int = 0,
+        activity_cliff_similarity_threshold: float = 0.70,
+        activity_cliff_top_k_neighbors: int = 10,
+        activity_cliff_flag_threshold: float = 0.35,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1608,7 +1674,17 @@ class ChempropToolkit(Toolkit):
         root_output_path = Path(resolved_output_dir)
         active_marker_path = root_output_path / ".training_in_progress"
         trained_at = project_now()
-        training_policy = self._apply_training_profile(extra_args)
+        cleaned_extra_args, extra_activity_args = split_activity_cliff_args(extra_args)
+        activity_args = {
+            "activity_cliff_index": activity_cliff_index,
+            "activity_cliff_feedback": activity_cliff_feedback,
+            "activity_cliff_feedback_loops": activity_cliff_feedback_loops,
+            "activity_cliff_similarity_threshold": activity_cliff_similarity_threshold,
+            "activity_cliff_top_k_neighbors": activity_cliff_top_k_neighbors,
+            "activity_cliff_flag_threshold": activity_cliff_flag_threshold,
+            **extra_activity_args,
+        }
+        training_policy = self._apply_training_profile(cleaned_extra_args)
         protocol_policy = self._resolve_validation_protocol(
             requested_protocol=training_policy.get("validation_protocol"),
             training_profile=training_policy["training_profile"],
@@ -1619,6 +1695,25 @@ class ChempropToolkit(Toolkit):
             target_columns=target_columns or [],
             reaction_columns=reaction_columns or [],
         )
+        activity_cliffs: Dict[str, Any] = {}
+        if task.task_type == "regression" and len(task.target_columns) == 1:
+            try:
+                activity_cliffs = prepare_activity_cliff_context(
+                    train_csv=train_csv,
+                    output_dir=resolved_output_dir,
+                    smiles_column=task.smiles_columns[0] if task.smiles_columns else "smiles",
+                    target_column=task.target_columns[0],
+                    **activity_args,
+                )
+            except Exception as exc:
+                if activity_args.get("activity_cliff_index") != "sali":
+                    raise
+                activity_cliffs = {
+                    "enabled": False,
+                    "mode": "skipped",
+                    "index_name": activity_args.get("activity_cliff_index", "sali"),
+                    "warnings": [f"Activity-cliff annotation skipped: {exc}"],
+                }
         prediction_state = None
         qsar_training_state = None
         active_run_record = {
@@ -1775,7 +1870,13 @@ class ChempropToolkit(Toolkit):
                 total_completed_at=total_completed_at,
             )
             result["applicability_domain"] = ad_summary
+            result["activity_cliffs"] = activity_cliffs
             result["plot_artifacts"] = plot_artifacts
+            if activity_cliffs.get("plot_artifacts"):
+                result["plot_artifacts"] = {
+                    **result["plot_artifacts"],
+                    **activity_cliffs.get("plot_artifacts", {}),
+                }
             result["trained_at"] = trained_at.isoformat()
             result["trained_date"] = trained_at.strftime("%d/%m/%Y")
             result["trained_time"] = trained_at.strftime("%H:%M:%S")
@@ -1828,6 +1929,15 @@ class ChempropToolkit(Toolkit):
                 if ad_summary.get(ad_key):
                     bundle_files.append(Path(ad_summary[ad_key]).expanduser())
             for plot_path in plot_artifacts.values():
+                bundle_files.append(Path(plot_path).expanduser())
+            if activity_cliffs.get("annotated_training_csv"):
+                bundle_files.append(Path(activity_cliffs["annotated_training_csv"]).expanduser())
+            if activity_cliffs.get("summary_path"):
+                bundle_files.append(Path(activity_cliffs["summary_path"]).expanduser())
+            for variant in activity_cliffs.get("variants") or []:
+                if variant.get("filtered_training_csv"):
+                    bundle_files.append(Path(variant["filtered_training_csv"]).expanduser())
+            for plot_path in (activity_cliffs.get("plot_artifacts") or {}).values():
                 bundle_files.append(Path(plot_path).expanduser())
             bundle = _bundle_artifacts(
                 bundle_path,
