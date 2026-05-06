@@ -165,6 +165,21 @@ def _find_first_existing_path(candidates: List[Path]) -> Optional[Path]:
     return None
 
 
+def _find_training_summary_from_model_run(run_dir: Optional[Path]) -> Optional[Path]:
+    if run_dir is None:
+        return None
+    candidates: List[Path] = []
+    current = run_dir.expanduser().resolve()
+    for parent in [current, *current.parents[:3]]:
+        candidates.extend(
+            [
+                parent / "cs_copilot_training_summary.json",
+                parent / "tabicl_training_summary.json",
+            ]
+        )
+    return _find_first_existing_path(candidates)
+
+
 class ChempropToolkit(Toolkit):
     """Toolkit exposing Chemprop-backed property prediction workflows."""
 
@@ -1111,6 +1126,13 @@ class ChempropToolkit(Toolkit):
                     matching_training_run = run
                     train_csv = run.get("train_csv")
                     break
+                summary_candidate = _find_training_summary_from_model_run(inferred_run_dir)
+                if summary_candidate is not None:
+                    summary_root = str(summary_candidate.parent.resolve())
+                    if str(Path(run.get("output_dir", "")).expanduser().resolve()) == summary_root:
+                        matching_training_run = run
+                        train_csv = run.get("train_csv")
+                        break
 
         governance_assessment = {}
         recommended_status = None
@@ -1119,23 +1141,27 @@ class ChempropToolkit(Toolkit):
         summary_path: Optional[Path] = None
         if matching_training_run:
             output_dir = Path(matching_training_run.get("output_dir", "")).expanduser()
-            summary_candidates = [
-                output_dir / "cs_copilot_training_summary.json",
-                output_dir / "tabicl_training_summary.json",
-            ]
-            summary_path = next((path for path in summary_candidates if path.exists()), None)
-            if summary_path is not None and summary_path.exists():
-                try:
-                    summary_payload = json.loads(summary_path.read_text())
-                    applicability_domain = summary_payload.get("applicability_domain") or {}
-                    governance_assessment = (
-                        (summary_payload.get("validation_assessment") or {}).get("governance") or {}
-                    )
-                    recommended_status = governance_assessment.get("recommended_status")
-                except Exception:
-                    governance_assessment = {}
-                    applicability_domain = {}
-                    summary_payload = {}
+            summary_path = _find_first_existing_path(
+                [
+                    output_dir / "cs_copilot_training_summary.json",
+                    output_dir / "tabicl_training_summary.json",
+                ]
+            )
+        if summary_path is None:
+            summary_path = _find_training_summary_from_model_run(inferred_run_dir)
+        if summary_path is not None and summary_path.exists():
+            try:
+                summary_payload = json.loads(summary_path.read_text())
+                train_csv = train_csv or summary_payload.get("train_csv")
+                applicability_domain = summary_payload.get("applicability_domain") or {}
+                governance_assessment = (
+                    (summary_payload.get("validation_assessment") or {}).get("governance") or {}
+                )
+                recommended_status = governance_assessment.get("recommended_status")
+            except Exception:
+                governance_assessment = {}
+                applicability_domain = {}
+                summary_payload = {}
 
         resolved_version = version or current.version or "1"
         trained_at_raw = summary_payload.get("trained_at")
@@ -1153,9 +1179,8 @@ class ChempropToolkit(Toolkit):
             endpoint_name, dataset_name = _extract_endpoint_and_dataset(train_csv_for_name, current.model_id)
         protocol_name = (
             summary_payload.get("validation_protocol")
-            or matching_training_run.get("validation_protocol")
-            if matching_training_run
-            else "protocol"
+            or (matching_training_run.get("validation_protocol") if matching_training_run else None)
+            or "protocol"
         )
         representation_name = (
             (current.training_data_summary or {}).get("representation_name")
@@ -1181,7 +1206,7 @@ class ChempropToolkit(Toolkit):
         )
 
         source_artifacts = {
-            "training_summary_path": str(summary_path) if matching_training_run and summary_path.exists() else None,
+            "training_summary_path": str(summary_path) if summary_path and summary_path.exists() else None,
             "config_path": summary_payload.get("config_path"),
             "splits_path": summary_payload.get("splits_path"),
             "test_predictions_path": summary_payload.get("test_predictions_path"),
