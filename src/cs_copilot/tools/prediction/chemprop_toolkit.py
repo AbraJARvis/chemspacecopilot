@@ -183,7 +183,12 @@ def _find_training_summary_from_model_run(run_dir: Optional[Path]) -> Optional[P
 class ChempropToolkit(Toolkit):
     """Toolkit exposing Chemprop-backed property prediction workflows."""
 
-    def __init__(self, backend: Optional[ChempropBackend] = None):
+    def __init__(
+        self,
+        backend: Optional[ChempropBackend] = None,
+        *,
+        include_prediction_summary_export: bool = True,
+    ):
         super().__init__("chemprop_prediction")
         primary_backend = backend or ChempropBackend()
         tabicl_backend = TabICLBackend()
@@ -209,7 +214,8 @@ class ChempropToolkit(Toolkit):
         self.register(self.summarize_model)
         self.register(self.predict_from_csv)
         self.register(self.predict_from_smiles)
-        self.register(self.export_prediction_summary)
+        if include_prediction_summary_export:
+            self.register(self.export_prediction_summary)
         self.register(self.prepare_training_dataset)
         self.register(self.describe_compute_environment)
         self.register(self.train_model)
