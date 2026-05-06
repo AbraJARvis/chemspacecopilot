@@ -381,6 +381,7 @@ def _write_variants(
             "loop_index": 0,
             "removed_tiers": [],
             "removed_count": 0,
+            "removed_row_indices": [],
             "remaining_rows": int(len(annotated)),
             "filtered_training_csv": None,
         }
@@ -416,6 +417,7 @@ def _write_variants(
                 "loop_index": loop_index,
                 "removed_tiers": removed_tiers,
                 "removed_count": removed_count,
+                "removed_row_indices": [int(idx) for idx in annotated.index[mask].tolist()],
                 "remaining_rows": int(len(kept)),
                 "filtered_training_csv": str(variant_path),
             }

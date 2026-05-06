@@ -256,6 +256,117 @@ class LightGBMToolkit(Toolkit):
             "device_type": effective_train_args.get("device_type"),
         }
 
+    def _compact_split_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "strategy_label": result.get("strategy_label"),
+            "strategy_family": result.get("strategy_family"),
+            "backend_split_type": result.get("backend_split_type"),
+            "seed": result.get("seed"),
+            "metrics": result.get("metrics", {}).get("test") or {},
+            "model_path": result.get("model_path"),
+            "test_predictions_path": result.get("test_predictions_path"),
+            "splits_path": result.get("splits_path"),
+            "output_dir": result.get("output_dir"),
+            "source_train_count": result.get("source_train_count"),
+            "effective_train_count": result.get("effective_train_count"),
+            "validation_count": result.get("validation_count"),
+            "test_count": result.get("test_count"),
+            "removed_from_train_count": result.get("removed_from_train_count", 0),
+            "requested_exclusion_count": result.get("requested_exclusion_count", 0),
+            "duration_seconds": result.get("duration_seconds"),
+        }
+
+    def _variant_summary(
+        self,
+        *,
+        variant: Dict[str, Any],
+        split_results: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        assessment = assess_protocol_results(split_results)
+        return {
+            "variant_id": variant.get("variant_id"),
+            "loop_index": variant.get("loop_index"),
+            "removed_tiers": variant.get("removed_tiers") or [],
+            "removed_count": variant.get("removed_count", 0),
+            "remaining_rows": variant.get("remaining_rows"),
+            "filtered_training_csv": variant.get("filtered_training_csv"),
+            "training_completed": bool(split_results),
+            "split_results": [self._compact_split_result(item) for item in split_results],
+            "validation_assessment": assessment,
+        }
+
+    @staticmethod
+    def _hardest_split_r2(assessment: Dict[str, Any]) -> Optional[float]:
+        metrics = assessment.get("governance", {}).get("hardest_split_metrics") or {}
+        value = metrics.get("r2")
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _attach_activity_cliff_variant_training(
+        self,
+        *,
+        activity_cliffs: Dict[str, Any],
+        baseline_split_results: List[Dict[str, Any]],
+        variant_split_results: Dict[str, List[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        if not activity_cliffs.get("enabled"):
+            return activity_cliffs
+        if int(activity_cliffs.get("feedback_loops_requested") or 0) <= 0:
+            return activity_cliffs
+
+        variants = list(activity_cliffs.get("variants") or [])
+        by_variant = {
+            "baseline_loop_0": baseline_split_results,
+            **variant_split_results,
+        }
+        variant_summaries: List[Dict[str, Any]] = []
+        for variant in variants:
+            variant_id = str(variant.get("variant_id"))
+            split_results = by_variant.get(variant_id, [])
+            summary = self._variant_summary(variant=variant, split_results=split_results)
+            variant["training_result"] = summary
+            variant_summaries.append(summary)
+
+        comparable = [
+            item
+            for item in variant_summaries
+            if item.get("training_completed")
+            and self._hardest_split_r2(item.get("validation_assessment") or {}) is not None
+        ]
+        recommended_variant = None
+        recommendation_reason = None
+        if comparable:
+            comparable.sort(
+                key=lambda item: (
+                    self._hardest_split_r2(item.get("validation_assessment") or {}) or float("-inf"),
+                    -int(item.get("loop_index") or 0),
+                ),
+                reverse=True,
+            )
+            recommended_variant = comparable[0].get("variant_id")
+            best_r2 = self._hardest_split_r2(comparable[0].get("validation_assessment") or {})
+            recommendation_reason = (
+                "Selected by highest hardest-split R2 across variants evaluated on fixed holdouts "
+                f"(R2={best_r2:.3f})."
+                if best_r2 is not None
+                else None
+            )
+
+        activity_cliffs["variant_training"] = variant_summaries
+        activity_cliffs["recommended_variant"] = recommended_variant
+        activity_cliffs["recommendation_reason"] = recommendation_reason
+        activity_cliffs["loop_training_policy"] = {
+            "baseline_trained": True,
+            "train_filtering": "remove selected activity-cliff tiers from train split only",
+            "holdout_policy": "validation and test indices remain fixed and non-filtered",
+            "comparison_metric": "hardest_split_r2",
+        }
+        return activity_cliffs
+
     def describe_lightgbm_backend(self) -> Dict[str, Any]:
         """Describe the LightGBM backend defaults and current runtime support."""
         description = self.backend.describe_environment()
@@ -501,13 +612,121 @@ class LightGBMToolkit(Toolkit):
         if primary_run is None:
             raise ValueError("LightGBM validation protocol did not produce a primary run.")
 
+        activity_cliff_variant_split_results: Dict[str, List[Dict[str, Any]]] = {}
+        if activity_cliffs.get("mode") == "with_feedback_loops":
+            trainable_variants = [
+                variant
+                for variant in (activity_cliffs.get("variants") or [])
+                if variant.get("loop_index", 0) > 0 and variant.get("removed_count", 0) > 0
+            ]
+            for variant in trainable_variants:
+                variant_id = str(variant.get("variant_id"))
+                removed_indices = [int(idx) for idx in (variant.get("removed_row_indices") or [])]
+                variant_results: List[Dict[str, Any]] = []
+                for baseline_result in split_results:
+                    label = str(baseline_result.get("strategy_label") or baseline_result.get("strategy") or "split")
+                    run_output_dir = (
+                        root_output_path
+                        / "activity_cliff_variants"
+                        / safe_slug(variant_id)
+                        / f"{safe_slug(label)}_split"
+                    )
+                    run_output_dir.mkdir(parents=True, exist_ok=True)
+                    started_at = project_now()
+                    run_args = {
+                        **training_policy["extra_args"],
+                        "feature_columns": normalized_feature_columns,
+                        "categorical_feature_columns": normalized_categorical_feature_columns,
+                        "split_sizes": normalized_split_sizes,
+                        "split_type": baseline_result.get("backend_split_type"),
+                        "split_payload": baseline_result.get("split_payload"),
+                        "excluded_train_indices": removed_indices,
+                        "activity_cliff_variant_id": variant_id,
+                        "random_state": baseline_result.get("seed", random_state),
+                        "validation_protocol": protocol_policy["protocol"],
+                    }
+
+                    active_run_record["status"] = "running"
+                    active_run_record["current_split_label"] = f"{variant_id}:{label}"
+                    active_run_record["progress_message"] = (
+                        "LightGBM activity-cliff loop training: "
+                        f"{variant_id} on fixed {label} holdout"
+                    )
+                    if prediction_state is not None:
+                        prediction_state["active_training_run"] = dict(active_run_record)
+                    _write_active_training_marker(active_marker_path, active_run_record)
+
+                    variant_result = self.backend.train_model(
+                        train_csv=train_csv,
+                        output_dir=str(run_output_dir),
+                        task=task,
+                        extra_args=run_args,
+                    )
+                    completed_at = project_now()
+                    variant_result["strategy"] = baseline_result.get("strategy")
+                    variant_result["strategy_family"] = baseline_result.get("strategy_family")
+                    variant_result["strategy_label"] = label
+                    variant_result["backend_split_type"] = baseline_result.get("backend_split_type")
+                    variant_result["seed"] = baseline_result.get("seed")
+                    variant_result["validation_protocol"] = protocol_policy["protocol"]
+                    variant_result["output_dir"] = str(run_output_dir)
+                    variant_result["started_at"] = variant_result.get("started_at") or started_at.isoformat()
+                    variant_result["completed_at"] = variant_result.get("completed_at") or completed_at.isoformat()
+                    variant_result["duration_seconds"] = variant_result.get("duration_seconds") or round(
+                        (completed_at - started_at).total_seconds(), 3
+                    )
+                    variant_result["activity_cliff_variant_id"] = variant_id
+                    variant_result["removed_tiers"] = variant.get("removed_tiers") or []
+                    variant_result["removed_count"] = variant.get("removed_count", 0)
+                    variant_result["remaining_rows"] = variant.get("remaining_rows")
+                    variant_results.append(variant_result)
+                activity_cliff_variant_split_results[variant_id] = variant_results
+
+        active_run_record["status"] = "completed"
+        active_run_record["completed_at"] = project_now().isoformat()
+        _write_active_training_marker(active_marker_path, active_run_record)
+
+        activity_cliffs = self._attach_activity_cliff_variant_training(
+            activity_cliffs=activity_cliffs,
+            baseline_split_results=split_results,
+            variant_split_results=activity_cliff_variant_split_results,
+        )
+        if activity_cliffs.get("summary_path"):
+            try:
+                Path(str(activity_cliffs["summary_path"])).write_text(
+                    json.dumps(activity_cliffs, indent=2) + "\n"
+                )
+            except Exception:
+                logger.warning("Could not update activity-cliff summary with loop training results.")
+
+        final_split_results = split_results
+        final_primary_run = primary_run
+        recommended_variant = activity_cliffs.get("recommended_variant")
+        if (
+            recommended_variant
+            and recommended_variant != "baseline_loop_0"
+            and recommended_variant in activity_cliff_variant_split_results
+        ):
+            candidate_split_results = activity_cliff_variant_split_results[recommended_variant]
+            if candidate_split_results:
+                final_split_results = candidate_split_results
+                primary_label = primary_run.get("strategy_label")
+                final_primary_run = next(
+                    (
+                        item
+                        for item in candidate_split_results
+                        if item.get("strategy_label") == primary_label
+                    ),
+                    candidate_split_results[0],
+                )
+
         root_artifacts = self._materialize_primary_protocol_artifacts(
             root_output_dir=root_output_path,
-            primary_run=primary_run,
+            primary_run=final_primary_run,
         )
         ad_summary = self._build_applicability_domain(
             train_csv=train_csv,
-            primary_run=primary_run,
+            primary_run=final_primary_run,
             primary_output_dir=root_output_path,
             task=task,
         )
@@ -523,22 +742,22 @@ class LightGBMToolkit(Toolkit):
                             **item,
                             "splits_path": (
                                 root_artifacts["splits_path"]
-                                if item is primary_run
+                                if item is final_primary_run
                                 else item.get("splits_path")
                             ),
                             "test_predictions_path": (
                                 root_artifacts["test_predictions_path"]
-                                if item is primary_run
+                                if item is final_primary_run
                                 else item.get("test_predictions_path")
                             ),
                         }
-                        for item in split_results
+                        for item in final_split_results
                     ],
                     primary_run={
-                        **primary_run,
-                        "splits_path": root_artifacts.get("splits_path") or primary_run.get("splits_path"),
+                        **final_primary_run,
+                        "splits_path": root_artifacts.get("splits_path") or final_primary_run.get("splits_path"),
                         "test_predictions_path": root_artifacts.get("test_predictions_path")
-                        or primary_run.get("test_predictions_path"),
+                        or final_primary_run.get("test_predictions_path"),
                     },
                     output_dir=str(plots_output_dir),
                     target_column=target_column,
@@ -546,34 +765,36 @@ class LightGBMToolkit(Toolkit):
             except Exception:
                 plot_artifacts = {}
 
-        validation_assessment = assess_protocol_results(split_results)
+        validation_assessment = assess_protocol_results(final_split_results)
         total_completed_at = project_now()
-        result = dict(primary_run)
+        result = dict(final_primary_run)
         result["output_dir"] = resolved_output_dir
-        result["model_path"] = root_artifacts.get("best_model_path") or primary_run.get("model_path")
+        result["model_path"] = root_artifacts.get("best_model_path") or final_primary_run.get("model_path")
         result["summary_path"] = str(root_output_path / "cs_copilot_training_summary.json")
-        result["config_path"] = root_artifacts.get("config_path") or primary_run.get("config_path")
-        result["splits_path"] = root_artifacts.get("splits_path") or primary_run.get("splits_path")
-        result["test_predictions_path"] = root_artifacts.get("test_predictions_path") or primary_run.get(
+        result["config_path"] = root_artifacts.get("config_path") or final_primary_run.get("config_path")
+        result["splits_path"] = root_artifacts.get("splits_path") or final_primary_run.get("splits_path")
+        result["test_predictions_path"] = root_artifacts.get("test_predictions_path") or final_primary_run.get(
             "test_predictions_path"
         )
+        result["selected_activity_cliff_variant"] = recommended_variant or "baseline_loop_0"
         result["validation_protocol"] = protocol_policy["protocol"]
         result["validation_protocol_reason"] = protocol_policy["reason"]
-        result["split_results"] = split_results
+        result["split_results"] = final_split_results
+        result["baseline_split_results"] = split_results
         result["validation_assessment"] = validation_assessment
         result["compute_environment"] = training_policy["compute_environment"]
         result["training_profile"] = training_policy["training_profile"]
         result["profile_reason"] = training_policy["profile_reason"]
         result["effective_train_args"] = {
             **training_policy["extra_args"],
-            "device_type": primary_run.get("effective_train_args", {}).get("device_type"),
+            "device_type": final_primary_run.get("effective_train_args", {}).get("device_type"),
         }
         result["training_resources"] = self._summarize_training_resources(
             compute_env=training_policy["compute_environment"],
             effective_train_args=result["effective_train_args"],
         )
         result["training_durations"] = summarize_training_durations(
-            split_results=split_results,
+            split_results=final_split_results,
             total_started_at=total_started_at,
             total_completed_at=total_completed_at,
         )
@@ -591,11 +812,11 @@ class LightGBMToolkit(Toolkit):
         result["train_csv"] = train_csv
         result["target_columns"] = list(normalized_target_columns)
         result["feature_columns"] = list(
-            normalized_feature_columns or (primary_run.get("feature_columns") or [])
+            normalized_feature_columns or (final_primary_run.get("feature_columns") or [])
         )
         result["categorical_feature_columns"] = list(
             normalized_categorical_feature_columns
-            or (primary_run.get("categorical_feature_columns") or [])
+            or (final_primary_run.get("categorical_feature_columns") or [])
         )
         result["canonical_summary_path"] = result["summary_path"]
 
@@ -621,13 +842,14 @@ class LightGBMToolkit(Toolkit):
                             "output_dir": item["output_dir"],
                             "seed": item["seed"],
                         }
-                        for item in split_results
+                        for item in final_split_results
                     ],
                     "activity_cliffs": {
                         "enabled": bool(activity_cliffs.get("enabled")),
                         "mode": activity_cliffs.get("mode"),
                         "index_name": activity_cliffs.get("index_name"),
                         "summary_path": activity_cliffs.get("summary_path"),
+                        "recommended_variant": activity_cliffs.get("recommended_variant"),
                     },
                 }
             )

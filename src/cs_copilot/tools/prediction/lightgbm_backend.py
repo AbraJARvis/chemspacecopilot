@@ -127,6 +127,8 @@ class LightGBMBackend(PredictionBackend):
             "split_sizes",
             "split_type",
             "split_payload",
+            "excluded_train_indices",
+            "activity_cliff_variant_id",
             "validation_protocol",
             "random_state",
             "n_estimators",
@@ -456,6 +458,10 @@ class LightGBMBackend(PredictionBackend):
         sanitized_args = self._sanitize_train_extra_args(extra_args)
         split_sizes = _coerce_split_sizes(sanitized_args.pop("split_sizes", None))
         split_payload = sanitized_args.pop("split_payload", None)
+        excluded_train_indices = {
+            int(idx) for idx in (sanitized_args.pop("excluded_train_indices", None) or [])
+        }
+        activity_cliff_variant_id = sanitized_args.pop("activity_cliff_variant_id", None)
         random_state = int(sanitized_args.get("random_state", 42))
         split_type = str(sanitized_args.get("split_type", "random"))
         validation_protocol = str(sanitized_args.get("validation_protocol", "standard_qsar"))
@@ -508,13 +514,22 @@ class LightGBMBackend(PredictionBackend):
             )
 
         split_indices = split_payload[0]
-        train_idx = split_indices.get("train") or []
+        source_train_idx = [int(idx) for idx in (split_indices.get("train") or [])]
+        train_idx = [idx for idx in source_train_idx if idx not in excluded_train_indices]
+        excluded_from_train = sorted(set(source_train_idx) & excluded_train_indices)
         val_idx = split_indices.get("val") or []
         test_idx = split_indices.get("test") or []
         if not train_idx or not val_idx or not test_idx:
             raise InvalidPredictionInputError(
                 "LightGBM split payload must provide non-empty train/val/test indices."
             )
+        effective_split_payload = [
+            {
+                **split_indices,
+                "train": train_idx,
+                "excluded_from_train": excluded_from_train,
+            }
+        ]
 
         X_train = encoded_working.iloc[train_idx][feature_columns].copy()
         y_train = pd.to_numeric(encoded_working.iloc[train_idx][target_column], errors="coerce").astype(float)
@@ -605,7 +620,7 @@ class LightGBMBackend(PredictionBackend):
             predictions_df.to_csv(fh, index=False)
 
         splits_path = output_path / "splits.json"
-        splits_path.write_text(json.dumps(split_payload, indent=2) + "\n")
+        splits_path.write_text(json.dumps(effective_split_payload, indent=2) + "\n")
 
         config_path = output_path / "config.toml"
         config_path.write_text(
@@ -636,6 +651,15 @@ class LightGBMBackend(PredictionBackend):
             "categorical_mappings": categorical_mappings,
             "target_column": target_column,
             "split_payload": split_payload,
+            "effective_split_payload": effective_split_payload,
+            "excluded_train_indices": sorted(excluded_train_indices),
+            "source_train_count": int(len(source_train_idx)),
+            "effective_train_count": int(len(train_idx)),
+            "validation_count": int(len(val_idx)),
+            "test_count": int(len(test_idx)),
+            "removed_from_train_count": int(len(excluded_from_train)),
+            "requested_exclusion_count": int(len(excluded_train_indices)),
+            "activity_cliff_variant_id": activity_cliff_variant_id,
             "split_type": split_type,
             "validation_protocol": validation_protocol,
             "random_state": random_state,

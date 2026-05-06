@@ -682,6 +682,7 @@ class ChempropToolkit(Toolkit):
         }
         plot_sources: Dict[str, Path] = {}
         activity_cliff_sources: Dict[str, Path] = {}
+        activity_cliff_variant_model_sources: List[Dict[str, Any]] = []
 
         if source_artifacts:
             for key in (
@@ -717,6 +718,27 @@ class ChempropToolkit(Toolkit):
             for plot_name, raw_path in (activity_payload.get("plot_artifacts") or {}).items():
                 if raw_path:
                     activity_cliff_sources[f"plot_{plot_name}"] = Path(str(raw_path)).expanduser()
+            for variant in activity_payload.get("variant_training") or []:
+                variant_id = variant.get("variant_id")
+                if not variant_id:
+                    continue
+                for split_result in variant.get("split_results") or []:
+                    split_label = split_result.get("strategy_label") or split_result.get("strategy_family") or "split"
+                    for artifact_key in (
+                        "model_path",
+                        "test_predictions_path",
+                        "splits_path",
+                    ):
+                        raw_path = split_result.get(artifact_key)
+                        if raw_path:
+                            activity_cliff_variant_model_sources.append(
+                                {
+                                    "variant_id": str(variant_id),
+                                    "split_label": str(split_label),
+                                    "artifact_key": artifact_key,
+                                    "source_path": Path(str(raw_path)).expanduser(),
+                                }
+                            )
 
         for key, source_path in optional_artifacts.items():
             if source_path.exists():
@@ -758,8 +780,24 @@ class ChempropToolkit(Toolkit):
                 copied_activity_cliff_artifacts[artifact_name] = _relative_posix(
                     target_path, model_root
                 )
-            if copied_activity_cliff_artifacts:
-                copied_files["activity_cliffs"] = copied_activity_cliff_artifacts
+        if copied_activity_cliff_artifacts:
+            copied_files["activity_cliffs"] = copied_activity_cliff_artifacts
+
+        copied_activity_cliff_variant_models: Dict[str, str] = {}
+        if activity_cliff_variant_model_sources:
+            variants_dir = artifacts_dir / "activity_cliffs" / "variant_models"
+            for item in activity_cliff_variant_model_sources:
+                source_path = item["source_path"]
+                if not source_path.exists():
+                    continue
+                target_dir = variants_dir / str(item["variant_id"]) / str(item["split_label"])
+                target_dir.mkdir(parents=True, exist_ok=True)
+                target_path = target_dir / source_path.name
+                shutil.copy2(source_path, target_path)
+                key = f"{item['variant_id']}_{item['split_label']}_{item['artifact_key']}"
+                copied_activity_cliff_variant_models[key] = _relative_posix(target_path, model_root)
+        if copied_activity_cliff_variant_models:
+            copied_files["activity_cliff_variant_models"] = copied_activity_cliff_variant_models
 
         if train_csv:
             source_train_csv = Path(train_csv).expanduser()
@@ -818,8 +856,13 @@ class ChempropToolkit(Toolkit):
                 "flagged_count": activity_payload.get("flagged_count"),
                 "priority_counts": activity_payload.get("priority_counts"),
                 "recommended_variant": activity_payload.get("recommended_variant"),
+                "recommendation_reason": activity_payload.get("recommendation_reason"),
                 "artifacts": copied_activity_cliff_artifacts,
             }
+            if activity_payload.get("variant_training"):
+                metadata["activity_cliffs"]["variant_training"] = activity_payload.get("variant_training")
+            if copied_activity_cliff_variant_models:
+                metadata["activity_cliffs"]["variant_model_artifacts"] = copied_activity_cliff_variant_models
         metadata_path = model_root / "metadata.json"
         metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
 
