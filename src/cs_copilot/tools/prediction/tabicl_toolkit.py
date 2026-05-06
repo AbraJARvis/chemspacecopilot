@@ -873,10 +873,7 @@ class TabICLToolkit(Toolkit):
         if prediction_state is not None:
             prediction_state["active_training_run"] = None
         result["activity_cliffs"] = activity_cliffs
-        result["plot_artifacts"] = {
-            **(result.get("plot_artifacts") or {}),
-            **(activity_cliffs.get("plot_artifacts") or {}),
-        }
+        result["plot_artifacts"] = result.get("plot_artifacts") or {}
         summary_path = result.get("canonical_summary_path") or result.get("summary_path")
         if summary_path:
             summary_file = Path(str(summary_path)).expanduser()

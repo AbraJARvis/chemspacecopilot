@@ -697,7 +697,14 @@ class ChempropToolkit(Toolkit):
                 raw_path = source_artifacts.get(key)
                 if raw_path:
                     optional_artifacts[key] = Path(str(raw_path)).expanduser()
+            activity_plot_names = {
+                "activity_cliff_score_histogram",
+                "activity_cliff_tier_distribution",
+                "activity_gap_vs_similarity",
+            }
             for plot_name, raw_path in (source_artifacts.get("plot_artifacts") or {}).items():
+                if plot_name in activity_plot_names:
+                    continue
                 if raw_path:
                     plot_sources[plot_name] = Path(str(raw_path)).expanduser()
             activity_payload = source_artifacts.get("activity_cliffs") or {}
@@ -861,6 +868,10 @@ class ChempropToolkit(Toolkit):
             }
             if activity_payload.get("variant_training"):
                 metadata["activity_cliffs"]["variant_training"] = activity_payload.get("variant_training")
+            if activity_payload.get("variant_comparison_table"):
+                metadata["activity_cliffs"]["variant_comparison_table"] = activity_payload.get(
+                    "variant_comparison_table"
+                )
             if copied_activity_cliff_variant_models:
                 metadata["activity_cliffs"]["variant_model_artifacts"] = copied_activity_cliff_variant_models
         metadata_path = model_root / "metadata.json"
@@ -1946,11 +1957,6 @@ class ChempropToolkit(Toolkit):
             result["applicability_domain"] = ad_summary
             result["activity_cliffs"] = activity_cliffs
             result["plot_artifacts"] = plot_artifacts
-            if activity_cliffs.get("plot_artifacts"):
-                result["plot_artifacts"] = {
-                    **result["plot_artifacts"],
-                    **activity_cliffs.get("plot_artifacts", {}),
-                }
             result["trained_at"] = trained_at.isoformat()
             result["trained_date"] = trained_at.strftime("%d/%m/%Y")
             result["trained_time"] = trained_at.strftime("%H:%M:%S")

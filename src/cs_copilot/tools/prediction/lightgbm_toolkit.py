@@ -306,6 +306,34 @@ class LightGBMToolkit(Toolkit):
         except (TypeError, ValueError):
             return None
 
+    @staticmethod
+    def _variant_comparison_rows(variant_summaries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for variant in variant_summaries:
+            for split_result in variant.get("split_results") or []:
+                metrics = split_result.get("metrics") or {}
+                rows.append(
+                    {
+                        "variant_id": variant.get("variant_id"),
+                        "loop_index": variant.get("loop_index"),
+                        "split": split_result.get("strategy_label"),
+                        "removed_tiers": variant.get("removed_tiers") or [],
+                        "removed_count_dataset": variant.get("removed_count", 0),
+                        "requested_exclusion_count": split_result.get("requested_exclusion_count", 0),
+                        "removed_from_train_count": split_result.get("removed_from_train_count", 0),
+                        "source_train_count": split_result.get("source_train_count"),
+                        "effective_train_count": split_result.get("effective_train_count"),
+                        "validation_count": split_result.get("validation_count"),
+                        "test_count": split_result.get("test_count"),
+                        "r2": metrics.get("r2"),
+                        "rmse": metrics.get("rmse"),
+                        "mae": metrics.get("mae"),
+                        "mse": metrics.get("mse"),
+                        "n": metrics.get("n"),
+                    }
+                )
+        return rows
+
     def _attach_activity_cliff_variant_training(
         self,
         *,
@@ -357,6 +385,7 @@ class LightGBMToolkit(Toolkit):
             )
 
         activity_cliffs["variant_training"] = variant_summaries
+        activity_cliffs["variant_comparison_table"] = self._variant_comparison_rows(variant_summaries)
         activity_cliffs["recommended_variant"] = recommended_variant
         activity_cliffs["recommendation_reason"] = recommendation_reason
         activity_cliffs["loop_training_policy"] = {
@@ -801,11 +830,6 @@ class LightGBMToolkit(Toolkit):
         result["applicability_domain"] = ad_summary
         result["activity_cliffs"] = activity_cliffs
         result["plot_artifacts"] = plot_artifacts
-        if activity_cliffs.get("plot_artifacts"):
-            result["plot_artifacts"] = {
-                **result["plot_artifacts"],
-                **activity_cliffs.get("plot_artifacts", {}),
-            }
         result["trained_at"] = trained_at.isoformat()
         result["trained_date"] = trained_at.strftime("%d/%m/%Y")
         result["trained_time"] = trained_at.strftime("%H:%M:%S")

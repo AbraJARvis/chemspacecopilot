@@ -293,16 +293,32 @@ def _priority_counts(series: pd.Series) -> Dict[str, int]:
     return {name: int(counts.get(name, 0)) for name in ("none", "low", "medium", "high")}
 
 
-def _plot_score_histogram(annotated: pd.DataFrame, output_path: Path) -> Optional[str]:
+def _plot_score_histogram(
+    annotated: pd.DataFrame,
+    output_path: Path,
+    *,
+    flag_threshold: float,
+) -> Optional[str]:
     values = pd.to_numeric(annotated["activity_cliff_score_norm"], errors="coerce").dropna()
     if values.empty:
         return None
+    flagged_values = values[values >= flag_threshold]
     fig, ax = plt.subplots(figsize=(7, 4.5))
     ax.hist(values, bins=30, color="#224f75", edgecolor="white", alpha=0.9)
+    ax.axvline(
+        flag_threshold,
+        color="#b54a4a",
+        linewidth=2,
+        linestyle="--",
+        label=f"Flag threshold {flag_threshold:g}",
+    )
+    if not flagged_values.empty:
+        ax.hist(flagged_values, bins=12, color="#d98b36", edgecolor="white", alpha=0.95, label="Flagged")
     ax.set_title("Activity-cliff normalized score distribution")
     ax.set_xlabel("Normalized activity-cliff score")
     ax.set_ylabel("Compound count")
     ax.grid(alpha=0.2, linestyle="--")
+    ax.legend(frameon=False)
     fig.tight_layout()
     fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
     plt.close(fig)
@@ -312,12 +328,33 @@ def _plot_score_histogram(annotated: pd.DataFrame, output_path: Path) -> Optiona
 def _plot_tier_distribution(annotated: pd.DataFrame, output_path: Path) -> Optional[str]:
     counts = _priority_counts(annotated["activity_cliff_priority_tier"])
     fig, ax = plt.subplots(figsize=(6.5, 4.2))
-    labels = ["none", "low", "medium", "high"]
-    ax.bar(labels, [counts[label] for label in labels], color=["#8f9aa3", "#258d9a", "#d98b36", "#b54a4a"])
-    ax.set_title("Activity-cliff tier distribution")
+    labels = ["low", "medium", "high"]
+    values = [counts[label] for label in labels]
+    bars = ax.bar(labels, values, color=["#258d9a", "#d98b36", "#b54a4a"])
+    for bar, value in zip(bars, values):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + max(values + [1]) * 0.03,
+            str(value),
+            ha="center",
+            va="bottom",
+            fontsize=10,
+        )
+    ax.set_title("Flagged activity-cliff tier distribution")
     ax.set_xlabel("Tier")
-    ax.set_ylabel("Compound count")
+    ax.set_ylabel("Flagged compound count")
+    ax.set_ylim(0, max(values + [1]) * 1.25)
     ax.grid(alpha=0.2, linestyle="--", axis="y")
+    ax.text(
+        0.99,
+        0.94,
+        f"Not flagged: {counts['none']}",
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=9,
+        color="#5f6972",
+    )
     fig.tight_layout()
     fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
     plt.close(fig)
@@ -333,26 +370,59 @@ def _plot_gap_vs_similarity(annotated: pd.DataFrame, output_path: Path) -> Optio
     if not valid.any():
         return None
     fig, ax = plt.subplots(figsize=(7, 4.5))
-    colors = annotated.loc[valid, "activity_cliff_priority_tier"].map(
-        {"none": "#8f9aa3", "low": "#258d9a", "medium": "#d98b36", "high": "#b54a4a"}
-    ).fillna("#8f9aa3")
-    ax.scatter(x[valid], y[valid], s=24, c=colors, alpha=0.75, edgecolor="none")
+    tiers = annotated.loc[valid, "activity_cliff_priority_tier"].fillna("none").astype(str)
+    none_mask = tiers == "none"
+    if none_mask.any():
+        ax.scatter(
+            x[valid][none_mask],
+            y[valid][none_mask],
+            s=14,
+            c="#a9b2ba",
+            alpha=0.18,
+            edgecolor="none",
+            label="none",
+        )
+    for tier, color, size in (
+        ("low", "#258d9a", 42),
+        ("medium", "#d98b36", 52),
+        ("high", "#b54a4a", 62),
+    ):
+        tier_mask = tiers == tier
+        if tier_mask.any():
+            ax.scatter(
+                x[valid][tier_mask],
+                y[valid][tier_mask],
+                s=size,
+                c=color,
+                alpha=0.9,
+                edgecolor="white",
+                linewidth=0.5,
+                label=tier,
+            )
     ax.set_title("Activity gap versus structural similarity")
     ax.set_xlabel("Maximum qualified Tanimoto similarity")
     ax.set_ylabel("Maximum activity gap")
     ax.grid(alpha=0.2, linestyle="--")
+    ax.legend(frameon=False, loc="best")
     fig.tight_layout()
     fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
     plt.close(fig)
     return str(output_path)
 
 
-def _write_plots(annotated: pd.DataFrame, output_dir: Path) -> Dict[str, str]:
+def _write_plots(
+    annotated: pd.DataFrame,
+    output_dir: Path,
+    *,
+    flag_threshold: float,
+) -> Dict[str, str]:
     plots_dir = output_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
     generated = {
         "activity_cliff_score_histogram": _plot_score_histogram(
-            annotated, plots_dir / "activity_cliff_sali_histogram.png"
+            annotated,
+            plots_dir / "activity_cliff_sali_histogram.png",
+            flag_threshold=flag_threshold,
         ),
         "activity_cliff_tier_distribution": _plot_tier_distribution(
             annotated, plots_dir / "activity_cliff_tier_distribution.png"
@@ -475,7 +545,11 @@ def prepare_activity_cliff_context(
     annotated.to_csv(annotated_path, index=False)
     clean_training_path = ac_dir / "activity_cliff_training_clean.csv"
     strip_activity_cliff_columns(annotated).to_csv(clean_training_path, index=False)
-    plot_artifacts = _write_plots(annotated, ac_dir)
+    plot_artifacts = _write_plots(
+        annotated,
+        ac_dir,
+        flag_threshold=config.flag_threshold,
+    )
     variants, warnings = _write_variants(
         annotated=annotated,
         output_dir=ac_dir,
