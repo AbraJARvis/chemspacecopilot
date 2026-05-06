@@ -725,6 +725,11 @@ class ChempropToolkit(Toolkit):
             for plot_name, raw_path in (activity_payload.get("plot_artifacts") or {}).items():
                 if raw_path:
                     activity_cliff_sources[f"plot_{plot_name}"] = Path(str(raw_path)).expanduser()
+            for plot_name, raw_path in (activity_payload.get("loop_comparison_plot_artifacts") or {}).items():
+                if raw_path:
+                    activity_cliff_sources[f"loop_comparison_plot_{plot_name}"] = Path(
+                        str(raw_path)
+                    ).expanduser()
             for variant in activity_payload.get("variant_training") or []:
                 variant_id = variant.get("variant_id")
                 if not variant_id:
@@ -782,7 +787,13 @@ class ChempropToolkit(Toolkit):
             for artifact_name, source_path in activity_cliff_sources.items():
                 if not source_path.exists():
                     continue
-                target_path = activity_dir / source_path.name
+                target_dir = (
+                    activity_dir / "loop_comparison"
+                    if str(artifact_name).startswith("loop_comparison_plot_")
+                    else activity_dir
+                )
+                target_dir.mkdir(parents=True, exist_ok=True)
+                target_path = target_dir / source_path.name
                 shutil.copy2(source_path, target_path)
                 copied_activity_cliff_artifacts[artifact_name] = _relative_posix(
                     target_path, model_root
@@ -872,6 +883,12 @@ class ChempropToolkit(Toolkit):
                 metadata["activity_cliffs"]["variant_comparison_table"] = activity_payload.get(
                     "variant_comparison_table"
                 )
+            if activity_payload.get("loop_comparison_plot_artifacts"):
+                metadata["activity_cliffs"]["loop_comparison_plot_artifacts"] = {
+                    key: copied_activity_cliff_artifacts.get(f"loop_comparison_plot_{key}")
+                    for key in activity_payload.get("loop_comparison_plot_artifacts")
+                    if copied_activity_cliff_artifacts.get(f"loop_comparison_plot_{key}")
+                }
             if copied_activity_cliff_variant_models:
                 metadata["activity_cliffs"]["variant_model_artifacts"] = copied_activity_cliff_variant_models
         metadata_path = model_root / "metadata.json"

@@ -16,7 +16,11 @@ import pandas as pd
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
-from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, split_activity_cliff_args
+from cs_copilot.tools.activity_cliffs import (
+    build_activity_cliff_loop_comparison_plots,
+    prepare_activity_cliff_context,
+    split_activity_cliff_args,
+)
 
 from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionTaskSpec
@@ -720,6 +724,16 @@ class LightGBMToolkit(Toolkit):
             baseline_split_results=split_results,
             variant_split_results=activity_cliff_variant_split_results,
         )
+        if activity_cliffs.get("variant_comparison_table"):
+            try:
+                loop_plot_artifacts = build_activity_cliff_loop_comparison_plots(
+                    activity_cliffs,
+                    output_dir=str(Path(resolved_output_dir) / "activity_cliffs"),
+                )
+                if loop_plot_artifacts:
+                    activity_cliffs["loop_comparison_plot_artifacts"] = loop_plot_artifacts
+            except Exception:
+                logger.warning("Could not generate activity-cliff loop comparison plots.")
         if activity_cliffs.get("summary_path"):
             try:
                 Path(str(activity_cliffs["summary_path"])).write_text(

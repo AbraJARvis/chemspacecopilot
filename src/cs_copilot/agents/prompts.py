@@ -627,6 +627,7 @@ QSAR_REPORT_INSTRUCTIONS = [
     "  - If no loops were requested, state explicitly that no compounds were removed.",
     "  - If loops were requested and `variant_comparison_table` is present, use it as the source table for variants; include variant_id, split, removed_tiers, removed_count_dataset, removed_from_train_count, effective_train_count, validation_count, test_count, RMSE, MAE, R², and MSE.",
     "  - For loop variants, distinguish dataset-level removed_count_dataset from split-level removed_from_train_count/effective_train_count; validation and test holdouts remain non-filtered.",
+    "  - When `loop_comparison_plot_artifacts` is present, list the loop comparison plots separately from SALI diagnostic plots.",
     "  - Never state that a filtered loop variant was trained unless that variant has training_result or variant_training entries with training_completed=true.",
     "  - Copy Activity Cliffs numeric parameters exactly from the handoff; do not infer or round similarity_threshold, top_k_neighbors, or flag_threshold.",
     "  - List the main Activity Cliffs files in `Partie 4 : Fichiers generes`: annotated_training_csv, summary_path, and plot_artifacts when they are present.",

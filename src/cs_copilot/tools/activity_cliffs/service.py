@@ -434,6 +434,241 @@ def _write_plots(
     return {key: value for key, value in generated.items() if value}
 
 
+def _short_variant_label(variant_id: str) -> str:
+    if variant_id == "baseline_loop_0":
+        return "loop 0"
+    if "loop_1" in variant_id:
+        return "loop 1"
+    if "loop_2" in variant_id:
+        return "loop 2"
+    if "loop_3" in variant_id:
+        return "loop 3"
+    return variant_id
+
+
+def _variant_order(variant_id: str) -> int:
+    if variant_id == "baseline_loop_0":
+        return 0
+    for idx in (1, 2, 3):
+        if f"loop_{idx}" in variant_id:
+            return idx
+    return 99
+
+
+def _plot_loop_metric_comparison(
+    table: pd.DataFrame,
+    output_path: Path,
+    *,
+    metric: str,
+    ylabel: str,
+) -> Optional[str]:
+    if table.empty or metric not in table.columns:
+        return None
+    rows = table.dropna(subset=[metric]).copy()
+    if rows.empty:
+        return None
+    rows["variant_order"] = rows["variant_id"].astype(str).map(_variant_order)
+    rows["variant_label"] = rows["variant_id"].astype(str).map(_short_variant_label)
+    rows = rows.sort_values(["variant_order", "split"])
+    pivot = rows.pivot_table(index="variant_label", columns="split", values=metric, aggfunc="first")
+    if pivot.empty:
+        return None
+
+    ordered_labels = rows.drop_duplicates("variant_label").sort_values("variant_order")["variant_label"].tolist()
+    pivot = pivot.reindex(ordered_labels)
+    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+    colors = {"random": "#224f75", "scaffold": "#d98b36"}
+    for split_name in [column for column in ("random", "scaffold") if column in pivot.columns]:
+        ax.plot(
+            pivot.index,
+            pivot[split_name],
+            marker="o",
+            linewidth=2,
+            color=colors.get(split_name, None),
+            label=split_name,
+        )
+        for x_pos, value in enumerate(pivot[split_name].tolist()):
+            if pd.notna(value):
+                ax.text(x_pos, float(value), f"{float(value):.3f}", ha="center", va="bottom", fontsize=8)
+    ax.set_title(f"Activity-cliff loop {ylabel} comparison")
+    ax.set_xlabel("Variant")
+    ax.set_ylabel(ylabel)
+    ax.grid(alpha=0.2, linestyle="--", axis="y")
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
+    plt.close(fig)
+    return str(output_path)
+
+
+def _plot_loop_delta_comparison(table: pd.DataFrame, output_path: Path) -> Optional[str]:
+    if table.empty or "r2" not in table.columns or "rmse" not in table.columns:
+        return None
+    rows = table.copy()
+    rows["variant_order"] = rows["variant_id"].astype(str).map(_variant_order)
+    rows["variant_label"] = rows["variant_id"].astype(str).map(_short_variant_label)
+    baseline = rows[rows["variant_id"] == "baseline_loop_0"].set_index("split")
+    if baseline.empty:
+        return None
+    plot_rows: List[Dict[str, Any]] = []
+    for _, row in rows.iterrows():
+        split = row.get("split")
+        if split not in baseline.index:
+            continue
+        base = baseline.loc[split]
+        plot_rows.append(
+            {
+                "variant_label": row["variant_label"],
+                "variant_order": row["variant_order"],
+                "split": split,
+                "delta_r2": float(row["r2"]) - float(base["r2"]) if pd.notna(row.get("r2")) else np.nan,
+                "delta_rmse": float(row["rmse"]) - float(base["rmse"]) if pd.notna(row.get("rmse")) else np.nan,
+            }
+        )
+    delta = pd.DataFrame(plot_rows)
+    if delta.empty:
+        return None
+    delta = delta[delta["variant_label"] != "loop 0"].sort_values(["variant_order", "split"])
+    if delta.empty:
+        return None
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4.2), sharex=True)
+    colors = {"random": "#224f75", "scaffold": "#d98b36"}
+    for ax, metric, title, zero_label in (
+        (axes[0], "delta_r2", "Delta R2 vs baseline", "baseline"),
+        (axes[1], "delta_rmse", "Delta RMSE vs baseline", "baseline"),
+    ):
+        pivot = delta.pivot_table(index="variant_label", columns="split", values=metric, aggfunc="first")
+        labels = delta.drop_duplicates("variant_label").sort_values("variant_order")["variant_label"].tolist()
+        pivot = pivot.reindex(labels)
+        for split_name in [column for column in ("random", "scaffold") if column in pivot.columns]:
+            ax.plot(
+                pivot.index,
+                pivot[split_name],
+                marker="o",
+                linewidth=2,
+                color=colors.get(split_name, None),
+                label=split_name,
+            )
+        ax.axhline(0.0, color="#5f6972", linewidth=1, linestyle="--", label=zero_label)
+        ax.set_title(title)
+        ax.grid(alpha=0.2, linestyle="--", axis="y")
+    axes[0].set_ylabel("Delta R2")
+    axes[1].set_ylabel("Delta RMSE")
+    axes[1].legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
+    plt.close(fig)
+    return str(output_path)
+
+
+def _plot_variant_parity_from_predictions(
+    predictions_path: Path,
+    output_path: Path,
+    *,
+    label: str,
+) -> Optional[str]:
+    if not predictions_path.exists():
+        return None
+    predictions = pd.read_csv(predictions_path)
+    if "y_true" not in predictions.columns or "y_pred" not in predictions.columns:
+        return None
+    frame = pd.DataFrame(
+        {
+            "y_true": pd.to_numeric(predictions["y_true"], errors="coerce"),
+            "y_pred": pd.to_numeric(predictions["y_pred"], errors="coerce"),
+        }
+    ).dropna()
+    if frame.empty:
+        return None
+    frame["residual"] = frame["y_true"] - frame["y_pred"]
+    mae = float(frame["residual"].abs().mean())
+    rmse = float((frame["residual"].pow(2).mean()) ** 0.5)
+    centered = frame["y_true"] - float(frame["y_true"].mean())
+    ss_tot = float((centered.pow(2)).sum())
+    ss_res = float((frame["residual"].pow(2)).sum())
+    r2 = float(1.0 - (ss_res / ss_tot)) if ss_tot > 0 else None
+
+    fig, ax = plt.subplots(figsize=(5.5, 5.5))
+    ax.scatter(frame["y_true"], frame["y_pred"], s=18, alpha=0.55, color="#224f75")
+    min_val = min(frame["y_true"].min(), frame["y_pred"].min())
+    max_val = max(frame["y_true"].max(), frame["y_pred"].max())
+    ax.plot([min_val, max_val], [min_val, max_val], linestyle="--", color="#b54a4a", linewidth=1.2)
+    ax.set_title(f"Scaffold parity - {label}")
+    ax.set_xlabel("Observed")
+    ax.set_ylabel("Predicted")
+    ax.set_aspect("equal", adjustable="box")
+    metrics = [f"RMSE = {rmse:.3f}", f"MAE = {mae:.3f}"]
+    if r2 is not None:
+        metrics.insert(0, f"R2 = {r2:.3f}")
+    ax.text(
+        0.03,
+        0.97,
+        "\n".join(metrics),
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=9,
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85, edgecolor="#cccccc"),
+    )
+    ax.grid(alpha=0.2, linestyle="--")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
+    plt.close(fig)
+    return str(output_path)
+
+
+def build_activity_cliff_loop_comparison_plots(
+    activity_cliffs: Dict[str, Any],
+    *,
+    output_dir: str,
+) -> Dict[str, str]:
+    table = pd.DataFrame(activity_cliffs.get("variant_comparison_table") or [])
+    if table.empty:
+        return {}
+    comparison_dir = Path(output_dir).expanduser().resolve() / "loop_comparison"
+    comparison_dir.mkdir(parents=True, exist_ok=True)
+    generated: Dict[str, Optional[str]] = {
+        "loop_r2_comparison": _plot_loop_metric_comparison(
+            table,
+            comparison_dir / "activity_cliff_loop_r2_comparison.png",
+            metric="r2",
+            ylabel="R2",
+        ),
+        "loop_rmse_comparison": _plot_loop_metric_comparison(
+            table,
+            comparison_dir / "activity_cliff_loop_rmse_comparison.png",
+            metric="rmse",
+            ylabel="RMSE",
+        ),
+        "loop_delta_vs_baseline": _plot_loop_delta_comparison(
+            table,
+            comparison_dir / "activity_cliff_loop_delta_vs_baseline.png",
+        ),
+    }
+    for variant in activity_cliffs.get("variant_training") or []:
+        variant_id = str(variant.get("variant_id") or "")
+        if not variant_id:
+            continue
+        scaffold_result = next(
+            (
+                result
+                for result in (variant.get("split_results") or [])
+                if result.get("strategy_label") == "scaffold"
+            ),
+            None,
+        )
+        if not scaffold_result or not scaffold_result.get("test_predictions_path"):
+            continue
+        key = f"parity_scaffold_{variant_id}"
+        generated[key] = _plot_variant_parity_from_predictions(
+            Path(str(scaffold_result["test_predictions_path"])).expanduser(),
+            comparison_dir / f"parity_scaffold_{variant_id}.png",
+            label=_short_variant_label(variant_id),
+        )
+    return {key: value for key, value in generated.items() if value}
+
+
 def _variant_id(loop_index: int, removed_tiers: List[str]) -> str:
     return f"filtered_loop_{loop_index}_drop_{'_'.join(removed_tiers)}"
 

@@ -70,6 +70,9 @@ class LightGBMBackend(PredictionBackend):
     backend_name = "lightgbm"
     MODEL_EXTENSIONS = (".pkl",)
 
+    def __init__(self) -> None:
+        self._gpu_runtime_blocked_reason: Optional[str] = None
+
     def _package_version(self) -> Optional[str]:
         try:
             return importlib.metadata.version("lightgbm")
@@ -90,6 +93,7 @@ class LightGBMBackend(PredictionBackend):
             "gpu_count": compute_env.get("gpu_count"),
             "gpu_name": compute_env.get("gpu_name"),
             "supports_gpu_when_available": True,
+            "gpu_runtime_blocked_reason": self._gpu_runtime_blocked_reason,
             "capabilities": [
                 "regression",
                 "single_target",
@@ -343,6 +347,8 @@ class LightGBMBackend(PredictionBackend):
 
     def _resolve_device_type(self, extra_args: Dict[str, Any]) -> Tuple[str, bool, Dict[str, Any]]:
         compute_env = describe_compute_environment()
+        if self._gpu_runtime_blocked_reason:
+            return "cpu", False, compute_env
         explicit_device = extra_args.get("device_type")
         explicit_use_gpu = extra_args.get("use_gpu")
         if explicit_device:
@@ -379,6 +385,10 @@ class LightGBMBackend(PredictionBackend):
             fit_kwargs["categorical_feature"] = list(categorical_feature_columns)
         regressor.fit(X_train, y_train, **fit_kwargs)
         return regressor
+
+    def _is_gpu_runtime_unavailable(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "no opencl device found" in message or "opencl" in message
 
     def predict_from_csv(
         self,
@@ -559,6 +569,8 @@ class LightGBMBackend(PredictionBackend):
         except Exception as exc:
             fit_error = exc
             if requested_device_type != "cpu" and (auto_device or gpu_fallback_to_cpu):
+                if self._is_gpu_runtime_unavailable(exc):
+                    self._gpu_runtime_blocked_reason = str(exc)
                 logger.warning(
                     "LightGBM GPU training failed with device_type=%s; retrying on CPU. Error: %s",
                     requested_device_type,
