@@ -525,6 +525,18 @@ def _loop_axis_label(variant_id: str) -> str:
     return variant_id
 
 
+def _grid_variant_label(variant_id: str) -> str:
+    if variant_id == "baseline_loop_0":
+        return "Loop 0: baseline"
+    if "loop_1" in variant_id:
+        return "Loop 1: drop high"
+    if "loop_2" in variant_id:
+        return "Loop 2: drop high+medium"
+    if "loop_3" in variant_id:
+        return "Loop 3: drop high+medium+low"
+    return variant_id
+
+
 def _variant_order(variant_id: str) -> int:
     if variant_id == "baseline_loop_0":
         return 0
@@ -714,6 +726,43 @@ def _load_variant_prediction_frame(predictions_path: Path) -> Optional[pd.DataFr
     return frame
 
 
+def _load_test_indices_from_split_result(split_result: Dict[str, Any]) -> List[int]:
+    splits_path = split_result.get("splits_path")
+    if not splits_path:
+        return []
+    path = Path(str(splits_path)).expanduser()
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return []
+    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+        return []
+    return [int(idx) for idx in (payload[0].get("test") or [])]
+
+
+def _load_activity_cliff_tier_map(activity_cliffs: Dict[str, Any]) -> Dict[int, str]:
+    annotated_path = activity_cliffs.get("annotated_training_csv")
+    if not annotated_path:
+        return {}
+    path = Path(str(annotated_path)).expanduser()
+    if not path.exists():
+        return {}
+    try:
+        annotated = pd.read_csv(path)
+    except Exception:
+        return {}
+    if "activity_cliff_priority_tier" not in annotated.columns:
+        return {}
+    tiers = annotated["activity_cliff_priority_tier"].astype(str).str.lower()
+    return {
+        int(idx): tier
+        for idx, tier in tiers.items()
+        if tier in {"low", "medium", "high"}
+    }
+
+
 def _draw_variant_parity(
     ax: Any,
     frame: pd.DataFrame,
@@ -724,6 +773,10 @@ def _draw_variant_parity(
     show_legend: bool = True,
     show_ylabel: bool = True,
     axis_limits: Optional[tuple[float, float]] = None,
+    compact_title: bool = False,
+    title_fontsize: Optional[int] = None,
+    metrics_fontsize: int = 9,
+    retained_tiers: Optional[set[str]] = None,
 ) -> None:
     mae = float(frame["residual"].abs().mean())
     rmse = float((frame["residual"].pow(2).mean()) ** 0.5)
@@ -734,6 +787,30 @@ def _draw_variant_parity(
 
     point_alpha = 0.45 if len(frame) > 250 else 0.65
     ax.scatter(frame["y_true"], frame["y_pred"], s=18, alpha=point_alpha, color="#224f75")
+    if retained_tiers and "activity_cliff_tier" in frame.columns:
+        tier_styles = {
+            "low": {"color": "#2d9aa7", "label": "low retained"},
+            "medium": {"color": "#dd8f33", "label": "medium retained"},
+            "high": {"color": "#bd4f4f", "label": "high retained"},
+        }
+        for tier in ("low", "medium", "high"):
+            if tier not in retained_tiers:
+                continue
+            tier_frame = frame[frame["activity_cliff_tier"] == tier]
+            if tier_frame.empty:
+                continue
+            style = tier_styles[tier]
+            ax.scatter(
+                tier_frame["y_true"],
+                tier_frame["y_pred"],
+                s=42,
+                facecolors="none",
+                edgecolors=style["color"],
+                linewidths=1.6,
+                alpha=0.95,
+                label=style["label"],
+                zorder=4,
+            )
     if axis_limits is None:
         min_val = min(frame["y_true"].min(), frame["y_pred"].min())
         max_val = max(frame["y_true"].max(), frame["y_pred"].max())
@@ -762,10 +839,25 @@ def _draw_variant_parity(
             label=f"±1x {band_label}",
         )
     ax.plot([min_val, max_val], [min_val, max_val], linestyle="--", color="#b54a4a", linewidth=1.2)
-    title = f"Scaffold parity - {label} ({band_label} bands)"
-    if recommended:
+    if compact_title:
+        title = label
+    else:
+        title = f"Scaffold parity - {label} ({band_label} bands)"
+    if recommended and not compact_title:
         title = f"{title} - recommended"
-    ax.set_title(title)
+    ax.set_title(title, fontsize=title_fontsize)
+    if recommended and compact_title:
+        ax.text(
+            0.97,
+            0.03,
+            "recommended",
+            transform=ax.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=8,
+            color="#2f6f4e",
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="#d8eadf", alpha=0.85, edgecolor="#9fceb3"),
+        )
     ax.set_xlabel("Observed")
     ax.set_ylabel("Predicted" if show_ylabel else "")
     ax.set_xlim(min_val, max_val)
@@ -785,7 +877,7 @@ def _draw_variant_parity(
         transform=ax.transAxes,
         ha="left",
         va="top",
-        fontsize=9,
+        fontsize=metrics_fontsize,
         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85, edgecolor="#cccccc"),
     )
     ax.grid(alpha=0.2, linestyle="--")
@@ -819,13 +911,15 @@ def _plot_variant_parity_from_predictions(
 
 
 def _plot_variant_parity_grid(
-    variants: List[Dict[str, Any]],
+    activity_cliffs: Dict[str, Any],
     output_path: Path,
     *,
     band_metric: str,
     recommended_variant: Optional[str] = None,
 ) -> Optional[str]:
-    frames: List[tuple[str, str, pd.DataFrame]] = []
+    variants = activity_cliffs.get("variant_training") or []
+    tier_map = _load_activity_cliff_tier_map(activity_cliffs)
+    frames: List[tuple[str, str, List[str], pd.DataFrame]] = []
     for variant in sorted(variants, key=lambda item: _variant_order(str(item.get("variant_id") or ""))):
         variant_id = str(variant.get("variant_id") or "")
         if not variant_id:
@@ -842,16 +936,32 @@ def _plot_variant_parity_grid(
             continue
         frame = _load_variant_prediction_frame(Path(str(scaffold_result["test_predictions_path"])).expanduser())
         if frame is not None:
-            frames.append((variant_id, _short_variant_label(variant_id), frame))
+            test_indices = _load_test_indices_from_split_result(scaffold_result)
+            if tier_map and len(test_indices) == len(frame):
+                frame = frame.copy()
+                frame["source_row_index"] = test_indices
+                frame["activity_cliff_tier"] = [
+                    tier_map.get(int(idx), "none")
+                    for idx in test_indices
+                ]
+            frames.append(
+                (
+                    variant_id,
+                    _grid_variant_label(variant_id),
+                    [str(tier).lower() for tier in (variant.get("removed_tiers") or [])],
+                    frame,
+                )
+            )
     if not frames:
         return None
-    min_val = min(float(min(frame["y_true"].min(), frame["y_pred"].min())) for _, _, frame in frames)
-    max_val = max(float(max(frame["y_true"].max(), frame["y_pred"].max())) for _, _, frame in frames)
+    min_val = min(float(min(frame["y_true"].min(), frame["y_pred"].min())) for _, _, _, frame in frames)
+    max_val = max(float(max(frame["y_true"].max(), frame["y_pred"].max())) for _, _, _, frame in frames)
     pad = max(0.05, (max_val - min_val) * 0.04)
     axis_limits = (min_val - pad, max_val + pad)
-    fig, axes = plt.subplots(1, len(frames), figsize=(4.1 * len(frames), 4.4), sharex=True, sharey=True)
+    fig, axes = plt.subplots(1, len(frames), figsize=(4.9 * len(frames), 4.8), sharex=True, sharey=True)
     axes_array = np.atleast_1d(axes)
-    for idx, (ax, (variant_id, label, frame)) in enumerate(zip(axes_array, frames)):
+    for idx, (ax, (variant_id, label, removed_tiers, frame)) in enumerate(zip(axes_array, frames)):
+        retained_tiers = {"low", "medium", "high"} - set(removed_tiers)
         _draw_variant_parity(
             ax,
             frame,
@@ -861,10 +971,14 @@ def _plot_variant_parity_grid(
             show_legend=idx == len(frames) - 1,
             show_ylabel=idx == 0,
             axis_limits=axis_limits,
+            compact_title=True,
+            title_fontsize=10,
+            metrics_fontsize=8,
+            retained_tiers=retained_tiers,
         )
     band_label = "MAE" if band_metric == "mae" else "RMSE"
-    fig.suptitle(f"Scaffold parity by activity-cliff loop ({band_label} bands)", fontsize=14)
-    fig.tight_layout()
+    fig.suptitle(f"Scaffold parity by activity-cliff loop ({band_label} bands)", fontsize=14, y=0.98)
+    fig.tight_layout(rect=[0, 0, 1, 0.94], w_pad=1.2)
     fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
     plt.close(fig)
     return str(output_path)
@@ -930,13 +1044,13 @@ def build_activity_cliff_loop_comparison_plots(
             recommended=variant_id == activity_cliffs.get("recommended_variant"),
         )
     generated["parity_scaffold_loop_grid_mae"] = _plot_variant_parity_grid(
-        activity_cliffs.get("variant_training") or [],
+        activity_cliffs,
         comparison_dir / "parity_scaffold_loop_grid_mae.png",
         band_metric="mae",
         recommended_variant=activity_cliffs.get("recommended_variant"),
     )
     generated["parity_scaffold_loop_grid_rmse"] = _plot_variant_parity_grid(
-        activity_cliffs.get("variant_training") or [],
+        activity_cliffs,
         comparison_dir / "parity_scaffold_loop_grid_rmse.png",
         band_metric="rmse",
         recommended_variant=activity_cliffs.get("recommended_variant"),
