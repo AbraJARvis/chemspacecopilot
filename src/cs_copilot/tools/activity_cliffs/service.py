@@ -303,6 +303,8 @@ def _plot_score_histogram(
     if values.empty:
         return None
     flagged_values = values[values >= flag_threshold]
+    tiers = annotated.loc[values.index, "activity_cliff_priority_tier"].fillna("none").astype(str)
+    tier_counts = _priority_counts(tiers)
     fig, axes = plt.subplots(
         1,
         2,
@@ -313,7 +315,7 @@ def _plot_score_histogram(
     ax.hist(values, bins=40, color="#224f75", edgecolor="white", alpha=0.9)
     ax.axvline(flag_threshold, color="#b54a4a", linewidth=2, linestyle="--")
     if not flagged_values.empty:
-        ax.hist(flagged_values, bins=10, color="#d98b36", edgecolor="white", alpha=0.95)
+        ax.hist(flagged_values, bins=10, color="#d98b36", edgecolor="white", alpha=0.9)
     ax.set_yscale("log")
     ax.set_title("All compounds (log scale)")
     ax.set_xlabel("Normalized activity-cliff score")
@@ -322,7 +324,7 @@ def _plot_score_histogram(
     ax.text(
         0.98,
         0.94,
-        f"flagged={len(flagged_values)} / {len(values)}\nthreshold={flag_threshold:g}",
+        f"none={tier_counts['none']}, flagged={len(flagged_values)}\nthreshold={flag_threshold:g}",
         transform=ax.transAxes,
         ha="right",
         va="top",
@@ -332,14 +334,29 @@ def _plot_score_histogram(
 
     ax_zoom = axes[1]
     if not flagged_values.empty:
-        bins = min(10, max(3, len(flagged_values)))
-        ax_zoom.hist(flagged_values, bins=bins, color="#d98b36", edgecolor="white", alpha=0.95)
+        lower_edge = math.floor(float(min(flagged_values.min(), flag_threshold)) * 10.0) / 10.0
+        bins = np.arange(max(0.0, lower_edge), 1.11, 0.1)
+        tier_colors = {"low": "#258d9a", "medium": "#d98b36", "high": "#b54a4a"}
+        tier_values = [
+            values[(tiers == tier) & (values >= flag_threshold)]
+            for tier in ("low", "medium", "high")
+        ]
+        ax_zoom.hist(
+            tier_values,
+            bins=bins,
+            stacked=True,
+            color=[tier_colors["low"], tier_colors["medium"], tier_colors["high"]],
+            edgecolor="white",
+            alpha=0.95,
+            label=["low", "medium", "high"],
+        )
         ax_zoom.set_xlim(max(0.0, min(flagged_values.min(), flag_threshold) - 0.04), 1.02)
+        ax_zoom.legend(frameon=False, fontsize=8)
     else:
         ax_zoom.text(0.5, 0.5, "No flagged compounds", ha="center", va="center", transform=ax_zoom.transAxes)
         ax_zoom.set_xlim(flag_threshold, 1.02)
     ax_zoom.axvline(flag_threshold, color="#b54a4a", linewidth=2, linestyle="--")
-    ax_zoom.set_title("Flagged compounds")
+    ax_zoom.set_title("Flagged compounds by priority tier")
     ax_zoom.set_xlabel("Normalized score")
     ax_zoom.set_ylabel("Count")
     ax_zoom.grid(alpha=0.2, linestyle="--")
@@ -411,9 +428,9 @@ def _plot_gap_vs_similarity(
         ax.scatter(
             x_plot[none_mask],
             y[valid][none_mask],
-            s=12,
-            c="#b8c0c7",
-            alpha=0.12,
+            s=18,
+            c="#9aa7b0",
+            alpha=0.28,
             edgecolor="none",
             label="none",
         )
@@ -679,14 +696,7 @@ def _plot_loop_delta_comparison(table: pd.DataFrame, output_path: Path) -> Optio
     return str(output_path)
 
 
-def _plot_variant_parity_from_predictions(
-    predictions_path: Path,
-    output_path: Path,
-    *,
-    label: str,
-    band_metric: str = "mae",
-    recommended: bool = False,
-) -> Optional[str]:
+def _load_variant_prediction_frame(predictions_path: Path) -> Optional[pd.DataFrame]:
     if not predictions_path.exists():
         return None
     predictions = pd.read_csv(predictions_path)
@@ -701,6 +711,20 @@ def _plot_variant_parity_from_predictions(
     if frame.empty:
         return None
     frame["residual"] = frame["y_true"] - frame["y_pred"]
+    return frame
+
+
+def _draw_variant_parity(
+    ax: Any,
+    frame: pd.DataFrame,
+    *,
+    label: str,
+    band_metric: str = "mae",
+    recommended: bool = False,
+    show_legend: bool = True,
+    show_ylabel: bool = True,
+    axis_limits: Optional[tuple[float, float]] = None,
+) -> None:
     mae = float(frame["residual"].abs().mean())
     rmse = float((frame["residual"].pow(2).mean()) ** 0.5)
     centered = frame["y_true"] - float(frame["y_true"].mean())
@@ -708,11 +732,13 @@ def _plot_variant_parity_from_predictions(
     ss_res = float((frame["residual"].pow(2)).sum())
     r2 = float(1.0 - (ss_res / ss_tot)) if ss_tot > 0 else None
 
-    fig, ax = plt.subplots(figsize=(5.5, 5.5))
     point_alpha = 0.45 if len(frame) > 250 else 0.65
     ax.scatter(frame["y_true"], frame["y_pred"], s=18, alpha=point_alpha, color="#224f75")
-    min_val = min(frame["y_true"].min(), frame["y_pred"].min())
-    max_val = max(frame["y_true"].max(), frame["y_pred"].max())
+    if axis_limits is None:
+        min_val = min(frame["y_true"].min(), frame["y_pred"].min())
+        max_val = max(frame["y_true"].max(), frame["y_pred"].max())
+    else:
+        min_val, max_val = axis_limits
     x_band = pd.Series([min_val, max_val], dtype=float)
     band_value = mae if band_metric == "mae" else rmse
     band_label = "MAE" if band_metric == "mae" else "RMSE"
@@ -741,7 +767,9 @@ def _plot_variant_parity_from_predictions(
         title = f"{title} - recommended"
     ax.set_title(title)
     ax.set_xlabel("Observed")
-    ax.set_ylabel("Predicted")
+    ax.set_ylabel("Predicted" if show_ylabel else "")
+    ax.set_xlim(min_val, max_val)
+    ax.set_ylim(min_val, max_val)
     ax.set_aspect("equal", adjustable="box")
     within_1x = float((frame["residual"].abs() <= band_value).mean() * 100.0) if band_value > 0 else 0.0
     within_2x = float((frame["residual"].abs() <= (2.0 * band_value)).mean() * 100.0) if band_value > 0 else 0.0
@@ -761,7 +789,81 @@ def _plot_variant_parity_from_predictions(
         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85, edgecolor="#cccccc"),
     )
     ax.grid(alpha=0.2, linestyle="--")
-    ax.legend(loc="lower right", fontsize=8, frameon=True)
+    if show_legend:
+        ax.legend(loc="lower right", fontsize=8, frameon=True)
+
+
+def _plot_variant_parity_from_predictions(
+    predictions_path: Path,
+    output_path: Path,
+    *,
+    label: str,
+    band_metric: str = "mae",
+    recommended: bool = False,
+) -> Optional[str]:
+    frame = _load_variant_prediction_frame(predictions_path)
+    if frame is None:
+        return None
+    fig, ax = plt.subplots(figsize=(5.5, 5.5))
+    _draw_variant_parity(
+        ax,
+        frame,
+        label=label,
+        band_metric=band_metric,
+        recommended=recommended,
+    )
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
+    plt.close(fig)
+    return str(output_path)
+
+
+def _plot_variant_parity_grid(
+    variants: List[Dict[str, Any]],
+    output_path: Path,
+    *,
+    band_metric: str,
+    recommended_variant: Optional[str] = None,
+) -> Optional[str]:
+    frames: List[tuple[str, str, pd.DataFrame]] = []
+    for variant in sorted(variants, key=lambda item: _variant_order(str(item.get("variant_id") or ""))):
+        variant_id = str(variant.get("variant_id") or "")
+        if not variant_id:
+            continue
+        scaffold_result = next(
+            (
+                result
+                for result in (variant.get("split_results") or [])
+                if result.get("strategy_label") == "scaffold"
+            ),
+            None,
+        )
+        if not scaffold_result or not scaffold_result.get("test_predictions_path"):
+            continue
+        frame = _load_variant_prediction_frame(Path(str(scaffold_result["test_predictions_path"])).expanduser())
+        if frame is not None:
+            frames.append((variant_id, _short_variant_label(variant_id), frame))
+    if not frames:
+        return None
+    min_val = min(float(min(frame["y_true"].min(), frame["y_pred"].min())) for _, _, frame in frames)
+    max_val = max(float(max(frame["y_true"].max(), frame["y_pred"].max())) for _, _, frame in frames)
+    pad = max(0.05, (max_val - min_val) * 0.04)
+    axis_limits = (min_val - pad, max_val + pad)
+    fig, axes = plt.subplots(1, len(frames), figsize=(4.1 * len(frames), 4.4), sharex=True, sharey=True)
+    axes_array = np.atleast_1d(axes)
+    for idx, (ax, (variant_id, label, frame)) in enumerate(zip(axes_array, frames)):
+        _draw_variant_parity(
+            ax,
+            frame,
+            label=label,
+            band_metric=band_metric,
+            recommended=variant_id == recommended_variant,
+            show_legend=idx == len(frames) - 1,
+            show_ylabel=idx == 0,
+            axis_limits=axis_limits,
+        )
+    band_label = "MAE" if band_metric == "mae" else "RMSE"
+    fig.suptitle(f"Scaffold parity by activity-cliff loop ({band_label} bands)", fontsize=14)
     fig.tight_layout()
     fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
     plt.close(fig)
@@ -827,6 +929,18 @@ def build_activity_cliff_loop_comparison_plots(
             band_metric="rmse",
             recommended=variant_id == activity_cliffs.get("recommended_variant"),
         )
+    generated["parity_scaffold_loop_grid_mae"] = _plot_variant_parity_grid(
+        activity_cliffs.get("variant_training") or [],
+        comparison_dir / "parity_scaffold_loop_grid_mae.png",
+        band_metric="mae",
+        recommended_variant=activity_cliffs.get("recommended_variant"),
+    )
+    generated["parity_scaffold_loop_grid_rmse"] = _plot_variant_parity_grid(
+        activity_cliffs.get("variant_training") or [],
+        comparison_dir / "parity_scaffold_loop_grid_rmse.png",
+        band_metric="rmse",
+        recommended_variant=activity_cliffs.get("recommended_variant"),
+    )
     return {key: value for key, value in generated.items() if value}
 
 

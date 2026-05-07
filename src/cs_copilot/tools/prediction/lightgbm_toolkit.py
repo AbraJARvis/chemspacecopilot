@@ -424,6 +424,46 @@ class LightGBMToolkit(Toolkit):
         lines.extend(["", f"Politique de voisinage canonique : {neighborhood_policy_text}"])
         return "\n".join(lines)
 
+    @classmethod
+    def _activity_cliff_validation_metrics_markdown(
+        cls,
+        *,
+        variant_comparison_rows: List[Dict[str, Any]],
+        recommended_variant: Optional[str],
+    ) -> Optional[str]:
+        if not variant_comparison_rows:
+            return None
+        lines = [
+            "Metriques de validation par variante Activity Cliffs",
+            "",
+            "Toutes les variantes sont reportees avec les memes holdouts de validation et de test non filtres.",
+            "",
+            "| Variante | Split | Retires train | Train effectif | R2 | RMSE | MAE | MSE | n |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+        for row in variant_comparison_rows:
+            marker = " (recommandee)" if recommended_variant and row.get("variant_id") == recommended_variant else ""
+            lines.append(
+                "| "
+                f"{cls._format_activity_cliff_value(row.get('variant_id'))}{marker} | "
+                f"{cls._format_activity_cliff_value(row.get('split'))} | "
+                f"{cls._format_activity_cliff_value(row.get('removed_from_train_count'))} | "
+                f"{cls._format_activity_cliff_value(row.get('effective_train_count'))} | "
+                f"{cls._format_activity_cliff_value(row.get('r2'))} | "
+                f"{cls._format_activity_cliff_value(row.get('rmse'))} | "
+                f"{cls._format_activity_cliff_value(row.get('mae'))} | "
+                f"{cls._format_activity_cliff_value(row.get('mse'))} | "
+                f"{cls._format_activity_cliff_value(row.get('n'))} |"
+            )
+        if recommended_variant:
+            lines.extend(
+                [
+                    "",
+                    f"Variante recommandee pour le statut final : {recommended_variant}.",
+                ]
+            )
+        return "\n".join(lines)
+
     @staticmethod
     def _activity_cliff_reporting_handoff(
         *,
@@ -458,6 +498,10 @@ class LightGBMToolkit(Toolkit):
             neighborhood_policy_text=neighborhood_policy_text,
             priority_counts_text=priority_counts_text,
         )
+        validation_metrics_markdown = LightGBMToolkit._activity_cliff_validation_metrics_markdown(
+            variant_comparison_rows=variant_comparison_rows,
+            recommended_variant=recommended_variant,
+        )
         return {
             "mode": activity_cliffs.get("mode"),
             "index_name": activity_cliffs.get("index_name"),
@@ -473,6 +517,7 @@ class LightGBMToolkit(Toolkit):
                 "from the training split only."
             ),
             "canonical_section_markdown": canonical_section_markdown,
+            "validation_metrics_markdown": validation_metrics_markdown,
         }
 
     def _attach_activity_cliff_variant_training(
