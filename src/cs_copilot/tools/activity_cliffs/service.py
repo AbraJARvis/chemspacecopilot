@@ -37,6 +37,12 @@ MAX_ACTIVITY_CLIFF_LOOPS = 3
 MIN_VARIANT_TRAINING_ROWS = 10
 SALI_EPSILON = 1e-6
 PLOT_DPI = 300
+ACTIVITY_CLIFF_COLORS = {
+    "none": "#2F80ED",
+    "low": "#4CAF50",
+    "medium": "#E08D2D",
+    "high": "#C44E52",
+}
 ACTIVITY_CLIFF_ARG_KEYS = {
     "activity_cliff_index",
     "activity_cliff_feedback",
@@ -312,10 +318,21 @@ def _plot_score_histogram(
         gridspec_kw={"width_ratios": [1.55, 1.0]},
     )
     ax = axes[0]
-    ax.hist(values, bins=40, color="#224f75", edgecolor="white", alpha=0.9)
-    ax.axvline(flag_threshold, color="#b54a4a", linewidth=2, linestyle="--")
+    ax.hist(values, bins=40, color=ACTIVITY_CLIFF_COLORS["none"], edgecolor="white", alpha=0.86)
+    ax.axvline(flag_threshold, color=ACTIVITY_CLIFF_COLORS["high"], linewidth=2, linestyle="--")
     if not flagged_values.empty:
-        ax.hist(flagged_values, bins=10, color="#d98b36", edgecolor="white", alpha=0.9)
+        tier_values_all = [
+            values[(tiers == tier) & (values >= flag_threshold)]
+            for tier in ("low", "medium", "high")
+        ]
+        ax.hist(
+            tier_values_all,
+            bins=10,
+            stacked=True,
+            color=[ACTIVITY_CLIFF_COLORS[tier] for tier in ("low", "medium", "high")],
+            edgecolor="white",
+            alpha=0.92,
+        )
     ax.set_yscale("log")
     ax.set_title("All compounds (log scale)")
     ax.set_xlabel("Normalized activity-cliff score")
@@ -336,7 +353,6 @@ def _plot_score_histogram(
     if not flagged_values.empty:
         lower_edge = math.floor(float(min(flagged_values.min(), flag_threshold)) * 10.0) / 10.0
         bins = np.arange(max(0.0, lower_edge), 1.11, 0.1)
-        tier_colors = {"low": "#258d9a", "medium": "#d98b36", "high": "#b54a4a"}
         tier_values = [
             values[(tiers == tier) & (values >= flag_threshold)]
             for tier in ("low", "medium", "high")
@@ -345,7 +361,7 @@ def _plot_score_histogram(
             tier_values,
             bins=bins,
             stacked=True,
-            color=[tier_colors["low"], tier_colors["medium"], tier_colors["high"]],
+            color=[ACTIVITY_CLIFF_COLORS[tier] for tier in ("low", "medium", "high")],
             edgecolor="white",
             alpha=0.95,
             label=["low", "medium", "high"],
@@ -355,7 +371,7 @@ def _plot_score_histogram(
     else:
         ax_zoom.text(0.5, 0.5, "No flagged compounds", ha="center", va="center", transform=ax_zoom.transAxes)
         ax_zoom.set_xlim(flag_threshold, 1.02)
-    ax_zoom.axvline(flag_threshold, color="#b54a4a", linewidth=2, linestyle="--")
+    ax_zoom.axvline(flag_threshold, color=ACTIVITY_CLIFF_COLORS["high"], linewidth=2, linestyle="--")
     ax_zoom.set_title("Flagged compounds by priority tier")
     ax_zoom.set_xlabel("Normalized score")
     ax_zoom.set_ylabel("Count")
@@ -372,7 +388,7 @@ def _plot_tier_distribution(annotated: pd.DataFrame, output_path: Path) -> Optio
     fig, ax = plt.subplots(figsize=(6.5, 4.2))
     labels = ["low", "medium", "high"]
     values = [counts[label] for label in labels]
-    bars = ax.bar(labels, values, color=["#258d9a", "#d98b36", "#b54a4a"])
+    bars = ax.bar(labels, values, color=[ACTIVITY_CLIFF_COLORS[label] for label in labels])
     for bar, value in zip(bars, values):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
@@ -428,16 +444,16 @@ def _plot_gap_vs_similarity(
         ax.scatter(
             x_plot[none_mask],
             y[valid][none_mask],
-            s=18,
-            c="#9aa7b0",
-            alpha=0.28,
+            s=24,
+            c=ACTIVITY_CLIFF_COLORS["none"],
+            alpha=0.46,
             edgecolor="none",
             label="none",
         )
     for tier, color, size in (
-        ("low", "#258d9a", 58),
-        ("medium", "#d98b36", 72),
-        ("high", "#b54a4a", 88),
+        ("low", ACTIVITY_CLIFF_COLORS["low"], 58),
+        ("medium", ACTIVITY_CLIFF_COLORS["medium"], 72),
+        ("high", ACTIVITY_CLIFF_COLORS["high"], 88),
     ):
         tier_mask = tiers == tier
         if tier_mask.any():
@@ -786,12 +802,12 @@ def _draw_variant_parity(
     r2 = float(1.0 - (ss_res / ss_tot)) if ss_tot > 0 else None
 
     point_alpha = 0.45 if len(frame) > 250 else 0.65
-    ax.scatter(frame["y_true"], frame["y_pred"], s=18, alpha=point_alpha, color="#224f75")
+    ax.scatter(frame["y_true"], frame["y_pred"], s=18, alpha=point_alpha, color=ACTIVITY_CLIFF_COLORS["none"])
     if retained_tiers and "activity_cliff_tier" in frame.columns:
         tier_styles = {
-            "low": {"color": "#2d9aa7", "label": "low retained"},
-            "medium": {"color": "#dd8f33", "label": "medium retained"},
-            "high": {"color": "#bd4f4f", "label": "high retained"},
+            "low": {"color": ACTIVITY_CLIFF_COLORS["low"], "label": "low retained"},
+            "medium": {"color": ACTIVITY_CLIFF_COLORS["medium"], "label": "medium retained"},
+            "high": {"color": ACTIVITY_CLIFF_COLORS["high"], "label": "high retained"},
         }
         for tier in ("low", "medium", "high"):
             if tier not in retained_tiers:
@@ -803,13 +819,23 @@ def _draw_variant_parity(
             ax.scatter(
                 tier_frame["y_true"],
                 tier_frame["y_pred"],
-                s=42,
-                facecolors="none",
+                s=54,
+                c=style["color"],
                 edgecolors=style["color"],
-                linewidths=1.6,
-                alpha=0.95,
+                linewidths=0.9,
+                alpha=0.96,
                 label=style["label"],
                 zorder=4,
+            )
+            ax.scatter(
+                tier_frame["y_true"],
+                tier_frame["y_pred"],
+                s=72,
+                facecolors="none",
+                edgecolors="white",
+                linewidths=1.2,
+                alpha=0.98,
+                zorder=5,
             )
     if axis_limits is None:
         min_val = min(frame["y_true"].min(), frame["y_pred"].min())
