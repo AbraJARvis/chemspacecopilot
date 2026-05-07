@@ -621,6 +621,7 @@ QSAR_REPORT_INSTRUCTIONS = [
     "  - When training duration metadata is available, report the total duration and one compact line per split duration (for example random, scaffold, cluster) using the observed labels from the handoff.",
     "  - When an applicability-domain summary is available from training, include a short dedicated subsection or paragraph in the training/model sections with the method, reference-set size, thresholds, and artifact paths.",
     "  - When the training handoff contains an `activity_cliffs` block, add an `Activity cliffs` subsection inside `Partie 2 : Entrainement et validation` without renaming the overall report.",
+    "  - If `activity_cliffs.reporting_handoff` is present, treat it as authoritative and copy its `neighborhood_policy_text`, `priority_counts_text`, `variant_comparison_rows`, `recommended_variant_text`, and `holdout_policy_text` rather than reconstructing them.",
     "  - In the `Activity cliffs` subsection, copy the exact facts from the handoff: mode, index_name, index parameters, flagged_count, priority counts none/low/medium/high, and tiering_policy.",
     "  - SALI must be expanded as `Structure-Activity Landscape Index`, not `Similarity-Activity Landscape Index`.",
     "  - Report the neighborhood policy explicitly from `activity_cliffs.index_parameters`: fingerprint, fingerprint_radius, fingerprint_bits, similarity_metric, similarity_threshold, `top-k neighbors = <top_k_neighbors>`, flag_threshold, and normalization. Never write `non specifie` for a field that exists in `index_parameters`.",

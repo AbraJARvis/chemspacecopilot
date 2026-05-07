@@ -883,6 +883,8 @@ class ChempropToolkit(Toolkit):
                 metadata["activity_cliffs"]["variant_comparison_table"] = activity_payload.get(
                     "variant_comparison_table"
                 )
+            if activity_payload.get("reporting_handoff"):
+                metadata["activity_cliffs"]["reporting_handoff"] = activity_payload.get("reporting_handoff")
             if activity_payload.get("loop_comparison_plot_artifacts"):
                 metadata["activity_cliffs"]["loop_comparison_plot_artifacts"] = {
                     key: copied_activity_cliff_artifacts.get(f"loop_comparison_plot_{key}")

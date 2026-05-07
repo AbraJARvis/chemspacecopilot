@@ -338,6 +338,47 @@ class LightGBMToolkit(Toolkit):
                 )
         return rows
 
+    @staticmethod
+    def _activity_cliff_reporting_handoff(
+        *,
+        activity_cliffs: Dict[str, Any],
+        variant_comparison_rows: List[Dict[str, Any]],
+        recommended_variant: Optional[str],
+        recommendation_reason: Optional[str],
+    ) -> Dict[str, Any]:
+        params = activity_cliffs.get("index_parameters") or {}
+        priority_counts = activity_cliffs.get("priority_counts") or {}
+        neighborhood_policy_text = (
+            f"Fingerprint={params.get('fingerprint')}, radius={params.get('fingerprint_radius')}, "
+            f"bits={params.get('fingerprint_bits')}, similarity_metric={params.get('similarity_metric')}, "
+            f"similarity_threshold={params.get('similarity_threshold')}, "
+            f"top-k neighbors={params.get('top_k_neighbors')}, "
+            f"flag_threshold={params.get('flag_threshold')}, "
+            f"normalization={params.get('normalization')}."
+        )
+        return {
+            "mode": activity_cliffs.get("mode"),
+            "index_name": activity_cliffs.get("index_name"),
+            "index_display_name": "SALI (Structure-Activity Landscape Index)",
+            "neighborhood_policy_text": neighborhood_policy_text,
+            "flagged_count": activity_cliffs.get("flagged_count"),
+            "priority_counts_text": (
+                f"none={priority_counts.get('none', 0)}, low={priority_counts.get('low', 0)}, "
+                f"medium={priority_counts.get('medium', 0)}, high={priority_counts.get('high', 0)}"
+            ),
+            "variant_comparison_rows": variant_comparison_rows,
+            "recommended_variant": recommended_variant,
+            "recommended_variant_text": (
+                f"Recommended variant: {recommended_variant}. {recommendation_reason}"
+                if recommended_variant and recommendation_reason
+                else None
+            ),
+            "holdout_policy_text": (
+                "Validation and test holdouts are fixed and non-filtered; activity-cliff tiers are removed "
+                "from the training split only."
+            ),
+        }
+
     def _attach_activity_cliff_variant_training(
         self,
         *,
@@ -389,9 +430,16 @@ class LightGBMToolkit(Toolkit):
             )
 
         activity_cliffs["variant_training"] = variant_summaries
-        activity_cliffs["variant_comparison_table"] = self._variant_comparison_rows(variant_summaries)
+        variant_comparison_rows = self._variant_comparison_rows(variant_summaries)
+        activity_cliffs["variant_comparison_table"] = variant_comparison_rows
         activity_cliffs["recommended_variant"] = recommended_variant
         activity_cliffs["recommendation_reason"] = recommendation_reason
+        activity_cliffs["reporting_handoff"] = self._activity_cliff_reporting_handoff(
+            activity_cliffs=activity_cliffs,
+            variant_comparison_rows=variant_comparison_rows,
+            recommended_variant=recommended_variant,
+            recommendation_reason=recommendation_reason,
+        )
         activity_cliffs["loop_training_policy"] = {
             "baseline_trained": True,
             "train_filtering": "remove selected activity-cliff tiers from train split only",

@@ -303,22 +303,47 @@ def _plot_score_histogram(
     if values.empty:
         return None
     flagged_values = values[values >= flag_threshold]
-    fig, ax = plt.subplots(figsize=(7, 4.5))
-    ax.hist(values, bins=30, color="#224f75", edgecolor="white", alpha=0.9)
-    ax.axvline(
-        flag_threshold,
-        color="#b54a4a",
-        linewidth=2,
-        linestyle="--",
-        label=f"Flag threshold {flag_threshold:g}",
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(10, 4.5),
+        gridspec_kw={"width_ratios": [1.55, 1.0]},
     )
+    ax = axes[0]
+    ax.hist(values, bins=40, color="#224f75", edgecolor="white", alpha=0.9)
+    ax.axvline(flag_threshold, color="#b54a4a", linewidth=2, linestyle="--")
     if not flagged_values.empty:
-        ax.hist(flagged_values, bins=12, color="#d98b36", edgecolor="white", alpha=0.95, label="Flagged")
-    ax.set_title("Activity-cliff normalized score distribution")
+        ax.hist(flagged_values, bins=10, color="#d98b36", edgecolor="white", alpha=0.95)
+    ax.set_yscale("log")
+    ax.set_title("All compounds (log scale)")
     ax.set_xlabel("Normalized activity-cliff score")
-    ax.set_ylabel("Compound count")
+    ax.set_ylabel("Compound count (log)")
     ax.grid(alpha=0.2, linestyle="--")
-    ax.legend(frameon=False)
+    ax.text(
+        0.98,
+        0.94,
+        f"flagged={len(flagged_values)} / {len(values)}\nthreshold={flag_threshold:g}",
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=9,
+        bbox=dict(boxstyle="round,pad=0.28", facecolor="white", alpha=0.88, edgecolor="#d0d0d0"),
+    )
+
+    ax_zoom = axes[1]
+    if not flagged_values.empty:
+        bins = min(10, max(3, len(flagged_values)))
+        ax_zoom.hist(flagged_values, bins=bins, color="#d98b36", edgecolor="white", alpha=0.95)
+        ax_zoom.set_xlim(max(0.0, min(flagged_values.min(), flag_threshold) - 0.04), 1.02)
+    else:
+        ax_zoom.text(0.5, 0.5, "No flagged compounds", ha="center", va="center", transform=ax_zoom.transAxes)
+        ax_zoom.set_xlim(flag_threshold, 1.02)
+    ax_zoom.axvline(flag_threshold, color="#b54a4a", linewidth=2, linestyle="--")
+    ax_zoom.set_title("Flagged compounds")
+    ax_zoom.set_xlabel("Normalized score")
+    ax_zoom.set_ylabel("Count")
+    ax_zoom.grid(alpha=0.2, linestyle="--")
+    fig.suptitle("Activity-cliff normalized score distribution", fontsize=14)
     fig.tight_layout()
     fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
     plt.close(fig)
@@ -361,7 +386,12 @@ def _plot_tier_distribution(annotated: pd.DataFrame, output_path: Path) -> Optio
     return str(output_path)
 
 
-def _plot_gap_vs_similarity(annotated: pd.DataFrame, output_path: Path) -> Optional[str]:
+def _plot_gap_vs_similarity(
+    annotated: pd.DataFrame,
+    output_path: Path,
+    *,
+    similarity_threshold: float,
+) -> Optional[str]:
     if "activity_cliff_max_similarity" not in annotated.columns:
         return None
     x = pd.to_numeric(annotated["activity_cliff_max_similarity"], errors="coerce")
@@ -369,41 +399,58 @@ def _plot_gap_vs_similarity(annotated: pd.DataFrame, output_path: Path) -> Optio
     valid = x.notna() & y.notna()
     if not valid.any():
         return None
-    fig, ax = plt.subplots(figsize=(7, 4.5))
+    fig, ax = plt.subplots(figsize=(8, 5))
     tiers = annotated.loc[valid, "activity_cliff_priority_tier"].fillna("none").astype(str)
+    x_plot = x[valid].copy().astype(float)
+    stacked_at_one = x_plot >= 0.999
+    if stacked_at_one.any():
+        jitter = np.linspace(-0.006, 0.006, int(stacked_at_one.sum()))
+        x_plot.loc[stacked_at_one] = (x_plot.loc[stacked_at_one].to_numpy() + jitter).clip(0.0, 1.01)
     none_mask = tiers == "none"
     if none_mask.any():
         ax.scatter(
-            x[valid][none_mask],
+            x_plot[none_mask],
             y[valid][none_mask],
-            s=14,
-            c="#a9b2ba",
-            alpha=0.18,
+            s=12,
+            c="#b8c0c7",
+            alpha=0.12,
             edgecolor="none",
             label="none",
         )
     for tier, color, size in (
-        ("low", "#258d9a", 42),
-        ("medium", "#d98b36", 52),
-        ("high", "#b54a4a", 62),
+        ("low", "#258d9a", 58),
+        ("medium", "#d98b36", 72),
+        ("high", "#b54a4a", 88),
     ):
         tier_mask = tiers == tier
         if tier_mask.any():
             ax.scatter(
-                x[valid][tier_mask],
+                x_plot[tier_mask],
                 y[valid][tier_mask],
                 s=size,
                 c=color,
                 alpha=0.9,
                 edgecolor="white",
-                linewidth=0.5,
+                linewidth=0.8,
                 label=tier,
+                zorder=3,
             )
+    ax.axvline(
+        similarity_threshold,
+        color="#5f6972",
+        linewidth=1.5,
+        linestyle="--",
+        label=f"similarity threshold {similarity_threshold:g}",
+    )
+    positive_x = x_plot[x_plot > 0]
+    data_x_min = float(positive_x.min()) - 0.03 if not positive_x.empty else float(similarity_threshold) - 0.04
+    x_min = max(0.0, min(float(similarity_threshold) - 0.04, data_x_min))
+    ax.set_xlim(x_min, 1.02)
     ax.set_title("Activity gap versus structural similarity")
     ax.set_xlabel("Maximum qualified Tanimoto similarity")
     ax.set_ylabel("Maximum activity gap")
     ax.grid(alpha=0.2, linestyle="--")
-    ax.legend(frameon=False, loc="best")
+    ax.legend(frameon=False, loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0)
     fig.tight_layout()
     fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
     plt.close(fig)
@@ -415,6 +462,7 @@ def _write_plots(
     output_dir: Path,
     *,
     flag_threshold: float,
+    similarity_threshold: float,
 ) -> Dict[str, str]:
     plots_dir = output_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
@@ -428,7 +476,9 @@ def _write_plots(
             annotated, plots_dir / "activity_cliff_tier_distribution.png"
         ),
         "activity_gap_vs_similarity": _plot_gap_vs_similarity(
-            annotated, plots_dir / "activity_gap_vs_similarity.png"
+            annotated,
+            plots_dir / "activity_gap_vs_similarity.png",
+            similarity_threshold=similarity_threshold,
         ),
     }
     return {key: value for key, value in generated.items() if value}
@@ -784,6 +834,7 @@ def prepare_activity_cliff_context(
         annotated,
         ac_dir,
         flag_threshold=config.flag_threshold,
+        similarity_threshold=config.similarity_threshold,
     )
     variants, warnings = _write_variants(
         annotated=annotated,
