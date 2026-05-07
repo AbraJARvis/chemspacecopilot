@@ -84,6 +84,18 @@ def _safe_display_token(value: str) -> str:
     return " ".join(part.capitalize() for part in token.split())
 
 
+def _sanitize_activity_cliff_description(description: Optional[str], activity_payload: Dict[str, Any]) -> Optional[str]:
+    if not description or not activity_payload.get("enabled"):
+        return description
+    loops_requested = activity_payload.get("feedback_loops_requested")
+    if activity_payload.get("mode") != "with_feedback_loops" or not loops_requested:
+        return description
+    replacement = f"{loops_requested} feedback loops"
+    sanitized = description.replace("1 feedback loop", replacement)
+    sanitized = sanitized.replace("1 feedback loops", replacement)
+    return sanitized
+
+
 def _extract_endpoint_and_dataset(train_csv: Optional[str], fallback_model_id: str) -> tuple[str, str]:
     source = Path(train_csv or fallback_model_id).stem.lower()
     for suffix in ("_curated", "_cleaned", "_dataset", "_training"):
@@ -826,6 +838,10 @@ class ChempropToolkit(Toolkit):
                     target_train_csv, model_root
                 )
 
+        metadata_description = _sanitize_activity_cliff_description(
+            record.description or "",
+            source_artifacts.get("activity_cliffs") or {},
+        )
         metadata = {
             "model_id": resolved_model_id,
             "display_name": record.display_name or resolved_model_id,
@@ -842,7 +858,7 @@ class ChempropToolkit(Toolkit):
                 "uncertainty_method": record.task.uncertainty_method,
                 "calibration_method": record.task.calibration_method,
             },
-            "description": record.description or "",
+            "description": metadata_description or "",
             "domain_summary": record.domain_summary or "",
             "strengths": list(record.strengths),
             "limitations": list(record.limitations),
@@ -1328,6 +1344,11 @@ class ChempropToolkit(Toolkit):
                 f"Requested `{requested_status}` was adjusted by governance because the final "
                 "validation gates did not support that status."
             )
+        activity_summary_payload = summary_payload.get("activity_cliffs") or {}
+        resolved_description = _sanitize_activity_cliff_description(
+            description or current.description,
+            activity_summary_payload,
+        )
         persisted_record = PredictionModelRecord(
             model_id=canonical_model_id,
             backend_name=current.backend_name,
@@ -1335,7 +1356,7 @@ class ChempropToolkit(Toolkit):
             metadata_path=resolved_metadata_path,
             task=current.task,
             display_name=display_name or canonical_display_name,
-            description=description or current.description,
+            description=resolved_description,
             tags=tags or current.tags,
             version=resolved_version,
             status=resolved_status,
@@ -1357,14 +1378,15 @@ class ChempropToolkit(Toolkit):
                 "dataset_name": dataset_name,
                 "validation_protocol": str(protocol_name or "protocol"),
                 "activity_cliffs": {
-                    "enabled": bool((summary_payload.get("activity_cliffs") or {}).get("enabled")),
-                    "mode": (summary_payload.get("activity_cliffs") or {}).get("mode"),
-                    "index_name": (summary_payload.get("activity_cliffs") or {}).get("index_name"),
-                    "flagged_count": (summary_payload.get("activity_cliffs") or {}).get("flagged_count"),
-                    "priority_counts": (summary_payload.get("activity_cliffs") or {}).get("priority_counts"),
-                    "recommended_variant": (summary_payload.get("activity_cliffs") or {}).get("recommended_variant"),
+                    "enabled": bool(activity_summary_payload.get("enabled")),
+                    "mode": activity_summary_payload.get("mode"),
+                    "index_name": activity_summary_payload.get("index_name"),
+                    "flagged_count": activity_summary_payload.get("flagged_count"),
+                    "priority_counts": activity_summary_payload.get("priority_counts"),
+                    "recommended_variant": activity_summary_payload.get("recommended_variant"),
+                    "reporting_handoff": activity_summary_payload.get("reporting_handoff"),
                 }
-                if summary_payload.get("activity_cliffs")
+                if activity_summary_payload
                 else {},
             },
             inference_profile={

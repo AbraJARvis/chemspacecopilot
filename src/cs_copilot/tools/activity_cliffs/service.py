@@ -486,13 +486,25 @@ def _write_plots(
 
 def _short_variant_label(variant_id: str) -> str:
     if variant_id == "baseline_loop_0":
-        return "loop 0"
+        return "baseline"
     if "loop_1" in variant_id:
-        return "loop 1"
+        return "drop high"
     if "loop_2" in variant_id:
-        return "loop 2"
+        return "drop high+medium"
     if "loop_3" in variant_id:
-        return "loop 3"
+        return "drop high+medium+low"
+    return variant_id
+
+
+def _loop_axis_label(variant_id: str) -> str:
+    if variant_id == "baseline_loop_0":
+        return "loop 0\nbaseline"
+    if "loop_1" in variant_id:
+        return "loop 1\ndrop high"
+    if "loop_2" in variant_id:
+        return "loop 2\ndrop high+medium"
+    if "loop_3" in variant_id:
+        return "loop 3\ndrop high+medium+low"
     return variant_id
 
 
@@ -511,6 +523,7 @@ def _plot_loop_metric_comparison(
     *,
     metric: str,
     ylabel: str,
+    recommended_variant: Optional[str] = None,
 ) -> Optional[str]:
     if table.empty or metric not in table.columns:
         return None
@@ -518,7 +531,7 @@ def _plot_loop_metric_comparison(
     if rows.empty:
         return None
     rows["variant_order"] = rows["variant_id"].astype(str).map(_variant_order)
-    rows["variant_label"] = rows["variant_id"].astype(str).map(_short_variant_label)
+    rows["variant_label"] = rows["variant_id"].astype(str).map(_loop_axis_label)
     rows = rows.sort_values(["variant_order", "split"])
     pivot = rows.pivot_table(index="variant_label", columns="split", values=metric, aggfunc="first")
     if pivot.empty:
@@ -526,9 +539,28 @@ def _plot_loop_metric_comparison(
 
     ordered_labels = rows.drop_duplicates("variant_label").sort_values("variant_order")["variant_label"].tolist()
     pivot = pivot.reindex(ordered_labels)
-    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+    fig, ax = plt.subplots(figsize=(8.2, 4.8))
     colors = {"random": "#224f75", "scaffold": "#d98b36"}
+    recommended_label = _loop_axis_label(str(recommended_variant)) if recommended_variant else None
+    if recommended_label in ordered_labels:
+        ax.axvspan(
+            ordered_labels.index(recommended_label) - 0.32,
+            ordered_labels.index(recommended_label) + 0.32,
+            color="#d8eadf",
+            alpha=0.45,
+            zorder=0,
+            label="recommended",
+        )
     for split_name in [column for column in ("random", "scaffold") if column in pivot.columns]:
+        baseline_value = pivot.loc[ordered_labels[0], split_name] if ordered_labels else np.nan
+        if pd.notna(baseline_value):
+            ax.axhline(
+                float(baseline_value),
+                color=colors.get(split_name, "#5f6972"),
+                linewidth=1.1,
+                linestyle=":",
+                alpha=0.55,
+            )
         ax.plot(
             pivot.index,
             pivot[split_name],
@@ -540,10 +572,27 @@ def _plot_loop_metric_comparison(
         for x_pos, value in enumerate(pivot[split_name].tolist()):
             if pd.notna(value):
                 ax.text(x_pos, float(value), f"{float(value):.3f}", ha="center", va="bottom", fontsize=8)
-    ax.set_title(f"Activity-cliff loop {ylabel} comparison")
+    metric_label = "R²" if metric == "r2" else ylabel
+    direction_note = "higher is better" if metric == "r2" else "lower is better"
+    ax.set_title(f"Activity-cliff loop comparison - {metric_label}")
     ax.set_xlabel("Variant")
-    ax.set_ylabel(ylabel)
+    ax.set_ylabel(metric_label)
     ax.grid(alpha=0.2, linestyle="--", axis="y")
+    ax.text(
+        0.01,
+        0.04,
+        f"{direction_note}; dotted lines show split baselines",
+        transform=ax.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=8,
+        color="#5f6972",
+    )
+    values = pivot.to_numpy(dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size:
+        pad = max(0.002, float(values.max() - values.min()) * 0.18)
+        ax.set_ylim(float(values.min()) - pad, float(values.max()) + pad)
     ax.legend(frameon=False)
     fig.tight_layout()
     fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
@@ -578,7 +627,7 @@ def _plot_loop_delta_comparison(table: pd.DataFrame, output_path: Path) -> Optio
     delta = pd.DataFrame(plot_rows)
     if delta.empty:
         return None
-    delta = delta[delta["variant_label"] != "loop 0"].sort_values(["variant_order", "split"])
+    delta = delta[delta["variant_label"] != _short_variant_label("baseline_loop_0")].sort_values(["variant_order", "split"])
     if delta.empty:
         return None
 
@@ -591,6 +640,19 @@ def _plot_loop_delta_comparison(table: pd.DataFrame, output_path: Path) -> Optio
         pivot = delta.pivot_table(index="variant_label", columns="split", values=metric, aggfunc="first")
         labels = delta.drop_duplicates("variant_label").sort_values("variant_order")["variant_label"].tolist()
         pivot = pivot.reindex(labels)
+        vals = pivot.to_numpy(dtype=float)
+        finite_vals = vals[np.isfinite(vals)]
+        if finite_vals.size:
+            pad = max(0.001, float(finite_vals.max() - finite_vals.min()) * 0.20)
+            y_min = float(finite_vals.min()) - pad
+            y_max = float(finite_vals.max()) + pad
+            if metric == "delta_r2":
+                ax.axhspan(0.0, y_max, color="#d8eadf", alpha=0.35, zorder=0)
+                ax.axhspan(y_min, 0.0, color="#f4d6d2", alpha=0.28, zorder=0)
+            else:
+                ax.axhspan(y_min, 0.0, color="#d8eadf", alpha=0.35, zorder=0)
+                ax.axhspan(0.0, y_max, color="#f4d6d2", alpha=0.28, zorder=0)
+            ax.set_ylim(y_min, y_max)
         for split_name in [column for column in ("random", "scaffold") if column in pivot.columns]:
             ax.plot(
                 pivot.index,
@@ -600,11 +662,16 @@ def _plot_loop_delta_comparison(table: pd.DataFrame, output_path: Path) -> Optio
                 color=colors.get(split_name, None),
                 label=split_name,
             )
+            for x_pos, value in enumerate(pivot[split_name].tolist()):
+                if pd.notna(value):
+                    ax.text(x_pos, float(value), f"{float(value):+.3f}", ha="center", va="bottom", fontsize=8)
         ax.axhline(0.0, color="#5f6972", linewidth=1, linestyle="--", label=zero_label)
         ax.set_title(title)
         ax.grid(alpha=0.2, linestyle="--", axis="y")
-    axes[0].set_ylabel("Delta R2")
+    axes[0].set_ylabel("Delta R²")
     axes[1].set_ylabel("Delta RMSE")
+    axes[0].text(0.02, 0.04, "positive is better", transform=axes[0].transAxes, fontsize=8, color="#5f6972")
+    axes[1].text(0.02, 0.04, "negative is better", transform=axes[1].transAxes, fontsize=8, color="#5f6972")
     axes[1].legend(frameon=False)
     fig.tight_layout()
     fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
@@ -617,6 +684,8 @@ def _plot_variant_parity_from_predictions(
     output_path: Path,
     *,
     label: str,
+    band_metric: str = "mae",
+    recommended: bool = False,
 ) -> Optional[str]:
     if not predictions_path.exists():
         return None
@@ -640,17 +709,47 @@ def _plot_variant_parity_from_predictions(
     r2 = float(1.0 - (ss_res / ss_tot)) if ss_tot > 0 else None
 
     fig, ax = plt.subplots(figsize=(5.5, 5.5))
-    ax.scatter(frame["y_true"], frame["y_pred"], s=18, alpha=0.55, color="#224f75")
+    point_alpha = 0.45 if len(frame) > 250 else 0.65
+    ax.scatter(frame["y_true"], frame["y_pred"], s=18, alpha=point_alpha, color="#224f75")
     min_val = min(frame["y_true"].min(), frame["y_pred"].min())
     max_val = max(frame["y_true"].max(), frame["y_pred"].max())
+    x_band = pd.Series([min_val, max_val], dtype=float)
+    band_value = mae if band_metric == "mae" else rmse
+    band_label = "MAE" if band_metric == "mae" else "RMSE"
+    if band_value > 0:
+        ax.fill_between(
+            x_band,
+            x_band - (2.0 * band_value),
+            x_band + (2.0 * band_value),
+            color="#258d9a",
+            alpha=0.10,
+            zorder=0,
+            label=f"±2x {band_label}",
+        )
+        ax.fill_between(
+            x_band,
+            x_band - band_value,
+            x_band + band_value,
+            color="#258d9a",
+            alpha=0.18,
+            zorder=1,
+            label=f"±1x {band_label}",
+        )
     ax.plot([min_val, max_val], [min_val, max_val], linestyle="--", color="#b54a4a", linewidth=1.2)
-    ax.set_title(f"Scaffold parity - {label}")
+    title = f"Scaffold parity - {label} ({band_label} bands)"
+    if recommended:
+        title = f"{title} - recommended"
+    ax.set_title(title)
     ax.set_xlabel("Observed")
     ax.set_ylabel("Predicted")
     ax.set_aspect("equal", adjustable="box")
+    within_1x = float((frame["residual"].abs() <= band_value).mean() * 100.0) if band_value > 0 else 0.0
+    within_2x = float((frame["residual"].abs() <= (2.0 * band_value)).mean() * 100.0) if band_value > 0 else 0.0
     metrics = [f"RMSE = {rmse:.3f}", f"MAE = {mae:.3f}"]
     if r2 is not None:
-        metrics.insert(0, f"R2 = {r2:.3f}")
+        metrics.insert(0, f"R² = {r2:.3f}")
+    if band_value > 0:
+        metrics.extend([f"{within_1x:.1f}% within 1x {band_label}", f"{within_2x:.1f}% within 2x {band_label}"])
     ax.text(
         0.03,
         0.97,
@@ -662,6 +761,7 @@ def _plot_variant_parity_from_predictions(
         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85, edgecolor="#cccccc"),
     )
     ax.grid(alpha=0.2, linestyle="--")
+    ax.legend(loc="lower right", fontsize=8, frameon=True)
     fig.tight_layout()
     fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
     plt.close(fig)
@@ -683,13 +783,15 @@ def build_activity_cliff_loop_comparison_plots(
             table,
             comparison_dir / "activity_cliff_loop_r2_comparison.png",
             metric="r2",
-            ylabel="R2",
+            ylabel="R²",
+            recommended_variant=activity_cliffs.get("recommended_variant"),
         ),
         "loop_rmse_comparison": _plot_loop_metric_comparison(
             table,
             comparison_dir / "activity_cliff_loop_rmse_comparison.png",
             metric="rmse",
             ylabel="RMSE",
+            recommended_variant=activity_cliffs.get("recommended_variant"),
         ),
         "loop_delta_vs_baseline": _plot_loop_delta_comparison(
             table,
@@ -715,6 +817,15 @@ def build_activity_cliff_loop_comparison_plots(
             Path(str(scaffold_result["test_predictions_path"])).expanduser(),
             comparison_dir / f"parity_scaffold_{variant_id}.png",
             label=_short_variant_label(variant_id),
+            band_metric="mae",
+            recommended=variant_id == activity_cliffs.get("recommended_variant"),
+        )
+        generated[f"{key}_rmse"] = _plot_variant_parity_from_predictions(
+            Path(str(scaffold_result["test_predictions_path"])).expanduser(),
+            comparison_dir / f"parity_scaffold_{variant_id}_rmse.png",
+            label=_short_variant_label(variant_id),
+            band_metric="rmse",
+            recommended=variant_id == activity_cliffs.get("recommended_variant"),
         )
     return {key: value for key, value in generated.items() if value}
 

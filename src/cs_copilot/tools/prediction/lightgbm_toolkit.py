@@ -339,6 +339,92 @@ class LightGBMToolkit(Toolkit):
         return rows
 
     @staticmethod
+    def _format_activity_cliff_value(value: Any) -> str:
+        if value is None:
+            return "N/A"
+        if isinstance(value, float):
+            return f"{value:.4g}"
+        if isinstance(value, list):
+            return ", ".join(str(item) for item in value) if value else "-"
+        return str(value)
+
+    @classmethod
+    def _activity_cliff_canonical_section_markdown(
+        cls,
+        *,
+        activity_cliffs: Dict[str, Any],
+        variant_comparison_rows: List[Dict[str, Any]],
+        recommended_variant_text: Optional[str],
+        neighborhood_policy_text: str,
+        priority_counts_text: str,
+    ) -> str:
+        params = activity_cliffs.get("index_parameters") or {}
+        mode = str(activity_cliffs.get("mode") or "standard")
+        index_display = "SALI (Structure-Activity Landscape Index)"
+        lines = [
+            "Activity cliffs",
+            "",
+            f"L'analyse des falaises d'activite a ete realisee avec l'indice {index_display}.",
+            "",
+            "Parametres de voisinage :",
+            f"- Empreinte : {cls._format_activity_cliff_value(params.get('fingerprint'))}, "
+            f"rayon {cls._format_activity_cliff_value(params.get('fingerprint_radius'))}, "
+            f"{cls._format_activity_cliff_value(params.get('fingerprint_bits'))} bits",
+            f"- Similarite : {cls._format_activity_cliff_value(params.get('similarity_metric'))}",
+            f"- Seuil de similarite : {cls._format_activity_cliff_value(params.get('similarity_threshold'))}",
+            f"- Nombre maximal de voisins : {cls._format_activity_cliff_value(params.get('top_k_neighbors'))}",
+            f"- Seuil de signalement : {cls._format_activity_cliff_value(params.get('flag_threshold'))}",
+            f"- Normalisation : {cls._format_activity_cliff_value(params.get('normalization'))}",
+            "",
+            "Resultats d'annotation :",
+            f"- Composes analyses : {cls._format_activity_cliff_value(activity_cliffs.get('ranked_molecule_count'))}",
+            f"- Composes signales : {cls._format_activity_cliff_value(activity_cliffs.get('flagged_count'))}",
+            f"- Repartition des priorites : {priority_counts_text}",
+            f"- Mode : {mode}",
+        ]
+        if mode != "with_feedback_loops":
+            lines.extend(
+                [
+                    "",
+                    "Aucune boucle de retroaction n'a ete demandee. Aucun compose n'a ete retire ; "
+                    "l'annotation Activity Cliffs enrichit uniquement le rapport et les artefacts.",
+                ]
+            )
+            return "\n".join(lines)
+
+        lines.extend(
+            [
+                "",
+                "Les boucles de retroaction ont ete evaluees avec des holdouts de validation et de test fixes "
+                "et non filtres. Seul l'ensemble d'entrainement est filtre selon les paliers SALI.",
+                "",
+                "Variantes comparees :",
+                "| Variante | Split | Paliers retires | Retires dataset | Retires train | Train effectif | Validation | Test | RMSE | MAE | R2 | MSE |",
+                "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for row in variant_comparison_rows:
+            lines.append(
+                "| "
+                f"{cls._format_activity_cliff_value(row.get('variant_id'))} | "
+                f"{cls._format_activity_cliff_value(row.get('split'))} | "
+                f"{cls._format_activity_cliff_value(row.get('removed_tiers'))} | "
+                f"{cls._format_activity_cliff_value(row.get('removed_count_dataset'))} | "
+                f"{cls._format_activity_cliff_value(row.get('removed_from_train_count'))} | "
+                f"{cls._format_activity_cliff_value(row.get('effective_train_count'))} | "
+                f"{cls._format_activity_cliff_value(row.get('validation_count'))} | "
+                f"{cls._format_activity_cliff_value(row.get('test_count'))} | "
+                f"{cls._format_activity_cliff_value(row.get('rmse'))} | "
+                f"{cls._format_activity_cliff_value(row.get('mae'))} | "
+                f"{cls._format_activity_cliff_value(row.get('r2'))} | "
+                f"{cls._format_activity_cliff_value(row.get('mse'))} |"
+            )
+        if recommended_variant_text:
+            lines.extend(["", recommended_variant_text])
+        lines.extend(["", f"Politique de voisinage canonique : {neighborhood_policy_text}"])
+        return "\n".join(lines)
+
+    @staticmethod
     def _activity_cliff_reporting_handoff(
         *,
         activity_cliffs: Dict[str, Any],
@@ -356,27 +442,37 @@ class LightGBMToolkit(Toolkit):
             f"flag_threshold={params.get('flag_threshold')}, "
             f"normalization={params.get('normalization')}."
         )
+        priority_counts_text = (
+            f"none={priority_counts.get('none', 0)}, low={priority_counts.get('low', 0)}, "
+            f"medium={priority_counts.get('medium', 0)}, high={priority_counts.get('high', 0)}"
+        )
+        recommended_variant_text = (
+            f"Variante recommandee : {recommended_variant}. {recommendation_reason}"
+            if recommended_variant and recommendation_reason
+            else None
+        )
+        canonical_section_markdown = LightGBMToolkit._activity_cliff_canonical_section_markdown(
+            activity_cliffs=activity_cliffs,
+            variant_comparison_rows=variant_comparison_rows,
+            recommended_variant_text=recommended_variant_text,
+            neighborhood_policy_text=neighborhood_policy_text,
+            priority_counts_text=priority_counts_text,
+        )
         return {
             "mode": activity_cliffs.get("mode"),
             "index_name": activity_cliffs.get("index_name"),
             "index_display_name": "SALI (Structure-Activity Landscape Index)",
             "neighborhood_policy_text": neighborhood_policy_text,
             "flagged_count": activity_cliffs.get("flagged_count"),
-            "priority_counts_text": (
-                f"none={priority_counts.get('none', 0)}, low={priority_counts.get('low', 0)}, "
-                f"medium={priority_counts.get('medium', 0)}, high={priority_counts.get('high', 0)}"
-            ),
+            "priority_counts_text": priority_counts_text,
             "variant_comparison_rows": variant_comparison_rows,
             "recommended_variant": recommended_variant,
-            "recommended_variant_text": (
-                f"Recommended variant: {recommended_variant}. {recommendation_reason}"
-                if recommended_variant and recommendation_reason
-                else None
-            ),
+            "recommended_variant_text": recommended_variant_text,
             "holdout_policy_text": (
                 "Validation and test holdouts are fixed and non-filtered; activity-cliff tiers are removed "
                 "from the training split only."
             ),
+            "canonical_section_markdown": canonical_section_markdown,
         }
 
     def _attach_activity_cliff_variant_training(
@@ -389,6 +485,12 @@ class LightGBMToolkit(Toolkit):
         if not activity_cliffs.get("enabled"):
             return activity_cliffs
         if int(activity_cliffs.get("feedback_loops_requested") or 0) <= 0:
+            activity_cliffs["reporting_handoff"] = self._activity_cliff_reporting_handoff(
+                activity_cliffs=activity_cliffs,
+                variant_comparison_rows=[],
+                recommended_variant=None,
+                recommendation_reason=None,
+            )
             return activity_cliffs
 
         variants = list(activity_cliffs.get("variants") or [])
@@ -423,7 +525,7 @@ class LightGBMToolkit(Toolkit):
             recommended_variant = comparable[0].get("variant_id")
             best_r2 = self._hardest_split_r2(comparable[0].get("validation_assessment") or {})
             recommendation_reason = (
-                "Selected by highest hardest-split R2 across variants evaluated on fixed holdouts "
+                "Selection par meilleur R2 sur le split le plus difficile, avec holdouts fixes "
                 f"(R2={best_r2:.3f})."
                 if best_r2 is not None
                 else None
