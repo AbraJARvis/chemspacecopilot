@@ -599,6 +599,47 @@ class BenchmarkToolkit(Toolkit):
         }
         return row
 
+    def _compact_candidate_result(
+        self,
+        *,
+        result: Dict[str, Any],
+        row: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        validation_assessment = result.get("validation_assessment") or {}
+        split_summaries: List[Dict[str, Any]] = []
+        for split_result in result.get("split_results") or []:
+            metrics = ((split_result.get("metrics") or {}).get("test") or {})
+            split_summaries.append(
+                {
+                    "strategy_label": split_result.get("strategy_label"),
+                    "test_count": split_result.get("test_count"),
+                    "metrics": {
+                        "r2": _safe_float(metrics.get("r2")),
+                        "rmse": _safe_float(metrics.get("rmse")),
+                        "mae": _safe_float(metrics.get("mae")),
+                        "mse": _safe_float(metrics.get("mse")),
+                    },
+                }
+            )
+        return {
+            "candidate_id": row.get("candidate_id"),
+            "model_id": row.get("model_id"),
+            "backend_name": row.get("backend"),
+            "representation_name": row.get("representation"),
+            "status": row.get("status"),
+            "hardest_split": row.get("hardest_split"),
+            "hardest_split_r2": row.get("hardest_split_r2"),
+            "random_r2": row.get("random_r2"),
+            "scaffold_r2": row.get("scaffold_r2"),
+            "cluster_kmeans_r2": row.get("cluster_kmeans_r2"),
+            "delta_r2": row.get("delta_r2"),
+            "train_time_s": row.get("train_time_s"),
+            "governance": validation_assessment.get("governance"),
+            "split_results": split_summaries,
+            "internal_model_root": row.get("internal_model_root"),
+            "best_model_path": row.get("best_model_path"),
+        }
+
     def _rank_summary_rows(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         def sort_key(row: Dict[str, Any]) -> tuple[float, float, float, float]:
             hardest_r2 = row.get("hardest_split_r2")
@@ -785,6 +826,7 @@ class BenchmarkToolkit(Toolkit):
 
         candidate_rows: List[Dict[str, Any]] = []
         candidate_results: List[Dict[str, Any]] = []
+        compact_candidate_results: List[Dict[str, Any]] = []
         persisted_model_mapping: List[Dict[str, Any]] = []
 
         total_candidates = len(candidates)
@@ -844,6 +886,12 @@ class BenchmarkToolkit(Toolkit):
                 benchmark_protocol=benchmark_protocol,
             )
             candidate_rows.append(candidate_row)
+            compact_candidate_results.append(
+                self._compact_candidate_result(
+                    result=result,
+                    row=candidate_row,
+                )
+            )
             logger.info(
                 "Benchmark progress: candidate %d/%d - %s completed (status=%s, hardest_split_r2=%s).",
                 candidate_index,
@@ -901,7 +949,7 @@ class BenchmarkToolkit(Toolkit):
                 }
                 for candidate in candidates
             ],
-            "candidate_results": candidate_results,
+            "candidate_results": compact_candidate_results,
             "persisted_model_mapping": persisted_model_mapping,
             "leaderboard_path": str(leaderboard_path),
             "report_path": str(report_path),
@@ -914,7 +962,8 @@ class BenchmarkToolkit(Toolkit):
             "benchmark_mode": benchmark_mode,
             "benchmark_protocol": benchmark_protocol,
             "output_dir": str(campaign_root),
-            "candidate_results": candidate_results,
+            "candidate_results": compact_candidate_results,
+            "leaderboard": ranked_rows,
             "persisted_model_mapping": persisted_model_mapping,
             "leaderboard_path": str(leaderboard_path),
             "summary_path": str(summary_path),
