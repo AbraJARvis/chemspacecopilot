@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 from cs_copilot.tools.prediction import catalog as catalog_module
-from cs_copilot.tools.prediction.benchmark_toolkit import BenchmarkToolkit
+from cs_copilot.tools.prediction.benchmark_toolkit import BenchmarkToolkit, _coerce_list
 from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
 from cs_copilot.tools.prediction.lightgbm_toolkit import LightGBMToolkit
 from cs_copilot.tools.prediction.tabicl_toolkit import TabICLToolkit
@@ -49,6 +49,26 @@ def _write_fake_training_outputs(
     splits_path.write_text(json.dumps([{"train": [0], "val": [1], "test": [0, 1]}]))
 
     return model_path, test_predictions_path, config_path, splits_path
+
+
+def test_tool_list_argument_coercion_accepts_scalar_strings():
+    assert _coerce_list("pEC50") == ["pEC50"]
+    assert _coerce_list("lightgbm") == ["lightgbm"]
+    assert _coerce_list('["pEC50"]') == ["pEC50"]
+    assert _coerce_list("pEC50,Emax") == ["pEC50", "Emax"]
+
+    toolkit = LightGBMToolkit()
+    assert toolkit._normalize_json_list_argument("pEC50", argument_name="target_columns") == [
+        "pEC50"
+    ]
+    assert toolkit._normalize_json_list_argument(
+        '["pEC50"]',
+        argument_name="target_columns",
+    ) == ["pEC50"]
+    assert toolkit._normalize_json_list_argument(
+        "0.8,0.1,0.1",
+        argument_name="split_sizes",
+    ) == [0.8, 0.1, 0.1]
 
 
 def _fake_validation_assessment(protocol: str, random_r2: float, hardest_name: str, hardest_r2: float) -> dict:

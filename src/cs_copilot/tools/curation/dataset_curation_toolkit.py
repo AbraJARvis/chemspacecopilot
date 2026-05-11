@@ -1169,10 +1169,14 @@ class DatasetCurationToolkit(Toolkit):
             ).resolve()
             bundle = _bundle_files(bundle_path, [curated_path, destination, *artifact_files])
             payload["bundle_file_ref"] = str(bundle)
+            payload["bundle_download_tag"] = f"<file>{bundle}</file>"
         if agent is not None:
             state = _get_curation_state(agent)
             if state.get("last_result"):
                 state["last_result"]["report_path"] = str(destination)
                 if payload.get("bundle_file_ref"):
                     state["last_result"]["bundle_file_ref"] = payload["bundle_file_ref"]
+                    state["last_result"]["bundle_download_tag"] = payload[
+                        "bundle_download_tag"
+                    ]
         return payload

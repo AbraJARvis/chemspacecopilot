@@ -28,9 +28,19 @@ def _coerce_list(value: Optional[List[str] | str]) -> Optional[List[str]]:
     if value is None:
         return None
     if isinstance(value, str):
-        parsed = json.loads(value)
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            if "," in stripped:
+                return [item.strip() for item in stripped.split(",") if item.strip()]
+            return [stripped]
         if not isinstance(parsed, list):
-            raise ValueError("Expected a list or JSON-encoded list.")
+            if isinstance(parsed, str):
+                return [parsed]
+            raise ValueError("Expected a list, scalar string, or JSON-encoded list.")
         return [str(item) for item in parsed]
     return [str(item) for item in value]
 

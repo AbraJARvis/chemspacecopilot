@@ -157,6 +157,73 @@ def _discover_curation_artifacts_near_dataset(dataset_path: Optional[str]) -> Di
     return {"artifacts": artifacts}
 
 
+def _load_json_if_available(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _hydrate_curation_metadata(
+    *,
+    curation_payload: Dict[str, Any],
+    copied_curation_artifacts: Dict[str, str],
+    model_root: Path,
+) -> Dict[str, Any]:
+    """Build catalog curation metadata from session payload plus persisted reports."""
+    metadata: Dict[str, Any] = {
+        "backend": curation_payload.get("curation_backend"),
+        "curated_dataset_path": curation_payload.get("curated_dataset_path"),
+        "rows_in": curation_payload.get("rows_in"),
+        "rows_out": curation_payload.get("rows_out"),
+        "artifacts": copied_curation_artifacts,
+    }
+
+    report_rel = copied_curation_artifacts.get("curation_report_json")
+    report = _load_json_if_available(model_root / report_rel) if report_rel else {}
+    manifest_rel = copied_curation_artifacts.get("manifest_json")
+    manifest = _load_json_if_available(model_root / manifest_rel) if manifest_rel else {}
+
+    if report:
+        metadata["backend"] = (
+            metadata.get("backend")
+            or report.get("curation_backend_used")
+            or report.get("curation_backend")
+        )
+        metadata["curated_dataset_path"] = (
+            metadata.get("curated_dataset_path") or report.get("curated_dataset_path")
+        )
+        metadata["source_dataset_path"] = report.get("source_dataset_path")
+        metadata["rows_in"] = (
+            metadata.get("rows_in")
+            if metadata.get("rows_in") is not None
+            else report.get("rows_in")
+        )
+        metadata["rows_out"] = (
+            metadata.get("rows_out")
+            if metadata.get("rows_out") is not None
+            else report.get("rows_out")
+        )
+        metadata["rows_removed"] = report.get("rows_removed")
+        metadata["duplicate_groups_detected"] = report.get("duplicate_groups_detected")
+        metadata["duplicate_groups_aggregated"] = report.get("duplicate_groups_aggregated")
+        metadata["duplicate_conflicting_groups"] = report.get("duplicate_conflicting_groups")
+        metadata["duplicate_conflicting_rows_removed"] = report.get(
+            "duplicate_conflicting_rows_removed"
+        )
+        metadata["organometallic_rows_removed"] = report.get("organometallic_rows_removed")
+        metadata["invalid_smiles_removed"] = report.get("invalid_smiles_removed")
+    if manifest:
+        metadata["backend"] = metadata.get("backend") or manifest.get("curation_backend")
+        if manifest.get("curation_policy"):
+            metadata["curation_policy"] = manifest.get("curation_policy")
+
+    return metadata
+
+
 def _extract_endpoint_and_dataset(train_csv: Optional[str], fallback_model_id: str) -> tuple[str, str]:
     source = Path(train_csv or fallback_model_id).stem.lower()
     for suffix in ("_curated", "_cleaned", "_dataset", "_training"):
@@ -992,13 +1059,11 @@ class ChempropToolkit(Toolkit):
         if copied_split_predictions:
             metadata["test_predictions_by_split"] = copied_split_predictions
         if copied_curation_artifacts:
-            metadata["curation"] = {
-                "backend": curation_payload.get("curation_backend"),
-                "curated_dataset_path": curation_payload.get("curated_dataset_path"),
-                "rows_in": curation_payload.get("rows_in"),
-                "rows_out": curation_payload.get("rows_out"),
-                "artifacts": copied_curation_artifacts,
-            }
+            metadata["curation"] = _hydrate_curation_metadata(
+                curation_payload=curation_payload,
+                copied_curation_artifacts=copied_curation_artifacts,
+                model_root=model_root,
+            )
         if copied_activity_cliff_artifacts:
             activity_payload = (source_artifacts or {}).get("activity_cliffs") or {}
             metadata["activity_cliffs"] = {

@@ -678,12 +678,25 @@ class LightGBMToolkit(Toolkit):
         if value is None:
             return None
         if isinstance(value, str):
-            parsed = json.loads(value)
+            stripped = value.strip()
+            if not stripped:
+                return []
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                if "," in stripped:
+                    items = [item.strip() for item in stripped.split(",") if item.strip()]
+                    if argument_name == "split_sizes":
+                        return [float(item) for item in items]
+                    return items
+                return [stripped]
             if not isinstance(parsed, list):
-                raise ValueError(f"{argument_name} must be a list or a JSON-encoded list.")
+                if isinstance(parsed, str):
+                    return [parsed]
+                raise ValueError(f"{argument_name} must be a list, scalar string, or JSON-encoded list.")
             return parsed
         if not isinstance(value, list):
-            raise ValueError(f"{argument_name} must be a list or a JSON-encoded list.")
+            raise ValueError(f"{argument_name} must be a list, scalar string, or JSON-encoded list.")
         return value
 
     def train_lightgbm_model(
