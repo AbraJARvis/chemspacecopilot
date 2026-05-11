@@ -258,6 +258,7 @@ def get_qsar_agent_team(
         instructions=[
             "You coordinate only the isolated QSAR agents in this team.",
             "Never route work to non-QSAR agents.",
+            "For curation-only requests, orchestrate: dataset_curation -> qsar_report.",
             "For training requests, orchestrate: dataset_curation -> qsar_training -> model_registry -> qsar_report.",
             "For prediction requests on existing models, orchestrate: model_inference -> qsar_report.",
             "For explicit post-prediction LaTeX export requests, including the standalone shortcut token `latex` with optional `@` and any casing (`@Latex`, `@latex`, `@LATEX`, `@LaTeX`, `Latex`, `latex`, `LaTeX`), orchestrate `model_inference` only and treat the task as a documentation export for the latest completed prediction state.",
