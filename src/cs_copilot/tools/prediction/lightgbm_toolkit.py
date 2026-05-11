@@ -246,6 +246,7 @@ class LightGBMToolkit(Toolkit):
         compute_env: Dict[str, Any],
         effective_train_args: Dict[str, Any],
     ) -> Dict[str, Any]:
+        n_jobs = effective_train_args.get("n_jobs")
         return {
             "execution_env": compute_env.get("execution_env"),
             "cpu_count": compute_env.get("cpu_count"),
@@ -253,8 +254,12 @@ class LightGBMToolkit(Toolkit):
             "gpu_count": compute_env.get("gpu_count"),
             "gpu_name": compute_env.get("gpu_name"),
             "memory_gb_total": compute_env.get("memory_gb_total"),
+            "batch_size": "N/A",
+            "batch_size_reason": "LightGBM native training does not use mini-batches.",
+            "workers": f"{n_jobs} (n_jobs)" if n_jobs is not None else "N/A",
+            "workers_reason": "LightGBM parallelism is controlled by n_jobs.",
             "n_estimators": effective_train_args.get("n_estimators"),
-            "n_jobs": effective_train_args.get("n_jobs"),
+            "n_jobs": n_jobs,
             "num_leaves": effective_train_args.get("num_leaves"),
             "learning_rate": effective_train_args.get("learning_rate"),
             "device_type": effective_train_args.get("device_type"),

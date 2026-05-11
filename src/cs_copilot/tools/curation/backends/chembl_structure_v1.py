@@ -121,8 +121,6 @@ def standardize_with_chembl_structure_v1(raw_smiles: pd.Series) -> Dict[str, Any
             mol, canonical=True, isomericSmiles=True, kekuleSmiles=False
         )
         try:
-            issues = checker.check_molblock(_mol_to_molblock(mol))
-            checker_issues, checker_max_penalty = _format_checker_issues(issues)
             standardized_mol = standardizer.standardize_mol(mol)
             parent_mol, _exclude = standardizer.get_parent_mol(standardized_mol)
             standardized = (
@@ -130,6 +128,9 @@ def standardize_with_chembl_structure_v1(raw_smiles: pd.Series) -> Dict[str, Any
                 if parent_mol is not None
                 else None
             )
+            if parent_mol is not None:
+                issues = checker.check_molblock(_mol_to_molblock(parent_mol))
+                checker_issues, checker_max_penalty = _format_checker_issues(issues)
             qsar_identity = (
                 strip_stereochemistry_from_smiles(standardized) if standardized else None
             )

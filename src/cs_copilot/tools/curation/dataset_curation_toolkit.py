@@ -611,10 +611,10 @@ class DatasetCurationToolkit(Toolkit):
             "stereochemistry_removed_for_identity"
         ].values
         working["smiles"] = working["standardized_smiles"]
-        checker_rejected_mask = pd.to_numeric(
+        checker_warning_mask = pd.to_numeric(
             working["checker_max_penalty"], errors="coerce"
-        ).fillna(0) >= 6
-        invalid_or_rejected_mask = working["smiles"].isna() | checker_rejected_mask
+        ).fillna(0) > 0
+        invalid_or_rejected_mask = working["smiles"].isna()
         invalid_before_drop = int(invalid_or_rejected_mask.sum())
         stereochemistry_markers_removed = _count_stereo_markers_removed(
             original_smiles, working["smiles"]
@@ -788,6 +788,16 @@ class DatasetCurationToolkit(Toolkit):
             warnings.append(
                 f"{parent_changed_count} structures changed during parent/salt standardization."
             )
+        checker_warning_count = int(checker_warning_mask.sum())
+        if checker_warning_count:
+            max_checker_penalty = int(
+                pd.to_numeric(working["checker_max_penalty"], errors="coerce")
+                .fillna(0)
+                .max()
+            )
+            warnings.append(
+                f"ChEMBL checker flagged {checker_warning_count} standardized parent structures; max penalty={max_checker_penalty}. Rows were retained because checker policy is warn_only."
+            )
         row_fallback_count = int(
             (
                 standardization_map["curation_backend_status"]
@@ -923,7 +933,9 @@ class DatasetCurationToolkit(Toolkit):
             "duplicate_groups_detected": duplicate_groups_detected,
             "duplicate_groups_aggregated": duplicate_groups_aggregated,
             "duplicate_conflicting_groups": duplicate_conflicting_groups,
-            "checker_rejected_rows": int(checker_rejected_mask.sum()),
+            "checker_policy": curation_policy.get("checker_policy"),
+            "checker_flagged_rows": checker_warning_count,
+            "checker_rejected_rows": 0,
             "backend_status_counts": standardization_map[
                 "curation_backend_status"
             ].value_counts(dropna=False).to_dict(),

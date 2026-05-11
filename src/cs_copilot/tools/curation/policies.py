@@ -13,9 +13,9 @@ DEFAULT_DUPLICATE_CONFLICT_THRESHOLD = 0.5
 CHEMBL_QSAR_POLICY = {
     "curation_backend": DEFAULT_CURATION_BACKEND,
     "structure_pipeline": [
-        "chembl checker",
         "chembl standardize_mol",
         "chembl get_parent_mol",
+        "chembl checker diagnostics on standardized parent",
         "ChemSpace Copilot QSAR stereo strip",
         "duplicate resolution by QSAR identity",
     ],
@@ -23,6 +23,7 @@ CHEMBL_QSAR_POLICY = {
     "smiles_standardization": "chembl_structure_pipeline standardize -> get_parent",
     "stereochemistry_policy": STEREOCHEMISTRY_POLICY_STRIP_THEN_DEDUPLICATE,
     "duplicate_identity_policy": "qsar_identity_after_stereo_strip",
+    "checker_policy": "warn_only_after_standardized_parent",
 }
 
 LEGACY_QSAR_POLICY = {
