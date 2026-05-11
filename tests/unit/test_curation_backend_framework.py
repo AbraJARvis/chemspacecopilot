@@ -45,6 +45,7 @@ def _fake_chembl_backend(raw_smiles: pd.Series):
             {
                 "row_index": row_index,
                 "raw_smiles": smiles,
+                "chembl_input_smiles": smiles,
                 "standardized_smiles": standardized,
                 "qsar_identity_smiles": identity,
                 "curation_identity_key": identity,

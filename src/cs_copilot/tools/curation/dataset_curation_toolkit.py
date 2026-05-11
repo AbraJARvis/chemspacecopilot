@@ -581,6 +581,10 @@ class DatasetCurationToolkit(Toolkit):
         standardization_map = backend_result["standardization_map"].copy()
         standardization_map = standardization_map.set_index("row_index", drop=False)
         working["raw_smiles"] = standardization_map.reindex(working.index)["raw_smiles"].values
+        if "chembl_input_smiles" in standardization_map.columns:
+            working["chembl_input_smiles"] = standardization_map.reindex(working.index)[
+                "chembl_input_smiles"
+            ].values
         working["standardized_smiles"] = standardization_map.reindex(working.index)[
             "standardized_smiles"
         ].values
@@ -784,6 +788,16 @@ class DatasetCurationToolkit(Toolkit):
             warnings.append(
                 f"{parent_changed_count} structures changed during parent/salt standardization."
             )
+        row_fallback_count = int(
+            (
+                standardization_map["curation_backend_status"]
+                == "chembl_row_fallback_legacy_rdkit"
+            ).sum()
+        )
+        if row_fallback_count:
+            warnings.append(
+                f"{row_fallback_count} rows used legacy RDKit fallback after ChEMBL row-level standardization errors."
+            )
         stereo_identity_removed_count = int(
             standardization_map["stereochemistry_removed_for_identity"].fillna(False).sum()
         )
@@ -905,6 +919,10 @@ class DatasetCurationToolkit(Toolkit):
             "duplicate_groups_aggregated": duplicate_groups_aggregated,
             "duplicate_conflicting_groups": duplicate_conflicting_groups,
             "checker_rejected_rows": int(checker_rejected_mask.sum()),
+            "backend_status_counts": standardization_map[
+                "curation_backend_status"
+            ].value_counts(dropna=False).to_dict(),
+            "chembl_row_fallback_legacy_rdkit_rows": row_fallback_count,
             "parent_structure_changed_rows": parent_changed_count,
             "stereochemistry_stripped_for_identity_rows": stereo_identity_removed_count,
         }

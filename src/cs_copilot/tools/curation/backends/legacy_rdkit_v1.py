@@ -24,6 +24,7 @@ def standardize_with_legacy_rdkit_v1(raw_smiles: pd.Series) -> Dict[str, Any]:
             {
                 "row_index": row_index,
                 "raw_smiles": raw,
+                "chembl_input_smiles": None,
                 "standardized_smiles": standardized,
                 "qsar_identity_smiles": standardized,
                 "curation_identity_key": standardized,
@@ -44,4 +45,3 @@ def standardize_with_legacy_rdkit_v1(raw_smiles: pd.Series) -> Dict[str, Any]:
         "identity_column": "curation_identity_key",
         "standardization_map": pd.DataFrame(rows),
     }
-

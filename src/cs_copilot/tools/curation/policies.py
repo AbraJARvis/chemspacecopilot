@@ -14,8 +14,8 @@ CHEMBL_QSAR_POLICY = {
     "curation_backend": DEFAULT_CURATION_BACKEND,
     "structure_pipeline": [
         "chembl checker",
-        "chembl standardizer",
-        "chembl parent extraction",
+        "chembl standardize_mol",
+        "chembl get_parent_mol",
         "ChemSpace Copilot QSAR stereo strip",
         "duplicate resolution by QSAR identity",
     ],
@@ -39,4 +39,3 @@ LEGACY_QSAR_POLICY = {
     "stereochemistry_policy": LEGACY_STEREOCHEMISTRY_POLICY,
     "duplicate_identity_policy": "standardized_smiles",
 }
-

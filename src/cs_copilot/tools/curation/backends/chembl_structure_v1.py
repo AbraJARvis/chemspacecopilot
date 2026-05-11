@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Tuple
 import pandas as pd
 from rdkit import Chem
 
+from cs_copilot.tools.chemistry.standardize import standardize_smiles
 from cs_copilot.tools.curation.backends.legacy_rdkit_v1 import (
     standardize_with_legacy_rdkit_v1,
 )
@@ -31,11 +32,23 @@ def _format_checker_issues(issues: List[Tuple[Any, Any]]) -> Tuple[str, int]:
     return text, max_penalty
 
 
-def _mol_to_molblock_from_smiles(smiles: str) -> str | None:
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        return None
+def _mol_to_molblock(mol: Chem.Mol) -> str:
     return Chem.MolToMolBlock(mol, kekulize=False)
+
+
+def _legacy_row_fallback(raw: str | None) -> Tuple[str | None, str | None, bool, bool]:
+    if not raw:
+        return None, None, False, False
+    standardized = standardize_smiles(raw)
+    qsar_identity = strip_stereochemistry_from_smiles(standardized) if standardized else None
+    parent_structure_changed = bool(standardized and standardized != raw)
+    stereo_removed = bool(
+        standardized
+        and qsar_identity
+        and has_explicit_stereochemistry(standardized)
+        and qsar_identity != standardized
+    )
+    return standardized, qsar_identity, parent_structure_changed, stereo_removed
 
 
 def standardize_with_chembl_structure_v1(raw_smiles: pd.Series) -> Dict[str, Any]:
@@ -58,12 +71,13 @@ def standardize_with_chembl_structure_v1(raw_smiles: pd.Series) -> Dict[str, Any
     rows = []
     for row_index, smiles in raw_smiles.items():
         raw = smiles if isinstance(smiles, str) else None
-        molblock = _mol_to_molblock_from_smiles(raw) if raw else None
-        if molblock is None:
+        mol = Chem.MolFromSmiles(raw) if raw else None
+        if mol is None:
             rows.append(
                 {
                     "row_index": row_index,
                     "raw_smiles": raw,
+                    "chembl_input_smiles": None,
                     "standardized_smiles": None,
                     "qsar_identity_smiles": None,
                     "curation_identity_key": None,
@@ -77,14 +91,20 @@ def standardize_with_chembl_structure_v1(raw_smiles: pd.Series) -> Dict[str, Any
             )
             continue
 
+        checker_issues = ""
+        checker_max_penalty = 0
+        chembl_input_smiles = Chem.MolToSmiles(
+            mol, canonical=True, isomericSmiles=True, kekuleSmiles=False
+        )
         try:
-            issues = checker.check_molblock(molblock)
+            issues = checker.check_molblock(_mol_to_molblock(mol))
             checker_issues, checker_max_penalty = _format_checker_issues(issues)
-            standardized_molblock = standardizer.standardize_molblock(molblock)
-            parent_molblock, _exclude = standardizer.get_parent_molblock(standardized_molblock)
-            parent_mol = Chem.MolFromMolBlock(parent_molblock, sanitize=True, removeHs=True)
+            standardized_mol = standardizer.standardize_mol(mol)
+            parent_mol, _exclude = standardizer.get_parent_mol(standardized_mol)
             standardized = (
-                Chem.MolToSmiles(parent_mol, canonical=True) if parent_mol is not None else None
+                Chem.MolToSmiles(parent_mol, canonical=True, isomericSmiles=True)
+                if parent_mol is not None
+                else None
             )
             qsar_identity = (
                 strip_stereochemistry_from_smiles(standardized) if standardized else None
@@ -98,18 +118,22 @@ def standardize_with_chembl_structure_v1(raw_smiles: pd.Series) -> Dict[str, Any
             )
             status = "ok" if standardized and qsar_identity else "standardization_failed"
         except Exception as exc:
-            standardized = None
-            qsar_identity = None
-            checker_issues = f"standardization_error:{exc}"
-            checker_max_penalty = 9
-            parent_structure_changed = False
-            stereo_removed = False
-            status = "standardization_failed"
+            standardized, qsar_identity, parent_structure_changed, stereo_removed = (
+                _legacy_row_fallback(raw)
+            )
+            suffix = f"standardization_error:{exc}"
+            checker_issues = f"{checker_issues}; {suffix}" if checker_issues else suffix
+            if standardized and qsar_identity:
+                checker_issues += "; legacy_rdkit_row_fallback_applied"
+                status = "chembl_row_fallback_legacy_rdkit"
+            else:
+                status = "standardization_failed"
 
         rows.append(
             {
                 "row_index": row_index,
                 "raw_smiles": raw,
+                "chembl_input_smiles": chembl_input_smiles if mol is not None else None,
                 "standardized_smiles": standardized,
                 "qsar_identity_smiles": qsar_identity,
                 "curation_identity_key": qsar_identity,
