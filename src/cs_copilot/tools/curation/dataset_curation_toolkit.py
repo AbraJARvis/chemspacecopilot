@@ -907,6 +907,11 @@ class DatasetCurationToolkit(Toolkit):
                 *duplicate_conflict_removed_records,
             ]
         )
+        removed_reason_counts = (
+            removed_rows["removal_reason"].value_counts(dropna=False).to_dict()
+            if "removal_reason" in removed_rows.columns
+            else {}
+        )
         removed_rows.to_csv(removed_rows_path, index=False)
         identity_diagnostics = {
             "curation_backend_requested": backend_result.get("backend_name"),
@@ -923,6 +928,7 @@ class DatasetCurationToolkit(Toolkit):
                 "curation_backend_status"
             ].value_counts(dropna=False).to_dict(),
             "chembl_row_fallback_legacy_rdkit_rows": row_fallback_count,
+            "removed_reason_counts": removed_reason_counts,
             "parent_structure_changed_rows": parent_changed_count,
             "stereochemistry_stripped_for_identity_rows": stereo_identity_removed_count,
         }
@@ -969,6 +975,7 @@ class DatasetCurationToolkit(Toolkit):
                 else None
             ),
             curation_artifacts=curation_artifacts,
+            curation_diagnostics=identity_diagnostics,
             missing_target_removed=missing_target_removed,
             non_numeric_target_removed=non_numeric_target_removed,
             infinite_target_removed=infinite_target_removed,

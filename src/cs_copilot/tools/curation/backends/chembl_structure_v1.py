@@ -51,6 +51,30 @@ def _legacy_row_fallback(raw: str | None) -> Tuple[str | None, str | None, bool,
     return standardized, qsar_identity, parent_structure_changed, stereo_removed
 
 
+def _apply_legacy_row_fallback(
+    raw: str | None,
+    checker_issues: str,
+    reason: str,
+) -> Tuple[str | None, str | None, bool, bool, str, str]:
+    standardized, qsar_identity, parent_structure_changed, stereo_removed = (
+        _legacy_row_fallback(raw)
+    )
+    checker_issues = f"{checker_issues}; {reason}" if checker_issues else reason
+    if standardized and qsar_identity:
+        checker_issues += "; legacy_rdkit_row_fallback_applied"
+        status = "chembl_row_fallback_legacy_rdkit"
+    else:
+        status = "standardization_failed"
+    return (
+        standardized,
+        qsar_identity,
+        parent_structure_changed,
+        stereo_removed,
+        checker_issues,
+        status,
+    )
+
+
 def standardize_with_chembl_structure_v1(raw_smiles: pd.Series) -> Dict[str, Any]:
     """Standardize a SMILES series with ChEMBL, then apply QSAR identity policy."""
 
@@ -116,18 +140,34 @@ def standardize_with_chembl_structure_v1(raw_smiles: pd.Series) -> Dict[str, Any
                 and has_explicit_stereochemistry(standardized)
                 and qsar_identity != standardized
             )
-            status = "ok" if standardized and qsar_identity else "standardization_failed"
-        except Exception as exc:
-            standardized, qsar_identity, parent_structure_changed, stereo_removed = (
-                _legacy_row_fallback(raw)
-            )
-            suffix = f"standardization_error:{exc}"
-            checker_issues = f"{checker_issues}; {suffix}" if checker_issues else suffix
             if standardized and qsar_identity:
-                checker_issues += "; legacy_rdkit_row_fallback_applied"
-                status = "chembl_row_fallback_legacy_rdkit"
+                status = "ok"
             else:
-                status = "standardization_failed"
+                (
+                    standardized,
+                    qsar_identity,
+                    parent_structure_changed,
+                    stereo_removed,
+                    checker_issues,
+                    status,
+                ) = _apply_legacy_row_fallback(
+                    raw,
+                    checker_issues,
+                    "chembl_empty_standardized_or_identity",
+                )
+        except Exception as exc:
+            (
+                standardized,
+                qsar_identity,
+                parent_structure_changed,
+                stereo_removed,
+                checker_issues,
+                status,
+            ) = _apply_legacy_row_fallback(
+                raw,
+                checker_issues,
+                f"standardization_error:{exc}",
+            )
 
         rows.append(
             {

@@ -93,6 +93,7 @@ class CurationResult:
     curation_backend_fallback_reason: Optional[str] = None
     curation_identity_key_type: Optional[str] = None
     curation_artifacts: Dict[str, Any] = field(default_factory=dict)
+    curation_diagnostics: Dict[str, Any] = field(default_factory=dict)
     missing_target_removed: int = 0
     non_numeric_target_removed: int = 0
     infinite_target_removed: int = 0
@@ -138,6 +139,7 @@ class CurationResult:
             "curation_backend_fallback_reason": self.curation_backend_fallback_reason,
             "curation_identity_key_type": self.curation_identity_key_type,
             "curation_artifacts": dict(self.curation_artifacts),
+            "curation_diagnostics": dict(self.curation_diagnostics),
             "missing_target_removed": self.missing_target_removed,
             "non_numeric_target_removed": self.non_numeric_target_removed,
             "infinite_target_removed": self.infinite_target_removed,
