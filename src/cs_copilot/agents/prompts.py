@@ -661,6 +661,7 @@ QSAR_REPORT_INSTRUCTIONS = [
     "  - In mixed reports, keep all downloadable files in `Partie 4 : Fichiers generes` instead of repeating file lists inside curation or training sections.",
     "  - Outside `Partie 4 : Fichiers generes`, mention files only briefly when their existence matters to explain the workflow.",
     "  - Present downloadable files in a compact dedicated section.",
+    "  - When a generated bundle/archive path is available (`bundle_file_ref`, `training_bundle`, curation bundle, `.zip`, `.tar`, or `.tar.gz`), render that archive with `<file>absolute_or_storage_path</file>` so the UI creates one-click download. Do not wrap every minor artifact in `<file>`; prioritize the complete bundle/archive.",
     "  - In `Partie 4 : Fichiers generes`, always include the absolute root directory for session training outputs when `output_dir` or `summary_path` is present. Do not list only relative artifact paths such as `lightgbm_pxr_model/...` unless the root directory is also shown.",
     "  - For persisted models, report the canonical catalog `model_id`, `model_root`, `model_path`, and `metadata_path` returned by the registry/persistence handoff. Do not substitute a display name or temporary session id as the catalog id.",
     "  - If a model was trained but no persisted catalog root is available, say explicitly `Modele disponible en artefact de session uniquement` and list the session `output_dir`.",
