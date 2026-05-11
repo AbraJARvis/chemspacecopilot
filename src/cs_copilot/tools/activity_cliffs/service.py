@@ -33,6 +33,13 @@ DEFAULT_ACTIVITY_CLIFF_INDEX = "sali"
 DEFAULT_SIMILARITY_THRESHOLD = 0.70
 DEFAULT_TOP_K_NEIGHBORS = 10
 DEFAULT_FLAG_THRESHOLD = 0.35
+DEFAULT_ACTIVITY_CLIFF_FINGERPRINT_KIND = "morgan_count"
+DEFAULT_ACTIVITY_CLIFF_FINGERPRINT_RADIUS = 2
+DEFAULT_ACTIVITY_CLIFF_FINGERPRINT_SIZE = 2048
+DEFAULT_ACTIVITY_CLIFF_SIMILARITY_METRIC = "count_tanimoto"
+DEFAULT_ACTIVITY_CLIFF_REPRESENTATION_NOTE = (
+    "Count fingerprints preserve repeated local-environment multiplicity."
+)
 MAX_ACTIVITY_CLIFF_LOOPS = 3
 MIN_VARIANT_TRAINING_ROWS = 10
 SALI_EPSILON = 1e-6
@@ -62,6 +69,10 @@ class ActivityCliffConfig:
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD
     top_k_neighbors: int = DEFAULT_TOP_K_NEIGHBORS
     flag_threshold: float = DEFAULT_FLAG_THRESHOLD
+    fingerprint_kind: str = DEFAULT_ACTIVITY_CLIFF_FINGERPRINT_KIND
+    fingerprint_radius: int = DEFAULT_ACTIVITY_CLIFF_FINGERPRINT_RADIUS
+    fingerprint_size: int = DEFAULT_ACTIVITY_CLIFF_FINGERPRINT_SIZE
+    similarity_metric: str = DEFAULT_ACTIVITY_CLIFF_SIMILARITY_METRIC
 
     @property
     def loops_enabled(self) -> bool:
@@ -127,12 +138,15 @@ class SALIIndex:
         if y_true.dropna().empty:
             raise ValueError("Cannot compute activity cliffs: target column has no numeric values.")
 
-        generator = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
+        generator = rdFingerprintGenerator.GetMorganGenerator(
+            radius=config.fingerprint_radius,
+            fpSize=config.fingerprint_size,
+        )
         fps: List[Any] = []
         for smiles in working[smiles_column].tolist():
             try:
                 mol = Chem.MolFromSmiles(str(smiles)) if pd.notna(smiles) else None
-                fps.append(generator.GetFingerprint(mol) if mol is not None else None)
+                fps.append(generator.GetCountFingerprint(mol) if mol is not None else None)
             except Exception:
                 fps.append(None)
 
@@ -141,6 +155,8 @@ class SALIIndex:
         max_similarity = np.zeros(len(working), dtype=float)
         max_activity_gap = np.zeros(len(working), dtype=float)
         pair_scores: List[float] = []
+        exact_similarity_nonidentical_pairs: set[tuple[int, int]] = set()
+        max_similarity_observed = 0.0
 
         for idx, fp in enumerate(fps):
             if fp is None or pd.isna(y_true.iloc[idx]):
@@ -151,11 +167,14 @@ class SALIIndex:
                 if other_idx == idx or fps[other_idx] is None or pd.isna(y_true.iloc[other_idx]):
                     continue
                 sim_value = float(sim)
+                max_similarity_observed = max(max_similarity_observed, sim_value)
                 if sim_value < config.similarity_threshold:
                     continue
                 gap = abs(float(y_true.iloc[idx]) - float(y_true.iloc[other_idx]))
                 if sim_value >= 1.0 and gap <= 0.0:
                     continue
+                if sim_value >= 1.0 and gap > 0.0:
+                    exact_similarity_nonidentical_pairs.add(tuple(sorted((idx, other_idx))))
                 sali = gap / max(1.0 - sim_value, SALI_EPSILON)
                 pair_scores.append(float(sali))
                 candidates.append((sim_value, gap, float(sali)))
@@ -187,6 +206,11 @@ class SALIIndex:
         working["activity_cliff_max_activity_gap"] = pd.Series(
             max_activity_gap, index=working.index
         ).astype(float)
+        working.attrs["activity_cliff_similarity_diagnostics"] = {
+            "exact_similarity_nonidentical_pair_count": len(exact_similarity_nonidentical_pairs),
+            "max_similarity_observed": float(max_similarity_observed),
+            "exact_similarity_policy": "reported_not_silently_corrected",
+        }
         return working
 
 
@@ -1178,6 +1202,9 @@ def prepare_activity_cliff_context(
         target_column=target_column,
         config=config,
     )
+    similarity_diagnostics = dict(
+        annotated.attrs.get("activity_cliff_similarity_diagnostics") or {}
+    )
     flagged = (
         pd.to_numeric(annotated["activity_cliff_score_norm"], errors="coerce") >= config.flag_threshold
     ) & (annotated["activity_cliff_neighbor_count"].astype(int) >= 1)
@@ -1226,14 +1253,27 @@ def prepare_activity_cliff_context(
             "explicit_index_required_for_non_default": True,
         },
         "index_parameters": {
-            "similarity_metric": "tanimoto",
-            "fingerprint": "morgan",
-            "fingerprint_radius": 2,
-            "fingerprint_bits": 2048,
+            "similarity_metric": config.similarity_metric,
+            "fingerprint": config.fingerprint_kind,
+            "fingerprint_radius": config.fingerprint_radius,
+            "fingerprint_dimensions": config.fingerprint_size,
+            "fingerprint_bits": None,
             "similarity_threshold": config.similarity_threshold,
             "top_k_neighbors": config.top_k_neighbors,
             "flag_threshold": config.flag_threshold,
             "normalization": "pair_score_p95",
+            "representation_note": DEFAULT_ACTIVITY_CLIFF_REPRESENTATION_NOTE,
+        },
+        "similarity_diagnostics": {
+            "exact_similarity_nonidentical_pair_count": int(
+                similarity_diagnostics.get("exact_similarity_nonidentical_pair_count") or 0
+            ),
+            "max_similarity_observed": float(
+                similarity_diagnostics.get("max_similarity_observed") or 0.0
+            ),
+            "exact_similarity_policy": similarity_diagnostics.get(
+                "exact_similarity_policy", "reported_not_silently_corrected"
+            ),
         },
         "tiering_policy": {
             "source_column": "activity_cliff_score_norm",

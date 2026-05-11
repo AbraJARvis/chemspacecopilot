@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import pytest
+from rdkit import Chem, DataStructs
+from rdkit.Chem import rdFingerprintGenerator
 
 from cs_copilot.tools.activity_cliffs.service import (
     ActivityCliffIndexRegistry,
@@ -36,11 +40,41 @@ def test_activity_cliff_framework_writes_generic_and_sali_columns(tmp_path):
     assert context["index_name"] == "sali"
     assert context["mode"] == "standard"
     assert context["summary_path"].endswith("activity_cliff_summary.json")
+    summary = json.loads((tmp_path / "run" / "activity_cliffs" / "activity_cliff_summary.json").read_text())
+    assert summary["index_parameters"]["fingerprint"] == "morgan_count"
+    assert summary["index_parameters"]["fingerprint_dimensions"] == 2048
+    assert summary["index_parameters"]["fingerprint_bits"] is None
+    assert summary["index_parameters"]["similarity_metric"] == "count_tanimoto"
+    assert summary["similarity_diagnostics"]["exact_similarity_policy"] == "reported_not_silently_corrected"
     assert "activity_cliff_score_raw" in annotated.columns
     assert "activity_cliff_score_norm" in annotated.columns
     assert "activity_cliff_sali_raw" in annotated.columns
     assert "activity_cliff_priority_tier" in annotated.columns
     assert set(context["priority_counts"]) == {"none", "low", "medium", "high"}
+
+
+def test_morgan_count_similarity_reduces_known_binary_collisions():
+    generator = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
+    pairs = [
+        ("NC1CCCCC1", "NC1CCCCCC1"),
+        ("C1CCCNCCC1", "C1CCCNCC1"),
+    ]
+
+    for left, right in pairs:
+        left_mol = Chem.MolFromSmiles(left)
+        right_mol = Chem.MolFromSmiles(right)
+        bit_similarity = DataStructs.TanimotoSimilarity(
+            generator.GetFingerprint(left_mol),
+            generator.GetFingerprint(right_mol),
+        )
+        count_similarity = DataStructs.TanimotoSimilarity(
+            generator.GetCountFingerprint(left_mol),
+            generator.GetCountFingerprint(right_mol),
+        )
+
+        assert bit_similarity == pytest.approx(1.0)
+        assert count_similarity < bit_similarity
+        assert count_similarity < 1.0
 
 
 def test_activity_cliff_framework_rejects_unknown_index():

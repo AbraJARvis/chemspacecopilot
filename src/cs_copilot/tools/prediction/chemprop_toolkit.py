@@ -96,6 +96,67 @@ def _sanitize_activity_cliff_description(description: Optional[str], activity_pa
     return sanitized
 
 
+def _latest_curation_artifacts(agent: Agent) -> Dict[str, Any]:
+    """Return the latest QSAR curation artifacts recorded in the shared session."""
+    curation_state = agent.session_state.get("qsar_curation") or {}
+    latest = curation_state.get("last_result") or {}
+    if not isinstance(latest, dict):
+        return {}
+    artifacts = dict(latest.get("curation_artifacts") or {})
+    if latest.get("report_path"):
+        artifacts["curation_report_json"] = latest.get("report_path")
+    if latest.get("bundle_file_ref"):
+        artifacts["curation_bundle_zip"] = latest.get("bundle_file_ref")
+    if not artifacts and not latest.get("curated_dataset_path"):
+        return {}
+    return {
+        "curation_backend": latest.get("curation_backend_used") or latest.get("curation_backend"),
+        "curated_dataset_path": latest.get("curated_dataset_path"),
+        "rows_in": latest.get("rows_in"),
+        "rows_out": latest.get("rows_out"),
+        "artifacts": artifacts,
+    }
+
+
+def _discover_curation_artifacts_near_dataset(dataset_path: Optional[str]) -> Dict[str, Any]:
+    """Best-effort discovery for curation files written next to session datasets."""
+    if not dataset_path:
+        return {}
+    path = Path(str(dataset_path)).expanduser()
+    parent = path.parent
+    if not parent.exists():
+        return {}
+    artifacts: Dict[str, str] = {}
+    artifact_dirs = sorted(
+        parent.glob("*_curation_artifacts"),
+        key=lambda candidate: candidate.stat().st_mtime if candidate.exists() else 0,
+        reverse=True,
+    )
+    if artifact_dirs:
+        artifact_dir = artifact_dirs[0]
+        known_files = {
+            "standardization_map_csv": "curation_standardization_map.csv",
+            "duplicate_identity_groups_csv": "curation_duplicate_identity_groups.csv",
+            "removed_rows_csv": "curation_removed_rows.csv",
+            "identity_diagnostics_json": "curation_identity_diagnostics.json",
+            "manifest_json": "curation_manifest.json",
+        }
+        for key, filename in known_files.items():
+            candidate = artifact_dir / filename
+            if candidate.exists():
+                artifacts[key] = str(candidate)
+    report_candidates = sorted(
+        parent.glob("*curation_report*.json"),
+        key=lambda candidate: candidate.stat().st_mtime if candidate.exists() else 0,
+        reverse=True,
+    )
+    if report_candidates:
+        artifacts["curation_report_json"] = str(report_candidates[0])
+    if not artifacts:
+        return {}
+    return {"artifacts": artifacts}
+
+
 def _extract_endpoint_and_dataset(train_csv: Optional[str], fallback_model_id: str) -> tuple[str, str]:
     source = Path(train_csv or fallback_model_id).stem.lower()
     for suffix in ("_curated", "_cleaned", "_dataset", "_training"):
@@ -695,6 +756,9 @@ class ChempropToolkit(Toolkit):
         plot_sources: Dict[str, Path] = {}
         activity_cliff_sources: Dict[str, Path] = {}
         activity_cliff_variant_model_sources: List[Dict[str, Any]] = []
+        split_prediction_sources: Dict[str, Path] = {}
+        curation_sources: Dict[str, Path] = {}
+        curation_payload: Dict[str, Any] = {}
 
         if source_artifacts:
             for key in (
@@ -719,6 +783,24 @@ class ChempropToolkit(Toolkit):
                     continue
                 if raw_path:
                     plot_sources[plot_name] = Path(str(raw_path)).expanduser()
+            for split_result in source_artifacts.get("split_results") or []:
+                raw_path = split_result.get("test_predictions_path")
+                if not raw_path:
+                    continue
+                split_label = (
+                    split_result.get("strategy_label")
+                    or split_result.get("strategy_family")
+                    or split_result.get("strategy")
+                    or split_result.get("split_type")
+                    or "split"
+                )
+                split_prediction_sources[safe_slug(str(split_label)) or "split"] = Path(
+                    str(raw_path)
+                ).expanduser()
+            curation_payload = source_artifacts.get("curation") or {}
+            for artifact_name, raw_path in (curation_payload.get("artifacts") or {}).items():
+                if raw_path:
+                    curation_sources[str(artifact_name)] = Path(str(raw_path)).expanduser()
             activity_payload = source_artifacts.get("activity_cliffs") or {}
             for key in (
                 "annotated_training_csv",
@@ -791,6 +873,32 @@ class ChempropToolkit(Toolkit):
                 copied_plot_artifacts[plot_name] = _relative_posix(target_path, model_root)
         if copied_plot_artifacts:
             copied_files["plot_artifacts"] = copied_plot_artifacts
+
+        copied_split_predictions: Dict[str, str] = {}
+        if split_prediction_sources:
+            split_preds_dir = artifacts_dir / "test_predictions_by_split"
+            split_preds_dir.mkdir(parents=True, exist_ok=True)
+            for split_label, source_path in split_prediction_sources.items():
+                if not source_path.exists():
+                    continue
+                target_path = split_preds_dir / f"test_predictions_{split_label}.csv"
+                shutil.copy2(source_path, target_path)
+                copied_split_predictions[split_label] = _relative_posix(target_path, model_root)
+        if copied_split_predictions:
+            copied_files["test_predictions_by_split"] = copied_split_predictions
+
+        copied_curation_artifacts: Dict[str, str] = {}
+        if curation_sources:
+            curation_dir = artifacts_dir / "curation"
+            curation_dir.mkdir(parents=True, exist_ok=True)
+            for artifact_name, source_path in curation_sources.items():
+                if not source_path.exists():
+                    continue
+                target_path = curation_dir / source_path.name
+                shutil.copy2(source_path, target_path)
+                copied_curation_artifacts[artifact_name] = _relative_posix(target_path, model_root)
+        if copied_curation_artifacts:
+            copied_files["curation"] = copied_curation_artifacts
 
         copied_activity_cliff_artifacts: Dict[str, str] = {}
         if activity_cliff_sources:
@@ -881,6 +989,16 @@ class ChempropToolkit(Toolkit):
             }
         if copied_plot_artifacts:
             metadata["plot_artifacts"] = copied_plot_artifacts
+        if copied_split_predictions:
+            metadata["test_predictions_by_split"] = copied_split_predictions
+        if copied_curation_artifacts:
+            metadata["curation"] = {
+                "backend": curation_payload.get("curation_backend"),
+                "curated_dataset_path": curation_payload.get("curated_dataset_path"),
+                "rows_in": curation_payload.get("rows_in"),
+                "rows_out": curation_payload.get("rows_out"),
+                "artifacts": copied_curation_artifacts,
+            }
         if copied_activity_cliff_artifacts:
             activity_payload = (source_artifacts or {}).get("activity_cliffs") or {}
             metadata["activity_cliffs"] = {
@@ -1319,11 +1437,17 @@ class ChempropToolkit(Toolkit):
             "config_path": summary_payload.get("config_path"),
             "splits_path": summary_payload.get("splits_path"),
             "test_predictions_path": summary_payload.get("test_predictions_path"),
+            "split_results": summary_payload.get("split_results") or [],
             "reference_store_path": applicability_domain.get("reference_store_path"),
             "reference_manifest_path": applicability_domain.get("reference_manifest_path"),
             "applicability_domain_path": applicability_domain.get("applicability_domain_path"),
             "plot_artifacts": summary_payload.get("plot_artifacts") or {},
             "activity_cliffs": summary_payload.get("activity_cliffs") or {},
+            "curation": (
+                summary_payload.get("curation")
+                or _latest_curation_artifacts(agent)
+                or _discover_curation_artifacts_near_dataset(train_csv)
+            ),
         }
 
         materialized = self._materialize_internal_model(

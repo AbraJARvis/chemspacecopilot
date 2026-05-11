@@ -24,7 +24,12 @@ from cs_copilot.tools.activity_cliffs import (
 
 from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionTaskSpec
-from .chemprop_toolkit import _get_prediction_state, _write_active_training_marker
+from .chemprop_toolkit import (
+    _discover_curation_artifacts_near_dataset,
+    _get_prediction_state,
+    _latest_curation_artifacts,
+    _write_active_training_marker,
+)
 from .lightgbm_backend import LightGBMBackend
 from .qsar_plots import build_qsar_training_plots
 from .qsar_training_policy import (
@@ -366,16 +371,37 @@ class LightGBMToolkit(Toolkit):
         params = activity_cliffs.get("index_parameters") or {}
         mode = str(activity_cliffs.get("mode") or "standard")
         index_display = "SALI (Structure-Activity Landscape Index)"
+        fingerprint = params.get("fingerprint")
+        fingerprint_radius = cls._format_activity_cliff_value(params.get("fingerprint_radius"))
+        fingerprint_dimensions = params.get("fingerprint_dimensions")
+        fingerprint_bits = params.get("fingerprint_bits")
+        similarity_metric = params.get("similarity_metric")
+        if fingerprint == "morgan_count":
+            fingerprint_text = (
+                "Morgan count fingerprints, "
+                f"rayon {fingerprint_radius}, "
+                f"{cls._format_activity_cliff_value(fingerprint_dimensions)} dimensions"
+            )
+            similarity_text = "Tanimoto ponderee par les comptes"
+        else:
+            fingerprint_size_text = (
+                f"{cls._format_activity_cliff_value(fingerprint_bits)} bits"
+                if fingerprint_bits is not None
+                else f"{cls._format_activity_cliff_value(fingerprint_dimensions)} dimensions"
+            )
+            fingerprint_text = (
+                f"{cls._format_activity_cliff_value(fingerprint)}, "
+                f"rayon {fingerprint_radius}, {fingerprint_size_text}"
+            )
+            similarity_text = cls._format_activity_cliff_value(similarity_metric)
         lines = [
             "Activity cliffs",
             "",
             f"L'analyse des falaises d'activite a ete realisee avec l'indice {index_display}.",
             "",
             "Parametres de voisinage :",
-            f"- Empreinte : {cls._format_activity_cliff_value(params.get('fingerprint'))}, "
-            f"rayon {cls._format_activity_cliff_value(params.get('fingerprint_radius'))}, "
-            f"{cls._format_activity_cliff_value(params.get('fingerprint_bits'))} bits",
-            f"- Similarite : {cls._format_activity_cliff_value(params.get('similarity_metric'))}",
+            f"- Empreinte : {fingerprint_text}",
+            f"- Similarite : {similarity_text}",
             f"- Seuil de similarite : {cls._format_activity_cliff_value(params.get('similarity_threshold'))}",
             f"- Nombre maximal de voisins : {cls._format_activity_cliff_value(params.get('top_k_neighbors'))}",
             f"- Seuil de signalement : {cls._format_activity_cliff_value(params.get('flag_threshold'))}",
@@ -479,9 +505,22 @@ class LightGBMToolkit(Toolkit):
     ) -> Dict[str, Any]:
         params = activity_cliffs.get("index_parameters") or {}
         priority_counts = activity_cliffs.get("priority_counts") or {}
+        fingerprint = params.get("fingerprint")
+        if fingerprint == "morgan_count":
+            fingerprint_policy = (
+                "Morgan count fingerprints, "
+                f"radius={params.get('fingerprint_radius')}, "
+                f"dimensions={params.get('fingerprint_dimensions')}, "
+                "similarity_metric=count_tanimoto"
+            )
+        else:
+            fingerprint_policy = (
+                f"Fingerprint={fingerprint}, radius={params.get('fingerprint_radius')}, "
+                f"bits={params.get('fingerprint_bits')}, "
+                f"similarity_metric={params.get('similarity_metric')}"
+            )
         neighborhood_policy_text = (
-            f"Fingerprint={params.get('fingerprint')}, radius={params.get('fingerprint_radius')}, "
-            f"bits={params.get('fingerprint_bits')}, similarity_metric={params.get('similarity_metric')}, "
+            f"{fingerprint_policy}, "
             f"similarity_threshold={params.get('similarity_threshold')}, "
             f"top-k neighbors={params.get('top_k_neighbors')}, "
             f"flag_threshold={params.get('flag_threshold')}, "
@@ -1041,6 +1080,10 @@ class LightGBMToolkit(Toolkit):
             total_started_at=total_started_at,
             total_completed_at=total_completed_at,
         )
+        curation_artifacts = _latest_curation_artifacts(agent) if agent is not None else {}
+        if not (curation_artifacts.get("artifacts") if curation_artifacts else None):
+            curation_artifacts = _discover_curation_artifacts_near_dataset(train_csv)
+        result["curation"] = curation_artifacts
         result["applicability_domain"] = ad_summary
         result["activity_cliffs"] = activity_cliffs
         result["plot_artifacts"] = plot_artifacts
