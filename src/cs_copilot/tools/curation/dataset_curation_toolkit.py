@@ -314,8 +314,10 @@ def _resolve_regression_duplicates(
         duplicate_groups_detected += 1
         is_conflicting = False
         target_spreads: Dict[str, float] = {}
+        target_values: Dict[str, List[float]] = {}
         for target in target_columns:
             series = pd.to_numeric(group[target], errors="coerce").dropna()
+            target_values[target] = [float(value) for value in series.tolist()]
             if len(series) <= 1:
                 target_spreads[target] = 0.0
                 continue
@@ -331,6 +333,7 @@ def _resolve_regression_duplicates(
             "group_size": int(len(group)),
             "resolution": "removed_conflict" if is_conflicting else "aggregated_mean",
             "target_spreads": json.dumps(target_spreads, sort_keys=True),
+            "target_values": json.dumps(target_values, sort_keys=True),
             "row_indices": ",".join(str(idx) for idx in group.index.tolist()),
             "raw_smiles": " | ".join(str(v) for v in group.get("raw_smiles", pd.Series()).tolist()),
             "standardized_smiles": " | ".join(
@@ -697,6 +700,20 @@ class DatasetCurationToolkit(Toolkit):
                         "group_size": int(len(group)),
                         "resolution": "kept_first",
                         "target_spreads": "{}",
+                        "target_values": json.dumps(
+                            {
+                                target: [
+                                    float(value)
+                                    for value in pd.to_numeric(
+                                        group[target], errors="coerce"
+                                    )
+                                    .dropna()
+                                    .tolist()
+                                ]
+                                for target in curated_targets
+                            },
+                            sort_keys=True,
+                        ),
                         "row_indices": ",".join(str(idx) for idx in group.index.tolist()),
                         "raw_smiles": " | ".join(str(v) for v in group["raw_smiles"].tolist()),
                         "standardized_smiles": " | ".join(
@@ -896,15 +913,21 @@ class DatasetCurationToolkit(Toolkit):
         duplicate_groups_path = artifact_dir / "curation_duplicate_identity_groups.csv"
         removed_rows_path = artifact_dir / "curation_removed_rows.csv"
         identity_diagnostics_path = artifact_dir / "curation_identity_diagnostics.json"
+        manifest_path = artifact_dir / "curation_manifest.json"
 
         standardization_map.to_csv(standardization_map_path, index=False)
         pd.DataFrame(duplicate_group_records).to_csv(duplicate_groups_path, index=False)
         duplicate_conflict_removed_records = [
             {
                 "row_index": record["row_indices"],
+                "row_indices": record["row_indices"],
+                "group_size": record["group_size"],
+                "removed_row_count": record["group_size"],
                 "raw_smiles": record["raw_smiles"],
                 "standardized_smiles": record["standardized_smiles"],
                 "curation_identity_key": record["identity_key"],
+                "target_spreads": record.get("target_spreads", "{}"),
+                "target_values": record.get("target_values", "{}"),
                 "removal_reason": "duplicate_identity_conflict",
             }
             for record in duplicate_group_records
@@ -945,11 +968,49 @@ class DatasetCurationToolkit(Toolkit):
             "stereochemistry_stripped_for_identity_rows": stereo_identity_removed_count,
         }
         identity_diagnostics_path.write_text(json.dumps(identity_diagnostics, indent=2) + "\n")
+        manifest = {
+            "dataset_id": dataset_id or Path(dataset_path).stem,
+            "curation_backend": backend_result.get("used_backend_name"),
+            "curation_policy": {
+                "stereochemistry_policy": curation_policy.get("stereochemistry_policy"),
+                "duplicate_identity_policy": curation_policy.get("duplicate_identity_policy"),
+                "duplicate_conflict_threshold": duplicate_conflict_threshold,
+                "checker_policy": curation_policy.get("checker_policy"),
+            },
+            "files": {
+                "curated_dataset_csv": {
+                    "path": str(curated_path),
+                    "description": "QSAR-ready curated dataset.",
+                },
+                "curation_report_json": {
+                    "path": "<written by write_curation_report>",
+                    "description": "Canonical machine-readable curation summary, written by write_curation_report.",
+                },
+                "standardization_map_csv": {
+                    "path": str(standardization_map_path),
+                    "description": "Per-row raw, ChEMBL input, standardized, and QSAR identity mapping.",
+                },
+                "duplicate_identity_groups_csv": {
+                    "path": str(duplicate_groups_path),
+                    "description": "Duplicate QSAR identity groups with row indices, target values, spreads, and resolution.",
+                },
+                "removed_rows_csv": {
+                    "path": str(removed_rows_path),
+                    "description": "Rows or duplicate groups removed during curation with explicit removal reasons.",
+                },
+                "identity_diagnostics_json": {
+                    "path": str(identity_diagnostics_path),
+                    "description": "Compact diagnostics for backend, checker, duplicate identity, and identity stripping.",
+                },
+            },
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
         curation_artifacts = {
             "standardization_map_csv": str(standardization_map_path),
             "duplicate_identity_groups_csv": str(duplicate_groups_path),
             "removed_rows_csv": str(removed_rows_path),
             "identity_diagnostics_json": str(identity_diagnostics_path),
+            "manifest_json": str(manifest_path),
         }
 
         result = CurationResult(
@@ -1082,6 +1143,20 @@ class DatasetCurationToolkit(Toolkit):
         curated_dataset_path = curation_result.get("curated_dataset_path")
         if curated_dataset_path:
             curated_path = Path(curated_dataset_path).expanduser()
+            manifest_ref = (curation_result.get("curation_artifacts") or {}).get(
+                "manifest_json"
+            )
+            if manifest_ref:
+                manifest_path = Path(manifest_ref).expanduser()
+                if manifest_path.exists():
+                    try:
+                        manifest = json.loads(manifest_path.read_text())
+                        manifest.setdefault("files", {}).setdefault(
+                            "curation_report_json", {}
+                        )["path"] = str(destination)
+                        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+                    except Exception:
+                        pass
             artifact_files = [
                 Path(path).expanduser()
                 for path in (curation_result.get("curation_artifacts") or {}).values()
