@@ -554,6 +554,29 @@ class ChempropToolkit(Toolkit):
             "extra_args": merged,
         }
 
+    def _cap_nested_replicates_for_multi_split_protocol(
+        self,
+        *,
+        extra_args: Dict[str, Any],
+        protocol_policy: Dict[str, Any],
+    ) -> Optional[str]:
+        """Avoid multiplying Chemprop internal replicates by QSAR protocol split runs."""
+        if len(protocol_policy.get("split_runs") or []) <= 1:
+            return None
+
+        try:
+            num_replicates = int(extra_args.get("num_replicates") or 1)
+        except Exception:
+            num_replicates = 1
+        if num_replicates <= 1:
+            return None
+
+        extra_args["num_replicates"] = 1
+        return (
+            "Chemprop internal num_replicates was capped to 1 because the QSAR "
+            f"protocol `{protocol_policy.get('protocol')}` already runs multiple split replicates."
+        )
+
     def _resolve_validation_protocol(
         self,
         *,
@@ -2008,14 +2031,26 @@ class ChempropToolkit(Toolkit):
     ) -> Dict[str, Any]:
         """Launch Chemprop training and persist a lightweight training record."""
         if isinstance(smiles_columns, str):
-            parsed = json.loads(smiles_columns)
-            smiles_columns = parsed if isinstance(parsed, list) else [str(parsed)]
+            try:
+                parsed = json.loads(smiles_columns)
+            except json.JSONDecodeError:
+                smiles_columns = [smiles_columns]
+            else:
+                smiles_columns = parsed if isinstance(parsed, list) else [str(parsed)]
         if isinstance(target_columns, str):
-            parsed = json.loads(target_columns)
-            target_columns = parsed if isinstance(parsed, list) else [str(parsed)]
+            try:
+                parsed = json.loads(target_columns)
+            except json.JSONDecodeError:
+                target_columns = [target_columns]
+            else:
+                target_columns = parsed if isinstance(parsed, list) else [str(parsed)]
         if isinstance(reaction_columns, str):
-            parsed = json.loads(reaction_columns)
-            reaction_columns = parsed if isinstance(parsed, list) else [str(parsed)]
+            try:
+                parsed = json.loads(reaction_columns)
+            except json.JSONDecodeError:
+                reaction_columns = [reaction_columns]
+            else:
+                reaction_columns = parsed if isinstance(parsed, list) else [str(parsed)]
 
         resolved_output_dir = str(Path(output_dir).expanduser().resolve())
         root_output_path = Path(resolved_output_dir)
@@ -2035,6 +2070,10 @@ class ChempropToolkit(Toolkit):
         protocol_policy = self._resolve_validation_protocol(
             requested_protocol=training_policy.get("validation_protocol"),
             training_profile=training_policy["training_profile"],
+        )
+        replicate_policy_note = self._cap_nested_replicates_for_multi_split_protocol(
+            extra_args=training_policy["extra_args"],
+            protocol_policy=protocol_policy,
         )
         task = PredictionTaskSpec(
             task_type=task_type,
@@ -2206,6 +2245,8 @@ class ChempropToolkit(Toolkit):
             result["training_profile"] = training_policy["training_profile"]
             result["profile_reason"] = training_policy["profile_reason"]
             result["effective_train_args"] = training_policy["extra_args"]
+            if replicate_policy_note:
+                result["replicate_policy_note"] = replicate_policy_note
             result["training_resources"] = self._summarize_training_resources(
                 compute_env=training_policy["compute_environment"],
                 effective_train_args=training_policy["extra_args"],

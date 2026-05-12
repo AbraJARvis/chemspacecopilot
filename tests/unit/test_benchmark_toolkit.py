@@ -212,6 +212,36 @@ def test_ensemble_component_selection_excludes_ablation_variants():
     ]
 
 
+def test_chemprop_caps_internal_replicates_for_multi_split_protocol():
+    toolkit = ChempropToolkit()
+    extra_args = {"num_replicates": 3}
+
+    note = toolkit._cap_nested_replicates_for_multi_split_protocol(
+        extra_args=extra_args,
+        protocol_policy={
+            "protocol": "robust_qsar",
+            "split_runs": [{"label": "random_seed_42"}, {"label": "scaffold"}],
+        },
+    )
+
+    assert extra_args["num_replicates"] == 1
+    assert note is not None
+    assert "already runs multiple split replicates" in note
+
+
+def test_chemprop_keeps_internal_replicates_for_single_split_protocol():
+    toolkit = ChempropToolkit()
+    extra_args = {"num_replicates": 3}
+
+    note = toolkit._cap_nested_replicates_for_multi_split_protocol(
+        extra_args=extra_args,
+        protocol_policy={"protocol": "single_split", "split_runs": [{"label": "random"}]},
+    )
+
+    assert extra_args["num_replicates"] == 3
+    assert note is None
+
+
 def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     catalog_path = tmp_path / "model_catalog.json"
     internal_root = tmp_path / "internal"

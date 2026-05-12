@@ -316,7 +316,10 @@ def _plot_seed_performance(split_results: List[Dict[str, Any]], output_path: Pat
         ("mae", "MAE", "#d98b36"),
     ]
     for ax, (column, label, color) in zip(axes, metric_specs):
-        ax.bar(df["seed"], df[column], color=color, alpha=0.85)
+        x_positions = list(range(len(df)))
+        ax.bar(x_positions, df[column], color=color, alpha=0.85)
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels(df["seed"].astype(str).tolist())
         ax.set_title(label)
         ax.set_xlabel("Seed")
         ax.grid(alpha=0.2, linestyle="--", axis="y")
