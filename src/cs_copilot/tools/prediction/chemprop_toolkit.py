@@ -2261,13 +2261,22 @@ class ChempropToolkit(Toolkit):
             for variant in activity_cliffs.get("variants") or []:
                 if variant.get("filtered_training_csv"):
                     bundle_files.append(Path(variant["filtered_training_csv"]).expanduser())
+                training_result = variant.get("training_result") or {}
+                for split_result in training_result.get("split_results") or []:
+                    for artifact_key in ("model_path", "test_predictions_path", "splits_path"):
+                        if split_result.get(artifact_key):
+                            bundle_files.append(Path(split_result[artifact_key]).expanduser())
             for plot_path in (activity_cliffs.get("plot_artifacts") or {}).values():
+                bundle_files.append(Path(plot_path).expanduser())
+            for plot_path in (activity_cliffs.get("loop_comparison_plot_artifacts") or {}).values():
                 bundle_files.append(Path(plot_path).expanduser())
             bundle = _bundle_artifacts(
                 bundle_path,
                 bundle_files,
             )
             result["bundle_file_ref"] = str(bundle)
+            result["training_bundle"] = str(bundle)
+            result["bundle_download_tag"] = f"<file>{bundle}</file>"
             return result
         except Exception as exc:
             active_run_record["status"] = "failed"
