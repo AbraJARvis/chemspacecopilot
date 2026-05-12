@@ -40,6 +40,7 @@ DEFAULT_ACTIVITY_CLIFF_SIMILARITY_METRIC = "count_tanimoto"
 DEFAULT_ACTIVITY_CLIFF_REPRESENTATION_NOTE = (
     "Count fingerprints preserve repeated local-environment multiplicity."
 )
+DEFAULT_ACTIVITY_GAP_REFERENCE = 1.0
 MAX_ACTIVITY_CLIFF_LOOPS = 3
 MIN_VARIANT_TRAINING_ROWS = 10
 SALI_EPSILON = 1e-6
@@ -343,7 +344,13 @@ def _plot_score_histogram(
     )
     ax = axes[0]
     ax.hist(values, bins=40, color=ACTIVITY_CLIFF_COLORS["none"], edgecolor="white", alpha=0.86)
-    ax.axvline(flag_threshold, color=ACTIVITY_CLIFF_COLORS["high"], linewidth=2, linestyle="--")
+    ax.axvline(
+        flag_threshold,
+        color=ACTIVITY_CLIFF_COLORS["high"],
+        linewidth=2,
+        linestyle="--",
+        label=f"flag threshold {flag_threshold:g}",
+    )
     if not flagged_values.empty:
         tier_values_all = [
             values[(tiers == tier) & (values >= flag_threshold)]
@@ -365,7 +372,11 @@ def _plot_score_histogram(
     ax.text(
         0.98,
         0.94,
-        f"none={tier_counts['none']}, flagged={len(flagged_values)}\nthreshold={flag_threshold:g}",
+        (
+            f"none={tier_counts['none']}, flagged={len(flagged_values)}\n"
+            f"low={tier_counts['low']}, medium={tier_counts['medium']}, high={tier_counts['high']}\n"
+            f"flag threshold={flag_threshold:g}"
+        ),
         transform=ax.transAxes,
         ha="right",
         va="top",
@@ -388,19 +399,28 @@ def _plot_score_histogram(
             color=[ACTIVITY_CLIFF_COLORS[tier] for tier in ("low", "medium", "high")],
             edgecolor="white",
             alpha=0.95,
-            label=["low", "medium", "high"],
+            label=[
+                f"low ({tier_counts['low']})",
+                f"medium ({tier_counts['medium']})",
+                f"high ({tier_counts['high']})",
+            ],
         )
         ax_zoom.set_xlim(max(0.0, min(flagged_values.min(), flag_threshold) - 0.04), 1.02)
         ax_zoom.legend(frameon=False, fontsize=8)
     else:
         ax_zoom.text(0.5, 0.5, "No flagged compounds", ha="center", va="center", transform=ax_zoom.transAxes)
         ax_zoom.set_xlim(flag_threshold, 1.02)
-    ax_zoom.axvline(flag_threshold, color=ACTIVITY_CLIFF_COLORS["high"], linewidth=2, linestyle="--")
-    ax_zoom.set_title("Flagged compounds by priority tier")
+    ax_zoom.axvline(
+        flag_threshold,
+        color=ACTIVITY_CLIFF_COLORS["high"],
+        linewidth=2,
+        linestyle="--",
+    )
+    ax_zoom.set_title("Flagged score distribution by tier")
     ax_zoom.set_xlabel("Normalized score")
     ax_zoom.set_ylabel("Count")
     ax_zoom.grid(alpha=0.2, linestyle="--")
-    fig.suptitle("Activity-cliff normalized score distribution", fontsize=14)
+    fig.suptitle("SALI normalized score distribution by priority tier", fontsize=14)
     fig.tight_layout()
     fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
     plt.close(fig)
@@ -448,6 +468,7 @@ def _plot_gap_vs_similarity(
     output_path: Path,
     *,
     similarity_threshold: float,
+    activity_gap_reference: float = DEFAULT_ACTIVITY_GAP_REFERENCE,
 ) -> Optional[str]:
     if "activity_cliff_max_similarity" not in annotated.columns:
         return None
@@ -458,6 +479,7 @@ def _plot_gap_vs_similarity(
         return None
     fig, ax = plt.subplots(figsize=(8, 5))
     tiers = annotated.loc[valid, "activity_cliff_priority_tier"].fillna("none").astype(str)
+    tier_counts = annotated["activity_cliff_priority_tier"].fillna("none").astype(str).value_counts()
     x_plot = x[valid].copy().astype(float)
     stacked_at_one = x_plot >= 0.999
     if stacked_at_one.any():
@@ -472,7 +494,7 @@ def _plot_gap_vs_similarity(
             c=ACTIVITY_CLIFF_COLORS["none"],
             alpha=0.46,
             edgecolor="none",
-            label="none",
+            label=f"none ({int(tier_counts.get('none', 0))})",
         )
     for tier, color, size in (
         ("low", ACTIVITY_CLIFF_COLORS["low"], 58),
@@ -489,7 +511,7 @@ def _plot_gap_vs_similarity(
                 alpha=0.9,
                 edgecolor="white",
                 linewidth=0.8,
-                label=tier,
+                label=f"{tier} ({int(tier_counts.get(tier, 0))})",
                 zorder=3,
             )
     ax.axvline(
@@ -499,12 +521,47 @@ def _plot_gap_vs_similarity(
         linestyle="--",
         label=f"similarity threshold {similarity_threshold:g}",
     )
+    if activity_gap_reference > 0:
+        ax.axhline(
+            activity_gap_reference,
+            color="#7a8288",
+            linewidth=1.2,
+            linestyle=":",
+            label=f"activity gap reference {activity_gap_reference:g}",
+        )
     positive_x = x_plot[x_plot > 0]
     data_x_min = float(positive_x.min()) - 0.03 if not positive_x.empty else float(similarity_threshold) - 0.04
     x_min = max(0.0, min(float(similarity_threshold) - 0.04, data_x_min))
     ax.set_xlim(x_min, 1.02)
-    ax.set_title("Activity gap versus structural similarity")
-    ax.set_xlabel("Maximum qualified Tanimoto similarity")
+    y_max = float(y[valid].max()) if valid.any() else activity_gap_reference
+    annotation_y = min(max(activity_gap_reference + 0.08, y_max * 0.72), y_max * 0.92)
+    ax.text(
+        min(0.985, max(float(similarity_threshold) + 0.16, 0.84)),
+        annotation_y,
+        "High-similarity / high-gap cliffs",
+        fontsize=8,
+        color="#5f6972",
+        ha="center",
+    )
+    ax.text(
+        float(similarity_threshold) + 0.012,
+        max(0.08, activity_gap_reference * 0.22),
+        "Borderline similarity",
+        fontsize=8,
+        color="#5f6972",
+        rotation=90,
+        va="bottom",
+    )
+    ax.text(
+        min(0.985, max(float(similarity_threshold) + 0.16, 0.84)),
+        max(0.05, activity_gap_reference * 0.18),
+        "Low activity gap",
+        fontsize=8,
+        color="#5f6972",
+        ha="center",
+    )
+    ax.set_title("Activity cliffs: activity gap vs count-Tanimoto similarity")
+    ax.set_xlabel("Maximum qualified count-Tanimoto similarity")
     ax.set_ylabel("Maximum activity gap")
     ax.grid(alpha=0.2, linestyle="--")
     ax.legend(frameon=False, loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0)
@@ -536,6 +593,7 @@ def _write_plots(
             annotated,
             plots_dir / "activity_gap_vs_similarity.png",
             similarity_threshold=similarity_threshold,
+            activity_gap_reference=DEFAULT_ACTIVITY_GAP_REFERENCE,
         ),
     }
     return {key: value for key, value in generated.items() if value}

@@ -68,10 +68,19 @@ def _strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def _bundle_artifacts(bundle_path: Path, files: List[Path]) -> Path:
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
+    seen_names: Dict[str, int] = {}
     with ZipFile(bundle_path, "w", compression=ZIP_DEFLATED) as zf:
         for file_path in files:
             if file_path.exists():
-                zf.write(file_path, arcname=file_path.name)
+                arcname = "/".join(file_path.parts[-8:])
+                duplicate_count = seen_names.get(arcname, 0)
+                seen_names[arcname] = duplicate_count + 1
+                if duplicate_count:
+                    path = Path(arcname)
+                    arcname = str(
+                        path.with_name(f"{path.stem}_{duplicate_count}{path.suffix}")
+                    )
+                zf.write(file_path, arcname=arcname)
     return bundle_path
 
 

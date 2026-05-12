@@ -25,6 +25,7 @@ from cs_copilot.tools.activity_cliffs import (
 from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionTaskSpec
 from .chemprop_toolkit import (
+    _bundle_artifacts,
     _discover_curation_artifacts_near_dataset,
     _get_prediction_state,
     _latest_curation_artifacts,
@@ -1116,6 +1117,59 @@ class LightGBMToolkit(Toolkit):
 
         summary_path = Path(result["summary_path"])
         summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(json.dumps(result, indent=2) + "\n")
+
+        bundle_path = (
+            Path(".files")
+            / "prediction_outputs"
+            / f"{Path(resolved_output_dir).name}_training_bundle.zip"
+        ).resolve()
+        bundle_files = [
+            Path(train_csv).expanduser(),
+            summary_path,
+        ]
+        for key in ("model_path", "config_path", "splits_path", "test_predictions_path"):
+            if result.get(key):
+                bundle_files.append(Path(str(result[key])).expanduser())
+        for split_result in [*final_split_results, *split_results]:
+            for key in ("model_path", "test_predictions_path", "splits_path"):
+                if split_result.get(key):
+                    bundle_files.append(Path(str(split_result[key])).expanduser())
+        for key in (
+            "reference_store_path",
+            "reference_manifest_path",
+            "applicability_domain_path",
+        ):
+            if ad_summary.get(key):
+                bundle_files.append(Path(str(ad_summary[key])).expanduser())
+        for artifact_path in plot_artifacts.values():
+            bundle_files.append(Path(str(artifact_path)).expanduser())
+        for artifact_path in (curation_artifacts.get("artifacts") or {}).values():
+            if artifact_path:
+                bundle_files.append(Path(str(artifact_path)).expanduser())
+        if activity_cliffs.get("annotated_training_csv"):
+            bundle_files.append(Path(str(activity_cliffs["annotated_training_csv"])).expanduser())
+        if activity_cliffs.get("summary_path"):
+            bundle_files.append(Path(str(activity_cliffs["summary_path"])).expanduser())
+        if activity_cliffs.get("clean_training_csv"):
+            bundle_files.append(Path(str(activity_cliffs["clean_training_csv"])).expanduser())
+        for variant in activity_cliffs.get("variants") or []:
+            if variant.get("filtered_training_csv"):
+                bundle_files.append(Path(str(variant["filtered_training_csv"])).expanduser())
+            training_result = variant.get("training_result") or {}
+            for split_result in training_result.get("split_results") or []:
+                for key in ("model_path", "test_predictions_path", "splits_path"):
+                    if split_result.get(key):
+                        bundle_files.append(Path(str(split_result[key])).expanduser())
+        for artifact_path in (activity_cliffs.get("plot_artifacts") or {}).values():
+            bundle_files.append(Path(str(artifact_path)).expanduser())
+        for artifact_path in (activity_cliffs.get("loop_comparison_plot_artifacts") or {}).values():
+            bundle_files.append(Path(str(artifact_path)).expanduser())
+
+        bundle = _bundle_artifacts(bundle_path, bundle_files)
+        result["bundle_file_ref"] = str(bundle)
+        result["training_bundle"] = str(bundle)
+        result["bundle_download_tag"] = f"<file>{bundle}</file>"
         summary_path.write_text(json.dumps(result, indent=2) + "\n")
 
         if prediction_state is not None:
