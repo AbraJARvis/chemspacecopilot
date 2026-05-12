@@ -16,6 +16,7 @@ from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
 from .chemprop_toolkit import ChempropToolkit
+from .ensemble_toolkit import EnsembleToolkit
 from .lightgbm_toolkit import LightGBMToolkit
 from .qsar_training_policy import describe_compute_environment, resolve_training_profile, safe_slug
 from .tabicl_toolkit import TabICLToolkit
@@ -159,12 +160,14 @@ class BenchmarkToolkit(Toolkit):
         lightgbm_toolkit: Optional[LightGBMToolkit] = None,
         tabicl_toolkit: Optional[TabICLToolkit] = None,
         molecular_feature_toolkit: Optional[MolecularFeatureToolkit] = None,
+        ensemble_toolkit: Optional[EnsembleToolkit] = None,
     ):
         super().__init__("benchmark_prediction")
         self.chemprop_toolkit = chemprop_toolkit or ChempropToolkit()
         self.lightgbm_toolkit = lightgbm_toolkit or LightGBMToolkit()
         self.tabicl_toolkit = tabicl_toolkit or TabICLToolkit()
         self.molecular_feature_toolkit = molecular_feature_toolkit or MolecularFeatureToolkit()
+        self.ensemble_toolkit = ensemble_toolkit or EnsembleToolkit()
         self.register(self.benchmark_qsar_models)
 
     def _resolve_benchmark_protocol(self, benchmark_mode: str) -> str:
@@ -699,6 +702,99 @@ class BenchmarkToolkit(Toolkit):
             "recommended_candidate_for_followup": best_overall,
         }
 
+    def _select_ensemble_component_rows(self, ranked_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Select a diverse V1 consensus set without ablation-only variants."""
+        ablation_representations = {"morgan_only", "rdkit_basic_only", "rdkit_all_only"}
+        selected: List[Dict[str, Any]] = []
+        seen_families: set[tuple[str, str]] = set()
+        for row in ranked_rows:
+            model_id = row.get("model_id")
+            representation = str(row.get("representation") or "")
+            if not model_id or representation in ablation_representations:
+                continue
+            if row.get("status") == "deprecated":
+                continue
+            family = (str(row.get("backend") or ""), representation)
+            if family in seen_families:
+                continue
+            selected.append(row)
+            seen_families.add(family)
+        return selected
+
+    def _component_result_by_candidate(
+        self,
+        candidate_results: List[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        return {
+            str(result.get("candidate_id")): result
+            for result in candidate_results
+            if result.get("candidate_id")
+        }
+
+    def _compute_ensemble_holdout_metrics(
+        self,
+        *,
+        component_rows: List[Dict[str, Any]],
+        candidate_results: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        by_candidate = self._component_result_by_candidate(candidate_results)
+        split_frames: Dict[str, List[pd.DataFrame]] = {}
+        for row in component_rows:
+            result = by_candidate.get(str(row.get("candidate_id"))) or {}
+            for split_result in result.get("split_results") or []:
+                path = split_result.get("test_predictions_path")
+                label = (
+                    split_result.get("strategy_label")
+                    or split_result.get("strategy_family")
+                    or split_result.get("split_type")
+                    or "split"
+                )
+                if not path:
+                    continue
+                predictions_path = Path(str(path)).expanduser()
+                if not predictions_path.exists():
+                    continue
+                frame = pd.read_csv(predictions_path)
+                if "y_true" not in frame.columns or "y_pred" not in frame.columns:
+                    continue
+                split_frames.setdefault(str(label), []).append(
+                    pd.DataFrame(
+                        {
+                            "y_true": pd.to_numeric(frame["y_true"], errors="coerce"),
+                            "y_pred": pd.to_numeric(frame["y_pred"], errors="coerce"),
+                        }
+                    )
+                )
+
+        metrics_by_split: Dict[str, Dict[str, Any]] = {}
+        for split_label, frames in split_frames.items():
+            if len(frames) < 2:
+                continue
+            row_count = len(frames[0])
+            if any(len(frame) != row_count for frame in frames):
+                continue
+            y_true = frames[0]["y_true"].reset_index(drop=True)
+            if any(not frame["y_true"].reset_index(drop=True).equals(y_true) for frame in frames[1:]):
+                continue
+            matrix = pd.concat([frame["y_pred"].reset_index(drop=True) for frame in frames], axis=1)
+            y_pred = matrix.median(axis=1)
+            residuals = y_true - y_pred
+            mse = float(residuals.pow(2).mean())
+            mae = float(residuals.abs().mean())
+            rmse = float(mse ** 0.5)
+            ss_tot = float((y_true - float(y_true.mean())).pow(2).sum())
+            ss_res = float(residuals.pow(2).sum())
+            metrics_by_split[split_label] = {
+                "mse": mse,
+                "mae": mae,
+                "rmse": rmse,
+                "r2": float(1.0 - ss_res / ss_tot) if ss_tot > 0 else None,
+                "n": int(row_count),
+                "component_count": int(len(frames)),
+                "aggregation_strategy": "median",
+            }
+        return metrics_by_split
+
     def _render_benchmark_report(
         self,
         *,
@@ -708,6 +804,8 @@ class BenchmarkToolkit(Toolkit):
         candidate_rows: List[Dict[str, Any]],
         candidate_results: List[Dict[str, Any]],
         recommendations: Dict[str, Optional[str]],
+        ensemble_result: Optional[Dict[str, Any]] = None,
+        ensemble_metrics: Optional[Dict[str, Any]] = None,
     ) -> str:
         lines: List[str] = []
         lines.append(f"# Benchmark QSAR Report — {benchmark_mode}")
@@ -776,6 +874,37 @@ class BenchmarkToolkit(Toolkit):
                     f"R²={metrics.get('r2')}, RMSE={metrics.get('rmse')}, MAE={metrics.get('mae')}, MSE={metrics.get('mse')}"
                 )
             lines.append("")
+        if ensemble_result:
+            lines.append("## Consensus ensemble")
+            lines.append("")
+            lines.append(f"- model_id: `{ensemble_result.get('model_id')}`")
+            lines.append(f"- model_path: `{ensemble_result.get('model_path')}`")
+            lines.append(f"- aggregation: `{ensemble_result.get('aggregation_strategy')}`")
+            lines.append(f"- uncertainty proxy: `{ensemble_result.get('uncertainty_strategy')}`")
+            lines.append(f"- component_count: `{ensemble_result.get('component_count')}`")
+            component_ids = ensemble_result.get("component_model_ids") or []
+            if component_ids:
+                lines.append(f"- components: `{', '.join(component_ids)}`")
+            if ensemble_metrics:
+                lines.append("")
+                lines.append("| split | R² | RMSE | MAE | MSE | n |")
+                lines.append("|---|---:|---:|---:|---:|---:|")
+                for split_label, metrics in ensemble_metrics.items():
+                    lines.append(
+                        "| "
+                        + " | ".join(
+                            [
+                                str(split_label),
+                                f"{metrics['r2']:.3f}" if metrics.get("r2") is not None else "",
+                                f"{metrics['rmse']:.3f}" if metrics.get("rmse") is not None else "",
+                                f"{metrics['mae']:.3f}" if metrics.get("mae") is not None else "",
+                                f"{metrics['mse']:.3f}" if metrics.get("mse") is not None else "",
+                                str(metrics.get("n") or ""),
+                            ]
+                        )
+                        + " |"
+                    )
+            lines.append("")
         lines.append("## Governance and recommendation")
         lines.append("")
         for key, value in recommendations.items():
@@ -806,6 +935,7 @@ class BenchmarkToolkit(Toolkit):
         output_dir: str = ".files/benchmark_output",
         allow_heavy_compute: bool = False,
         training_profile: Optional[str] = None,
+        create_ensemble: bool = False,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Run a multi-backend benchmark campaign for a QSAR-ready dataset."""
@@ -817,6 +947,11 @@ class BenchmarkToolkit(Toolkit):
         requested_tabicl_variants = _coerce_list(tabicl_candidate_variants)
 
         benchmark_protocol = self._resolve_benchmark_protocol(benchmark_mode)
+        if create_ensemble and benchmark_protocol != "robust_qsar":
+            raise ValueError(
+                "QSAR ensemble creation is only allowed for benchmark_robust_qsar in V1. "
+                "Run benchmark_robust_qsar with create_ensemble=true, or run this benchmark without an ensemble."
+            )
         compute_payload = self._resolve_compute_profile()
         effective_training_profile = training_profile or compute_payload["training_profile"]
 
@@ -924,6 +1059,30 @@ class BenchmarkToolkit(Toolkit):
 
         ranked_rows = self._rank_summary_rows(candidate_rows)
         recommendations = self._resolve_recommendations(ranked_rows, benchmark_protocol)
+        ensemble_result: Optional[Dict[str, Any]] = None
+        ensemble_metrics: Dict[str, Any] = {}
+        if create_ensemble:
+            ensemble_component_rows = self._select_ensemble_component_rows(ranked_rows)
+            if len(ensemble_component_rows) < 2:
+                raise ValueError(
+                    "Could not create an ensemble: fewer than two compatible non-ablation "
+                    "benchmark candidates were available."
+                )
+            ensemble_metrics = self._compute_ensemble_holdout_metrics(
+                component_rows=ensemble_component_rows,
+                candidate_results=candidate_results,
+            )
+            ensemble_result = self.ensemble_toolkit.create_ensemble_from_catalog_models(
+                model_ids=[str(row["model_id"]) for row in ensemble_component_rows],
+                ensemble_name=f"{_benchmark_dataset_token(train_csv)}_{_benchmark_target_token(target_columns)}_robust_qsar_ensemble",
+                status="workflow_demo",
+                description=(
+                    "Median consensus ensemble built from compatible non-ablation models "
+                    "selected after a robust_qsar benchmark."
+                ),
+                source="benchmark_robust_qsar_explicit_request",
+                agent=agent,
+            )
 
         leaderboard_path = campaign_root / "leaderboard.csv"
         pd.DataFrame(ranked_rows).to_csv(leaderboard_path, index=False)
@@ -937,6 +1096,8 @@ class BenchmarkToolkit(Toolkit):
                 candidate_rows=ranked_rows,
                 candidate_results=candidate_results,
                 recommendations=recommendations,
+                ensemble_result=ensemble_result,
+                ensemble_metrics=ensemble_metrics,
             )
         )
 
@@ -963,6 +1124,9 @@ class BenchmarkToolkit(Toolkit):
             "persisted_model_mapping": persisted_model_mapping,
             "leaderboard_path": str(leaderboard_path),
             "report_path": str(report_path),
+            "create_ensemble": bool(create_ensemble),
+            "ensemble": ensemble_result,
+            "ensemble_metrics": ensemble_metrics,
             **recommendations,
         }
         summary_path = campaign_root / "benchmark_summary.json"
@@ -978,5 +1142,10 @@ class BenchmarkToolkit(Toolkit):
             "leaderboard_path": str(leaderboard_path),
             "summary_path": str(summary_path),
             "report_path": str(report_path),
+            "create_ensemble": bool(create_ensemble),
+            "ensemble_model_id": (ensemble_result or {}).get("model_id"),
+            "ensemble_model_path": (ensemble_result or {}).get("model_path"),
+            "ensemble_metrics": ensemble_metrics,
+            "ensemble": ensemble_result,
             **recommendations,
         }

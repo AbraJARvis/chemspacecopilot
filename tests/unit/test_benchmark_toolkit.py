@@ -155,6 +155,63 @@ def test_rank_summary_rows_prefers_hardest_split_then_gap():
     assert ranked[0]["candidate_id"] == "b"
 
 
+def test_benchmark_rejects_ensemble_outside_robust_qsar(tmp_path):
+    toolkit = BenchmarkToolkit()
+    train_csv = tmp_path / "dataset.csv"
+    pd.DataFrame({"smiles": ["CCO", "CCC"], "Y": [1.0, 2.0]}).to_csv(train_csv, index=False)
+
+    try:
+        toolkit.benchmark_qsar_models(
+            train_csv=str(train_csv),
+            task_type="regression",
+            target_columns=["Y"],
+            benchmark_mode="benchmark_standard_qsar",
+            create_ensemble=True,
+            agent=_fake_agent(),
+        )
+    except ValueError as exc:
+        assert "benchmark_robust_qsar" in str(exc)
+    else:
+        raise AssertionError("Expected benchmark_standard_qsar ensemble creation to be rejected")
+
+
+def test_ensemble_component_selection_excludes_ablation_variants():
+    toolkit = BenchmarkToolkit()
+    ranked = [
+        {
+            "candidate_id": "lightgbm_morgan_only",
+            "model_id": "m1",
+            "backend": "lightgbm",
+            "representation": "morgan_only",
+            "hardest_split_r2": 0.9,
+            "status": "workflow_demo",
+        },
+        {
+            "candidate_id": "lightgbm_morgan_rdkit_all",
+            "model_id": "m2",
+            "backend": "lightgbm",
+            "representation": "morgan_rdkit_all",
+            "hardest_split_r2": 0.8,
+            "status": "workflow_demo",
+        },
+        {
+            "candidate_id": "tabicl_morgan_rdkit_basic",
+            "model_id": "m3",
+            "backend": "tabicl",
+            "representation": "morgan_rdkit_basic",
+            "hardest_split_r2": 0.7,
+            "status": "workflow_demo",
+        },
+    ]
+
+    selected = toolkit._select_ensemble_component_rows(ranked)
+
+    assert [row["candidate_id"] for row in selected] == [
+        "lightgbm_morgan_rdkit_all",
+        "tabicl_morgan_rdkit_basic",
+    ]
+
+
 def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     catalog_path = tmp_path / "model_catalog.json"
     internal_root = tmp_path / "internal"

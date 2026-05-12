@@ -21,6 +21,7 @@ from cs_copilot.tools import (
     ChempropToolkit,
     ChemicalSimilarityToolkit,
     DatasetCurationToolkit,
+    EnsembleToolkit,
     GTMToolkit,
     LightGBMToolkit,
     MolecularFeatureToolkit,
@@ -691,6 +692,7 @@ class QSARTrainingFactory(BaseAgentFactory):
                 BenchmarkToolkit(),
                 ActivityCliffToolkit(),
                 ChempropToolkit(include_prediction_summary_export=False),
+                EnsembleToolkit(),
                 LightGBMToolkit(),
                 TabICLToolkit(),
                 MolecularFeatureToolkit(),
@@ -731,7 +733,7 @@ class ModelRegistryFactory(BaseAgentFactory):
             model status, and persist eligible models into the prediction catalog.
             You do not train models or perform free-form prediction analysis.
             """,
-            tools=[ChempropToolkit()],
+            tools=[ChempropToolkit(), EnsembleToolkit()],
             instructions=MODEL_REGISTRY_INSTRUCTIONS,
             session_state={
                 "prediction_models": {
@@ -765,6 +767,7 @@ class ModelInferenceFactory(BaseAgentFactory):
             """,
             tools=[
                 ChempropToolkit(),
+                EnsembleToolkit(),
                 PointerPandasTools(),
             ],
             instructions=MODEL_INFERENCE_INSTRUCTIONS,
