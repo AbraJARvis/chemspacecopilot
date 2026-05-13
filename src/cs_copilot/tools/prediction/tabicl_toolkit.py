@@ -32,6 +32,8 @@ from .qsar_training_policy import (
     resolve_training_profile,
     resolve_validation_protocol,
     safe_slug,
+    seed_policy_reporting_text,
+    seed_policy_reproducibility_metadata,
     summarize_training_durations,
 )
 from .tabicl_backend import (
@@ -76,17 +78,22 @@ class TabICLToolkit(Toolkit):
         *,
         requested_protocol: Optional[str],
         training_profile: str,
+        seed_policy: Optional[Dict[str, Any]] = None,
+        seed_policy_mode: str = "generated_per_run",
+        base_seed: Optional[int] = None,
     ) -> Dict[str, Any]:
         return resolve_validation_protocol(
             requested_protocol=requested_protocol,
             training_profile=training_profile,
+            seed_policy=seed_policy,
+            seed_policy_mode=seed_policy_mode,
+            base_seed=base_seed,
         )
 
     def _training_defaults_for_profile(self, profile: str) -> Dict[str, Any]:
         base = {
             "split_sizes": [0.8, 0.1, 0.1],
             "split_type": "random",
-            "random_state": 42,
             "n_jobs": 1,
             "verbose": False,
         }
@@ -383,6 +390,7 @@ class TabICLToolkit(Toolkit):
                 "target_columns": task.target_columns,
                 "validation_protocol": protocol_policy["protocol"],
                 "training_profile": training_policy["training_profile"],
+                "seed_policy": protocol_policy["seed_policy"],
                 "split_runs": [
                     {
                         "label": item["strategy_label"],
@@ -428,7 +436,10 @@ class TabICLToolkit(Toolkit):
         protocol_policy = self._resolve_validation_protocol(
             requested_protocol=training_policy.get("validation_protocol"),
             training_profile=training_policy["training_profile"],
+            seed_policy=training_policy["extra_args"].get("seed_policy"),
+            base_seed=training_policy["extra_args"].get("random_state"),
         )
+        training_policy["extra_args"]["random_state"] = protocol_policy["seed_policy"]["model_seed"]
         task = PredictionTaskSpec(
             task_type=task_type,
             smiles_columns=["smiles"],
@@ -464,7 +475,7 @@ class TabICLToolkit(Toolkit):
                 run_output_dir.mkdir(parents=True, exist_ok=True)
                 started_at = project_now()
                 run_args = {
-                    **training_policy["extra_args"],
+                    **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
                     "feature_columns": feature_columns,
                     "split_sizes": split_sizes,
                     "split_type": split_run["backend_split_type"],
@@ -594,15 +605,20 @@ class TabICLToolkit(Toolkit):
         )
         result["validation_protocol"] = protocol_policy["protocol"]
         result["validation_protocol_reason"] = protocol_policy["reason"]
+        result["seed_policy"] = protocol_policy["seed_policy"]
+        result["seed_policy_report"] = seed_policy_reporting_text(protocol_policy["seed_policy"])
+        result["reproducibility"] = seed_policy_reproducibility_metadata(protocol_policy["seed_policy"])
         result["split_results"] = split_results
         result["validation_assessment"] = validation_assessment
         result["compute_environment"] = training_policy["compute_environment"]
         result["training_profile"] = training_policy["training_profile"]
         result["profile_reason"] = training_policy["profile_reason"]
-        result["effective_train_args"] = training_policy["extra_args"]
+        result["effective_train_args"] = {
+            key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"
+        }
         result["training_resources"] = self._summarize_training_resources(
             compute_env=training_policy["compute_environment"],
-            effective_train_args=training_policy["extra_args"],
+            effective_train_args=result["effective_train_args"],
         )
         result["training_durations"] = summarize_training_durations(
             split_results=split_results,
@@ -738,7 +754,7 @@ class TabICLToolkit(Toolkit):
         validation_protocol: Optional[str] = None,
         split_type: str = "random",
         split_sizes: Optional[List[float] | str] = None,
-        random_state: int = 42,
+        random_state: Optional[int] = None,
         activity_cliff_index: str = "sali",
         activity_cliff_feedback: bool = False,
         activity_cliff_feedback_loops: int = 0,
@@ -778,7 +794,8 @@ class TabICLToolkit(Toolkit):
         }
         requested_extra_args.setdefault("feature_columns", normalized_feature_columns)
         requested_extra_args.setdefault("split_sizes", normalized_split_sizes)
-        requested_extra_args.setdefault("random_state", random_state)
+        if random_state is not None:
+            requested_extra_args.setdefault("random_state", random_state)
         requested_extra_args.setdefault("split_type", split_type)
         requested_extra_args.setdefault("validation_protocol", validation_protocol)
 
@@ -807,7 +824,10 @@ class TabICLToolkit(Toolkit):
         protocol_policy = self._resolve_validation_protocol(
             requested_protocol=training_policy.get("validation_protocol"),
             training_profile=training_policy["training_profile"],
+            seed_policy=training_policy["extra_args"].get("seed_policy"),
+            base_seed=training_policy["extra_args"].get("random_state"),
         )
+        training_policy["extra_args"]["random_state"] = protocol_policy["seed_policy"]["model_seed"]
         trained_at = project_now()
         active_marker_path = root_output_path / ".training_in_progress"
         prediction_state = _get_prediction_state(agent) if agent is not None else None
@@ -835,8 +855,13 @@ class TabICLToolkit(Toolkit):
             "feature_columns": normalized_feature_columns,
             "split_type": split_type,
             "split_sizes": normalized_split_sizes,
-            "random_state": random_state,
-            "extra_args": requested_extra_args,
+            "random_state": protocol_policy["seed_policy"]["model_seed"],
+            "extra_args": {
+                **{
+                    key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"
+                },
+                "seed_policy": protocol_policy["seed_policy"],
+            },
         }
         job_path = self._write_worker_job(job_dir=job_dir, payload=job_payload)
 

@@ -155,6 +155,120 @@ def test_rank_summary_rows_prefers_hardest_split_then_gap():
     assert ranked[0]["candidate_id"] == "b"
 
 
+def test_tabular_feature_cache_reuses_and_cleans_intermediate_csvs(tmp_path):
+    train_csv = tmp_path / "dataset_curated.csv"
+    pd.DataFrame({"SMILES": ["CCO", "CCC"], "Y": [1.0, 2.0]}).to_csv(train_csv, index=False)
+
+    class FakeMolecularFeatureToolkit:
+        def __init__(self):
+            self.morgan_calls = 0
+            self.rdkit_calls = {"basic": 0, "all": 0}
+
+        def smiles_to_morgan_fingerprints(self, *, input_csv, smiles_column, output_csv, input_columns_to_keep):
+            self.morgan_calls += 1
+            source = pd.read_csv(input_csv)
+            pd.DataFrame(
+                {
+                    "smiles": source[smiles_column],
+                    "fp_0000": [1, 0],
+                    "fp_0001": [0, 1],
+                }
+            ).to_csv(output_csv, index=False)
+            return {"output_csv": output_csv}
+
+        def smiles_to_rdkit_descriptors(
+            self,
+            *,
+            input_csv,
+            smiles_column,
+            output_csv,
+            descriptor_set,
+            input_columns_to_keep,
+        ):
+            self.rdkit_calls[descriptor_set] += 1
+            source = pd.read_csv(input_csv)
+            pd.DataFrame(
+                {
+                    "smiles": source[smiles_column],
+                    f"desc_{descriptor_set}": [0.1, 0.2],
+                }
+            ).to_csv(output_csv, index=False)
+            return {"output_csv": output_csv}
+
+        def build_tabular_qsar_dataset(
+            self,
+            *,
+            base_csv,
+            output_csv,
+            feature_csvs,
+            join_on,
+            base_columns_to_keep,
+            drop_duplicate_feature_columns,
+        ):
+            assembled = pd.read_csv(base_csv)[base_columns_to_keep].copy()
+            for feature_csv in feature_csvs:
+                features = pd.read_csv(feature_csv)
+                assembled = assembled.merge(features, on=join_on, how="left", validate="one_to_one")
+            assembled.to_csv(output_csv, index=False)
+            return {"output_csv": output_csv}
+
+    feature_toolkit = FakeMolecularFeatureToolkit()
+    toolkit = BenchmarkToolkit(molecular_feature_toolkit=feature_toolkit)
+    campaign_root = tmp_path / "benchmark_output"
+    campaign_root.mkdir()
+    feature_cache = toolkit._init_feature_cache(
+        campaign_root=campaign_root,
+        train_csv=str(train_csv),
+        smiles_column="SMILES",
+    )
+
+    candidates = [
+        toolkit.LIGHTGBM_VARIANT_SPECS["lightgbm_morgan_only"],
+        toolkit.LIGHTGBM_VARIANT_SPECS["lightgbm_morgan_rdkit_basic"],
+        toolkit.LIGHTGBM_VARIANT_SPECS["lightgbm_morgan_rdkit_all"],
+        toolkit.TABICL_VARIANT_SPECS["tabicl_morgan_rdkit_basic"],
+        toolkit.TABICL_VARIANT_SPECS["tabicl_morgan_rdkit_all"],
+    ]
+    for index, candidate in enumerate(candidates):
+        candidate = {"candidate_id": f"candidate_{index}", **candidate}
+        result = toolkit._prepare_tabular_candidate_dataset(
+            candidate=candidate,
+            train_csv=str(train_csv),
+            smiles_column="SMILES",
+            target_columns=["Y"],
+            candidate_dir=campaign_root / candidate["candidate_id"],
+            feature_cache=feature_cache,
+        )
+        output = Path(result["train_csv"])
+        assert output.exists()
+        assert {"smiles", "Y"}.issubset(pd.read_csv(output).columns)
+
+    assert feature_toolkit.morgan_calls == 1
+    assert feature_toolkit.rdkit_calls == {"basic": 1, "all": 1}
+    assert feature_cache["hits"] >= 3
+    manifest_before_cleanup = Path(feature_cache["manifest_path"])
+    assert manifest_before_cleanup.exists()
+
+    cache_csvs = [
+        Path(entry["output_csv"])
+        for entry in feature_cache["entries"].values()
+        if str(entry.get("output_csv", "")).endswith(".csv")
+    ]
+    assert all(path.exists() for path in cache_csvs)
+    for cache_csv in cache_csvs:
+        cached_columns = pd.read_csv(cache_csv, nrows=0).columns.tolist()
+        if cache_csv.name == "base_normalized.csv":
+            continue
+        assert cached_columns[0] == "smiles"
+        assert "Y" not in cached_columns
+
+    summary = toolkit._delete_feature_cache_csvs(feature_cache)
+    assert summary["retention_policy"] == "manifest_only"
+    assert summary["deleted_entries"] == len(cache_csvs)
+    assert manifest_before_cleanup.exists()
+    assert all(not path.exists() for path in cache_csvs)
+
+
 def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     catalog_path = tmp_path / "model_catalog.json"
     internal_root = tmp_path / "internal"
@@ -200,7 +314,15 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
         },
     )
 
-    def fake_prepare_tabular_candidate_dataset(*, candidate, train_csv, smiles_column, target_columns, candidate_dir):
+    def fake_prepare_tabular_candidate_dataset(
+        *,
+        candidate,
+        train_csv,
+        smiles_column,
+        target_columns,
+        candidate_dir,
+        feature_cache=None,
+    ):
         output = candidate_dir / f"{candidate['candidate_id']}_tabular.csv"
         pd.DataFrame(
             {
@@ -351,6 +473,12 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     assert Path(result["summary_path"]).exists()
     assert Path(result["leaderboard_path"]).exists()
     assert Path(result["report_path"]).exists()
+    assert result["campaign_seed_policy"]["mode"] == "generated_per_benchmark_campaign"
+    assert result["campaign_seed_policy"]["shared_across_candidates"] is True
+    assert result["seed_policy_report"] == "Politique de seeds : partagée au niveau campagne benchmark"
+    assert result["feature_cache"]["enabled"] is True
+    assert result["feature_cache"]["retention_policy"] == "manifest_only"
+    assert Path(result["feature_cache"]["manifest_path"]).exists()
 
     candidate_ids = {item["candidate_id"] for item in result["persisted_model_mapping"]}
     assert "chemprop_default" in candidate_ids
@@ -369,6 +497,17 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
         assert (model_root / "metadata.json").exists()
         assert (model_root / "model").exists()
         assert (model_root / "artifacts").exists()
+        metadata = json.loads((model_root / "metadata.json").read_text())
+        persisted_seed_policy = metadata["training_data_summary"]["seed_policy"]
+        assert persisted_seed_policy["split_runs"] == result["campaign_seed_policy"]["split_runs"]
+        assert persisted_seed_policy["campaign_seed"] == result["campaign_seed_policy"]["campaign_seed"]
+        assert metadata["reproducibility"]["seed_policy_mode"] == "generated_per_benchmark_campaign"
+        assert metadata["training_data_summary"]["seed_policy_report"] == result["seed_policy_report"]
+
+    benchmark_summary = json.loads(Path(result["summary_path"]).read_text())
+    assert benchmark_summary["campaign_seed_policy"]["split_runs"] == result["campaign_seed_policy"]["split_runs"]
+    assert benchmark_summary["seed_policy_report"] == result["seed_policy_report"]
+    assert benchmark_summary["feature_cache"]["manifest_path"] == result["feature_cache"]["manifest_path"]
 
     leaderboard = pd.read_csv(result["leaderboard_path"])
     assert set(["candidate_id", "model_id", "backend", "representation", "hardest_split_r2"]).issubset(

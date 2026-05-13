@@ -119,9 +119,17 @@ def test_train_tabicl_model_syncs_training_runs_from_worker_result(tmp_path, mon
         lambda **kwargs: {
             "protocol": "standard_qsar",
             "reason": "test",
+            "seed_policy": {
+                "mode": "user_provided_or_replay",
+                "model_seed": 42,
+                "split_runs": [
+                    {"label": "random_seed_42", "seed": 42, "backend_split_type": "random", "primary": True},
+                    {"label": "scaffold", "seed": 43, "backend_split_type": "scaffold_balanced", "primary": False},
+                ],
+            },
             "split_runs": [
-                {"label": "random", "seed": 42, "backend_split_type": "random"},
-                {"label": "scaffold", "seed": 42, "backend_split_type": "scaffold_balanced"},
+                {"label": "random_seed_42", "seed": 42, "backend_split_type": "random"},
+                {"label": "scaffold", "seed": 43, "backend_split_type": "scaffold_balanced"},
             ],
         },
     )
@@ -164,3 +172,4 @@ def test_train_tabicl_model_syncs_training_runs_from_worker_result(tmp_path, mon
     assert len(training_runs) == 1
     assert training_runs[0]["validation_protocol"] == "standard_qsar"
     assert training_runs[0]["split_runs"][0]["label"] == "random"
+    assert training_runs[0]["seed_policy"]["model_seed"] == 42

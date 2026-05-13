@@ -41,6 +41,8 @@ from .qsar_training_policy import (
     resolve_training_profile,
     resolve_validation_protocol,
     safe_slug,
+    seed_policy_reporting_text,
+    seed_policy_reproducibility_metadata,
     summarize_training_durations,
 )
 from .qsar_plots import build_qsar_training_plots
@@ -559,10 +561,16 @@ class ChempropToolkit(Toolkit):
         *,
         requested_protocol: Optional[str],
         training_profile: str,
+        seed_policy: Optional[Dict[str, Any]] = None,
+        seed_policy_mode: str = "generated_per_run",
+        base_seed: Optional[int] = None,
     ) -> Dict[str, Any]:
         return resolve_validation_protocol(
             requested_protocol=requested_protocol,
             training_profile=training_profile,
+            seed_policy=seed_policy,
+            seed_policy_mode=seed_policy_mode,
+            base_seed=base_seed,
         )
 
     def _train_single_run(
@@ -1064,6 +1072,10 @@ class ChempropToolkit(Toolkit):
             "tags": dict(record.tags),
             "artifacts": copied_files,
         }
+        if record.training_data_summary.get("seed_policy"):
+            metadata["reproducibility"] = seed_policy_reproducibility_metadata(
+                record.training_data_summary.get("seed_policy")
+            )
         if copied_files.get("applicability_domain_path"):
             metadata["applicability_domain"] = {
                 "available": True,
@@ -1161,6 +1173,9 @@ class ChempropToolkit(Toolkit):
                 "recommended_for": list(record.recommended_for),
                 "not_recommended_for": list(record.not_recommended_for),
                 "tags": dict(record.tags),
+                "reproducibility": seed_policy_reproducibility_metadata(
+                    (record.training_data_summary or {}).get("seed_policy")
+                ),
                 "task": {
                     "task_type": record.task.task_type,
                     "smiles_columns": list(record.task.smiles_columns),
@@ -1584,6 +1599,10 @@ class ChempropToolkit(Toolkit):
                 "endpoint_name": endpoint_name,
                 "dataset_name": dataset_name,
                 "validation_protocol": str(protocol_name or "protocol"),
+                "seed_policy": summary_payload.get("seed_policy") or current.training_data_summary.get("seed_policy"),
+                "seed_policy_report": seed_policy_reporting_text(
+                    summary_payload.get("seed_policy") or current.training_data_summary.get("seed_policy")
+                ),
                 "activity_cliffs": {
                     "enabled": bool(activity_summary_payload.get("enabled")),
                     "mode": activity_summary_payload.get("mode"),
@@ -2035,7 +2054,11 @@ class ChempropToolkit(Toolkit):
         protocol_policy = self._resolve_validation_protocol(
             requested_protocol=training_policy.get("validation_protocol"),
             training_profile=training_policy["training_profile"],
+            seed_policy=training_policy["extra_args"].get("seed_policy"),
+            base_seed=training_policy["extra_args"].get("data_seed")
+            or training_policy["extra_args"].get("random_state"),
         )
+        training_policy["extra_args"]["data_seed"] = protocol_policy["seed_policy"]["model_seed"]
         task = PredictionTaskSpec(
             task_type=task_type,
             smiles_columns=smiles_columns or ["smiles"],
@@ -2098,7 +2121,7 @@ class ChempropToolkit(Toolkit):
                     else root_output_path
                 )
                 run_args = {
-                    **training_policy["extra_args"],
+                    **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
                     "split_type": split_run["backend_split_type"],
                     "data_seed": split_run["seed"],
                 }
@@ -2156,6 +2179,7 @@ class ChempropToolkit(Toolkit):
                         "smiles_columns": task.smiles_columns,
                         "target_columns": task.target_columns,
                         "validation_protocol": protocol_policy["protocol"],
+                        "seed_policy": protocol_policy["seed_policy"],
                         "split_runs": [
                             {
                                 "label": item["strategy_label"],
@@ -2200,15 +2224,20 @@ class ChempropToolkit(Toolkit):
             result["output_dir"] = resolved_output_dir
             result["validation_protocol"] = protocol_policy["protocol"]
             result["validation_protocol_reason"] = protocol_policy["reason"]
+            result["seed_policy"] = protocol_policy["seed_policy"]
+            result["seed_policy_report"] = seed_policy_reporting_text(protocol_policy["seed_policy"])
+            result["reproducibility"] = seed_policy_reproducibility_metadata(protocol_policy["seed_policy"])
             result["split_results"] = split_results
             result["validation_assessment"] = validation_assessment
             result["compute_environment"] = training_policy["compute_environment"]
             result["training_profile"] = training_policy["training_profile"]
             result["profile_reason"] = training_policy["profile_reason"]
-            result["effective_train_args"] = training_policy["extra_args"]
+            result["effective_train_args"] = {
+                key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"
+            }
             result["training_resources"] = self._summarize_training_resources(
                 compute_env=training_policy["compute_environment"],
-                effective_train_args=training_policy["extra_args"],
+                effective_train_args=result["effective_train_args"],
             )
             total_completed_at = project_now()
             result["training_durations"] = self._summarize_training_durations(

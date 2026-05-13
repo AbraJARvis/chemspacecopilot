@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import math
 import os
+import random
+import secrets
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -20,6 +22,8 @@ QSAR_ROBUSTNESS_DELTA_R2_MIN = -0.10
 QSAR_ROBUSTNESS_DELTA_RMSE_MAX = 0.15
 QSAR_RANDOM_STABILITY_R2_STD_MAX = 0.03
 PROJECT_TIMEZONE = ZoneInfo("Europe/Paris")
+SEED_MIN = 1
+SEED_MAX = 2_147_483_647
 
 
 def project_now() -> datetime:
@@ -37,6 +41,179 @@ def coerce_project_timezone(value: Optional[str]) -> datetime:
 
 def safe_slug(value: str) -> str:
     return "".join(ch if ch.isalnum() else "_" for ch in value.strip().lower()).strip("_")
+
+
+def _coerce_seed(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        seed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(SEED_MIN, min(SEED_MAX, seed))
+
+
+def _unique_generated_seeds(count: int) -> List[int]:
+    seeds: List[int] = []
+    seen: set[int] = set()
+    while len(seeds) < count:
+        seed = secrets.randbelow(SEED_MAX - SEED_MIN + 1) + SEED_MIN
+        if seed in seen:
+            continue
+        seen.add(seed)
+        seeds.append(seed)
+    return seeds
+
+
+def _unique_replay_seeds(count: int, base_seed: int) -> List[int]:
+    rng = random.Random(base_seed)
+    seeds = [base_seed]
+    seen = {base_seed}
+    while len(seeds) < count:
+        seed = rng.randint(SEED_MIN, SEED_MAX)
+        if seed in seen:
+            continue
+        seen.add(seed)
+        seeds.append(seed)
+    return seeds
+
+
+def _split_templates(protocol: str) -> List[Dict[str, Any]]:
+    if protocol == "fast_local":
+        return [{"backend_split_type": "random", "primary": True}]
+    if protocol == "standard_qsar":
+        return [
+            {"backend_split_type": "random", "primary": True},
+            {"label": "scaffold", "backend_split_type": "scaffold_balanced", "primary": False},
+        ]
+    if protocol == "robust_qsar":
+        return [
+            {"backend_split_type": "random", "primary": True},
+            {"backend_split_type": "random", "primary": False},
+            {"backend_split_type": "random", "primary": False},
+            {"label": "scaffold", "backend_split_type": "scaffold_balanced", "primary": False},
+        ]
+    if protocol == "challenging_qsar":
+        return [
+            {"backend_split_type": "random", "primary": True},
+            {"label": "scaffold", "backend_split_type": "scaffold_balanced", "primary": False},
+            {"label": "cluster_kmeans", "backend_split_type": "kmeans", "primary": False},
+        ]
+    return [{"backend_split_type": "random", "primary": True}]
+
+
+def _label_split(template: Dict[str, Any], seed: int) -> str:
+    if template.get("label"):
+        return str(template["label"])
+    if template.get("backend_split_type") == "random":
+        return f"random_seed_{seed}"
+    return str(template.get("backend_split_type") or "split")
+
+
+def resolve_seed_policy(
+    *,
+    protocol: str,
+    mode: str = "generated_per_run",
+    seed_policy: Optional[Dict[str, Any]] = None,
+    base_seed: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Resolve reproducible split/model seeds for a QSAR training protocol."""
+    if seed_policy and seed_policy.get("split_runs"):
+        replay = dict(seed_policy)
+        replay.setdefault("mode", "user_provided_or_replay")
+        replay.setdefault("shared_across_candidates", replay.get("mode") == "generated_per_benchmark_campaign")
+        replay.setdefault(
+            "reproducibility_note",
+            "Seeds were supplied from an existing policy and preserved for replay.",
+        )
+        replay.setdefault("reporting_text", seed_policy_reporting_text(replay))
+        replay.setdefault("replay_supported", True)
+        return replay
+
+    templates = _split_templates(protocol)
+    provided_seed = _coerce_seed(base_seed)
+    needs_campaign_seed = mode == "generated_per_benchmark_campaign" and provided_seed is None
+    seed_count = len(templates) + 1 + (1 if needs_campaign_seed else 0)
+    if provided_seed is not None:
+        resolved_mode = "user_provided_or_replay"
+        seeds = _unique_replay_seeds(seed_count, provided_seed)
+    else:
+        resolved_mode = mode
+        seeds = _unique_generated_seeds(seed_count)
+
+    campaign_seed = seeds[0] if needs_campaign_seed else None
+    run_seeds = seeds[1:] if needs_campaign_seed else seeds
+    split_seeds = run_seeds[: len(templates)]
+    model_seed = run_seeds[-1]
+    split_runs: List[Dict[str, Any]] = []
+    for template, seed in zip(templates, split_seeds):
+        split_runs.append(
+            {
+                "label": _label_split(template, seed),
+                "backend_split_type": template["backend_split_type"],
+                "seed": seed,
+                "primary": bool(template.get("primary", False)),
+            }
+        )
+
+    random_split_seeds = [
+        item["seed"] for item in split_runs if item["backend_split_type"] == "random"
+    ]
+    scaffold_seed = next(
+        (item["seed"] for item in split_runs if item["backend_split_type"] == "scaffold_balanced"),
+        None,
+    )
+    cluster_seed = next(
+        (item["seed"] for item in split_runs if item["backend_split_type"] == "kmeans"),
+        None,
+    )
+    policy = {
+        "mode": resolved_mode,
+        "generated_at": project_now().isoformat(),
+        "model_seed": model_seed,
+        "split_runs": split_runs,
+        "random_split_seeds": random_split_seeds,
+        "scaffold_seed": scaffold_seed,
+        "cluster_seed": cluster_seed,
+        "shared_across_candidates": resolved_mode == "generated_per_benchmark_campaign",
+        "reproducibility_note": (
+            "Seeds were generated once for this benchmark campaign and shared across all candidates."
+            if resolved_mode == "generated_per_benchmark_campaign"
+            else "Seeds were generated for this run and persisted for replay."
+            if resolved_mode == "generated_per_run"
+            else "Seeds were supplied by the user or replayed from persisted artifacts."
+        ),
+    }
+    if resolved_mode == "generated_per_benchmark_campaign":
+        policy["campaign_seed"] = campaign_seed or seeds[0]
+    policy["reporting_text"] = seed_policy_reporting_text(policy)
+    policy["replay_supported"] = True
+    return policy
+
+
+def seed_policy_reporting_text(seed_policy: Optional[Dict[str, Any]]) -> str:
+    """Return a short user-facing French reporting sentence for a seed policy."""
+    mode = str((seed_policy or {}).get("mode") or "").strip()
+    if mode == "generated_per_benchmark_campaign":
+        return "Politique de seeds : partagée au niveau campagne benchmark"
+    if mode == "user_provided_or_replay":
+        return "Politique de seeds : fournie par l'utilisateur / replay"
+    return "Politique de seeds : générées automatiquement et persistées"
+
+
+def seed_policy_reproducibility_metadata(seed_policy: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Build compact catalog metadata for reproducibility and future agent inspection."""
+    policy = dict(seed_policy or {})
+    return {
+        "seed_policy_mode": policy.get("mode") or "unknown",
+        "seed_policy_report": seed_policy_reporting_text(policy),
+        "replay_supported": bool(policy.get("split_runs")),
+        "model_seed": policy.get("model_seed"),
+        "campaign_seed": policy.get("campaign_seed"),
+        "shared_across_candidates": bool(policy.get("shared_across_candidates")),
+        "split_runs": list(policy.get("split_runs") or []),
+        "reproducibility_note": policy.get("reproducibility_note"),
+    }
 
 
 def detect_memory_limit_bytes() -> Optional[int]:
@@ -187,6 +364,9 @@ def resolve_validation_protocol(
     *,
     requested_protocol: Optional[str],
     training_profile: str,
+    seed_policy: Optional[Dict[str, Any]] = None,
+    seed_policy_mode: str = "generated_per_run",
+    base_seed: Optional[int] = None,
 ) -> Dict[str, Any]:
     protocol = (requested_protocol or "").strip().lower()
     if not protocol:
@@ -198,88 +378,76 @@ def resolve_validation_protocol(
             protocol = "standard_qsar"
 
     if protocol == "fast_local":
+        resolved_seed_policy = resolve_seed_policy(
+            protocol=protocol,
+            mode=seed_policy_mode,
+            seed_policy=seed_policy,
+            base_seed=base_seed,
+        )
         return {
             "protocol": "fast_local",
             "reason": "Single random split optimized for quick local iteration.",
-            "split_runs": [
-                {"label": "random", "backend_split_type": "random", "seed": 42, "primary": True}
-            ],
+            "split_runs": resolved_seed_policy["split_runs"],
+            "seed_policy": resolved_seed_policy,
         }
 
     if protocol == "standard_qsar":
+        resolved_seed_policy = resolve_seed_policy(
+            protocol=protocol,
+            mode=seed_policy_mode,
+            seed_policy=seed_policy,
+            base_seed=base_seed,
+        )
         return {
             "protocol": "standard_qsar",
             "reason": "Trustworthy QSAR default: compare a conventional random split against a scaffold-aware split.",
-            "split_runs": [
-                {"label": "random", "backend_split_type": "random", "seed": 42, "primary": True},
-                {
-                    "label": "scaffold",
-                    "backend_split_type": "scaffold_balanced",
-                    "seed": 42,
-                    "primary": False,
-                },
-            ],
+            "split_runs": resolved_seed_policy["split_runs"],
+            "seed_policy": resolved_seed_policy,
         }
 
     if protocol == "robust_qsar":
+        resolved_seed_policy = resolve_seed_policy(
+            protocol=protocol,
+            mode=seed_policy_mode,
+            seed_policy=seed_policy,
+            base_seed=base_seed,
+        )
         return {
             "protocol": "robust_qsar",
             "reason": "Robust validation protocol using multiple random seeds plus one scaffold split.",
-            "split_runs": [
-                {
-                    "label": "random_seed_42",
-                    "backend_split_type": "random",
-                    "seed": 42,
-                    "primary": True,
-                },
-                {
-                    "label": "random_seed_123",
-                    "backend_split_type": "random",
-                    "seed": 123,
-                    "primary": False,
-                },
-                {
-                    "label": "random_seed_314",
-                    "backend_split_type": "random",
-                    "seed": 314,
-                    "primary": False,
-                },
-                {
-                    "label": "scaffold",
-                    "backend_split_type": "scaffold_balanced",
-                    "seed": 42,
-                    "primary": False,
-                },
-            ],
+            "split_runs": resolved_seed_policy["split_runs"],
+            "seed_policy": resolved_seed_policy,
         }
 
     if protocol == "challenging_qsar":
+        resolved_seed_policy = resolve_seed_policy(
+            protocol=protocol,
+            mode=seed_policy_mode,
+            seed_policy=seed_policy,
+            base_seed=base_seed,
+        )
         return {
             "protocol": "challenging_qsar",
-            "reason": "Challenging validation protocol comparing random, scaffold-aware, and cluster-aware splits to reduce optimistic estimates.",
-            "split_runs": [
-                {"label": "random", "backend_split_type": "random", "seed": 42, "primary": True},
-                {
-                    "label": "scaffold",
-                    "backend_split_type": "scaffold_balanced",
-                    "seed": 42,
-                    "primary": False,
-                },
-                {
-                    "label": "cluster_kmeans",
-                    "backend_split_type": "kmeans",
-                    "seed": 42,
-                    "primary": False,
-                },
-            ],
+            "reason": (
+                "Challenging validation protocol comparing random, scaffold-aware, "
+                "and cluster-aware splits to reduce optimistic estimates."
+            ),
+            "split_runs": resolved_seed_policy["split_runs"],
+            "seed_policy": resolved_seed_policy,
         }
 
+    fallback_protocol = "fast_local" if training_profile == "local_light" else "standard_qsar"
+    resolved_seed_policy = resolve_seed_policy(
+        protocol=fallback_protocol,
+        mode=seed_policy_mode,
+        seed_policy=seed_policy,
+        base_seed=base_seed,
+    )
     return {
-        "protocol": "fast_local" if training_profile == "local_light" else "standard_qsar",
+        "protocol": fallback_protocol,
         "reason": f"Unknown validation protocol `{requested_protocol}`; falling back to a safe default.",
-        "split_runs": [
-            {"label": "random", "backend_split_type": "random", "seed": 42, "primary": True}
-        ],
+        "split_runs": resolved_seed_policy["split_runs"],
+        "seed_policy": resolved_seed_policy,
     }
 
 

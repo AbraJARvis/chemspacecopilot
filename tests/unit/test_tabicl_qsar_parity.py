@@ -5,6 +5,7 @@ import pytest
 
 from cs_copilot.tools.io.pointer_pandas_tools import PointerPandasTools
 from cs_copilot.tools.prediction.qsar_training_policy import (
+    resolve_seed_policy,
     resolve_training_profile,
     resolve_validation_protocol,
 )
@@ -59,18 +60,54 @@ def test_robust_qsar_protocol_matches_chemprop_contract():
     )
 
     assert payload["protocol"] == "robust_qsar"
-    assert [item["label"] for item in payload["split_runs"]] == [
-        "random_seed_42",
-        "random_seed_123",
-        "random_seed_314",
-        "scaffold",
+    assert [item["label"] for item in payload["split_runs"][:3]] == [
+        f"random_seed_{item['seed']}" for item in payload["split_runs"][:3]
     ]
+    assert payload["split_runs"][3]["label"] == "scaffold"
     assert [item["backend_split_type"] for item in payload["split_runs"]] == [
         "random",
         "random",
         "random",
         "scaffold_balanced",
     ]
+    assert payload["seed_policy"]["mode"] == "generated_per_run"
+    assert len({item["seed"] for item in payload["split_runs"]}) == 4
+
+
+def test_generated_seed_policy_changes_between_runs():
+    first = resolve_seed_policy(protocol="standard_qsar", mode="generated_per_run")
+    second = resolve_seed_policy(protocol="standard_qsar", mode="generated_per_run")
+
+    assert first["mode"] == "generated_per_run"
+    assert second["mode"] == "generated_per_run"
+    assert first["reporting_text"] == "Politique de seeds : générées automatiquement et persistées"
+    assert first["split_runs"] != second["split_runs"]
+    assert first["model_seed"] != second["model_seed"]
+    assert len({item["seed"] for item in first["split_runs"]} | {first["model_seed"]}) == 3
+
+
+def test_user_provided_seed_policy_is_replayable():
+    first = resolve_seed_policy(protocol="robust_qsar", base_seed=42)
+    second = resolve_seed_policy(protocol="robust_qsar", base_seed=42)
+
+    assert first["mode"] == "user_provided_or_replay"
+    assert first["reporting_text"] == "Politique de seeds : fournie par l'utilisateur / replay"
+    assert first["split_runs"] == second["split_runs"]
+    assert first["model_seed"] == second["model_seed"]
+    assert first["split_runs"][0]["label"] == "random_seed_42"
+
+
+def test_benchmark_seed_policy_is_shared_campaign_policy():
+    policy = resolve_seed_policy(
+        protocol="robust_qsar",
+        mode="generated_per_benchmark_campaign",
+    )
+
+    assert policy["mode"] == "generated_per_benchmark_campaign"
+    assert policy["reporting_text"] == "Politique de seeds : partagée au niveau campagne benchmark"
+    assert policy["shared_across_candidates"] is True
+    assert policy["campaign_seed"] not in {item["seed"] for item in policy["split_runs"]}
+    assert len(policy["random_split_seeds"]) == 3
 
 
 def test_training_profile_resolution_keeps_shared_names():
@@ -175,6 +212,25 @@ def test_create_pandas_dataframe_rejects_json_for_read_csv(tmp_path):
             create_using_function="read_csv",
             function_parameters={"path_or_buf": str(json_path)},
         )
+
+
+def test_create_pandas_dataframe_loads_json_artifact_with_read_json(tmp_path):
+    toolkit = PointerPandasTools()
+    json_path = tmp_path / "benchmark_summary.json"
+    json_path.write_text(
+        '{"benchmark_protocol": "robust_qsar", "metrics": {"scaffold_r2": 0.6}}'
+    )
+
+    result = toolkit.create_pandas_dataframe(
+        dataframe_name="benchmark_summary",
+        create_using_function="read_json",
+        function_parameters={"path_or_buf": str(json_path)},
+    )
+
+    assert result["dataframe_name"] == "benchmark_summary"
+    df = toolkit.dataframes["benchmark_summary"]
+    assert df.loc[0, "benchmark_protocol"] == "robust_qsar"
+    assert df.loc[0, "metrics.scaffold_r2"] == 0.6
 
 
 def test_pointer_pandas_to_csv_creates_parent_directories(tmp_path):
