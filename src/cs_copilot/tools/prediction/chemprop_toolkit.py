@@ -29,6 +29,7 @@ from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionModelRecord, PredictionTaskSpec
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
 from .chemprop_backend import ChempropBackend
+from .ensemble_backend import EnsembleBackend
 from .lightgbm_backend import LightGBMBackend
 from .qsar_training_policy import (
     QSAR_HARDEST_SPLIT_R2_MIN,
@@ -342,10 +343,18 @@ class ChempropToolkit(Toolkit):
         primary_backend = backend or ChempropBackend()
         tabicl_backend = TabICLBackend()
         lightgbm_backend = LightGBMBackend()
+        ensemble_backend = EnsembleBackend(
+            backends={
+                primary_backend.backend_name: primary_backend,
+                tabicl_backend.backend_name: tabicl_backend,
+                lightgbm_backend.backend_name: lightgbm_backend,
+            }
+        )
         self.backends = {
             primary_backend.backend_name: primary_backend,
             tabicl_backend.backend_name: tabicl_backend,
             lightgbm_backend.backend_name: lightgbm_backend,
+            ensemble_backend.backend_name: ensemble_backend,
         }
         self.backend = primary_backend
         self.catalog = PredictionModelCatalog.load()

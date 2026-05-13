@@ -13,6 +13,8 @@ from .catalog import CatalogRecommendation, PredictionModelCatalog
 from .benchmark_toolkit import BenchmarkToolkit
 from .chemprop_backend import ChempropBackend
 from .chemprop_toolkit import ChempropToolkit
+from .ensemble_backend import EnsembleBackend
+from .ensemble_toolkit import EnsembleToolkit
 from .lightgbm_backend import LightGBMBackend
 from .lightgbm_toolkit import LightGBMToolkit
 from .tabicl_backend import TabICLBackend
@@ -31,6 +33,8 @@ __all__ = [
     "BenchmarkToolkit",
     "ChempropBackend",
     "ChempropToolkit",
+    "EnsembleBackend",
+    "EnsembleToolkit",
     "LightGBMBackend",
     "LightGBMToolkit",
     "TabICLBackend",
