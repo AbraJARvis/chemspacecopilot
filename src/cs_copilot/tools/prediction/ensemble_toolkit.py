@@ -63,6 +63,10 @@ def _coerce_status(status: Optional[str]) -> str:
     return normalized
 
 
+PROMOTED_ENSEMBLE_STATUSES = {"validated", "robust_validated", "production"}
+ABLATION_REPRESENTATIONS = {"morgan_only", "rdkit_basic_only", "rdkit_all_only"}
+
+
 class EnsembleToolkit(Toolkit):
     """Create and register future-proof QSAR consensus ensemble artifacts."""
 
@@ -123,6 +127,25 @@ class EnsembleToolkit(Toolkit):
             calibration_method=None,
         )
 
+    def _component_representation(self, record: PredictionModelRecord) -> str:
+        return (
+            str((record.training_data_summary or {}).get("representation_name") or "")
+            or str((record.inference_profile or {}).get("representation_name") or "")
+            or str((record.selection_hints or {}).get("representation_name") or "")
+        )
+
+    def _govern_ensemble_status(self, requested_status: str) -> tuple[str, Optional[str]]:
+        normalized = _coerce_status(requested_status)
+        if normalized in PROMOTED_ENSEMBLE_STATUSES:
+            return (
+                "workflow_demo",
+                (
+                    f"Requested status `{normalized}` was downgraded to `workflow_demo`: "
+                    "catalogue ensembles are not promoted in V1 without a dedicated ensemble-level validation gate."
+                ),
+            )
+        return normalized, None
+
     def _build_model_id(
         self,
         *,
@@ -146,6 +169,7 @@ class EnsembleToolkit(Toolkit):
         status: str = "workflow_demo",
         description: Optional[str] = None,
         source: str = "catalogue_explicit_request",
+        known_metrics: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Create and persist a catalogued regression consensus ensemble."""
@@ -159,6 +183,20 @@ class EnsembleToolkit(Toolkit):
 
         records = [self._resolve_record(model_id, agent=agent) for model_id in ids]
         task = self._validate_components(records)
+        final_status, status_policy_note = self._govern_ensemble_status(status)
+        component_warnings: List[str] = []
+        ablation_components = [
+            record.model_id
+            for record in records
+            if self._component_representation(record) in ABLATION_REPRESENTATIONS
+        ]
+        if ablation_components:
+            component_warnings.append(
+                "Ablation representation components are included because they were explicitly selected: "
+                + ", ".join(ablation_components)
+            )
+        if status_policy_note:
+            component_warnings.append(status_policy_note)
         created_at = project_now().isoformat()
         model_id = self._build_model_id(
             ensemble_name=ensemble_name,
@@ -196,6 +234,9 @@ class EnsembleToolkit(Toolkit):
             "provenance": {
                 "created_by": "EnsembleToolkit.create_ensemble_from_catalog_models",
                 "explicit_request_required": True,
+                "requested_status": status,
+                "final_status": final_status,
+                "status_policy_note": status_policy_note,
             },
             "task": {
                 "task_type": task.task_type,
@@ -211,8 +252,27 @@ class EnsembleToolkit(Toolkit):
                 "split_families": None,
                 "selection_protocol": None,
             },
+            "warnings": component_warnings,
         }
         ensemble_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+        inferred_protocol = None
+        for protocol_name in ("robust_qsar", "standard_qsar", "challenging_qsar", "fast_local"):
+            if protocol_name in source:
+                inferred_protocol = protocol_name
+                break
+        training_summary = {
+            "created_at": created_at,
+            "component_count": len(records),
+            "component_model_ids": [record.model_id for record in records],
+            "aggregation_strategy": aggregation_strategy,
+            "uncertainty_strategy": DEFAULT_UNCERTAINTY_STRATEGY,
+        }
+        if inferred_protocol:
+            training_summary["benchmark_mode"] = inferred_protocol
+            training_summary["validation_protocol"] = inferred_protocol
+        if component_warnings:
+            training_summary["component_warnings"] = component_warnings
 
         record = PredictionModelRecord(
             model_id=model_id,
@@ -224,7 +284,7 @@ class EnsembleToolkit(Toolkit):
             or "Median consensus ensemble over compatible catalogued QSAR models.",
             tags={"model_family": "ensemble", "aggregation_strategy": aggregation_strategy},
             version="1.0",
-            status=_coerce_status(status),
+            status=final_status,
             owner="chemspacecopilot",
             source=source,
             domain_summary="Consensus applicability is governed by component model compatibility and disagreement.",
@@ -240,14 +300,8 @@ class EnsembleToolkit(Toolkit):
             ],
             recommended_for=["methodological consensus QSAR exploration"],
             not_recommended_for=["regulatory decisions without external validation"],
-            known_metrics={},
-            training_data_summary={
-                "created_at": created_at,
-                "component_count": len(records),
-                "component_model_ids": [record.model_id for record in records],
-                "aggregation_strategy": aggregation_strategy,
-                "uncertainty_strategy": DEFAULT_UNCERTAINTY_STRATEGY,
-            },
+            known_metrics=dict(known_metrics or {}),
+            training_data_summary=training_summary,
             inference_profile={
                 "aggregation_strategy": aggregation_strategy,
                 "uncertainty_strategy": DEFAULT_UNCERTAINTY_STRATEGY,
@@ -272,6 +326,9 @@ class EnsembleToolkit(Toolkit):
                 "aggregation_strategy": aggregation_strategy,
                 "uncertainty_strategy": DEFAULT_UNCERTAINTY_STRATEGY,
                 "component_model_ids": [record.model_id for record in records],
+                "warnings": component_warnings,
+                "requested_status": status,
+                "final_status": final_status,
             },
         }
         Path(record.metadata_path or model_root / "metadata.json").write_text(
@@ -339,6 +396,8 @@ class EnsembleToolkit(Toolkit):
                 or str((record.inference_profile or {}).get("representation_name") or "")
                 or "default"
             )
+            if representation in ABLATION_REPRESENTATIONS:
+                continue
             family = (record.backend_name, representation)
             if family in seen_backend_representations:
                 continue

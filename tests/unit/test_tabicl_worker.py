@@ -39,6 +39,18 @@ def test_write_worker_job_creates_clean_payload(tmp_path):
     assert not (job_dir / "result.json").exists()
 
 
+def test_tabicl_normalizes_scalar_list_arguments():
+    toolkit = TabICLToolkit()
+
+    assert toolkit._normalize_json_list_argument("pEC50", argument_name="target_columns") == ["pEC50"]
+    assert toolkit._normalize_json_list_argument('["pEC50"]', argument_name="target_columns") == ["pEC50"]
+    assert toolkit._normalize_json_list_argument("0.8,0.1,0.1", argument_name="split_sizes") == [
+        0.8,
+        0.1,
+        0.1,
+    ]
+
+
 def test_run_training_worker_reads_result_json(tmp_path, monkeypatch):
     toolkit = TabICLToolkit()
     job_dir = tmp_path / "worker_job"

@@ -491,6 +491,7 @@ QSAR_TRAINING_INSTRUCTIONS = [
     "  - QSAR ensemble creation from benchmark is V1-limited to `benchmark_robust_qsar`. If the user requests an ensemble with `fast_local`, `standard_qsar`, or `challenging_qsar`, stop before training and explain that robust_qsar is required for ensemble construction.",
     "  - If the same user request contains both a non-robust benchmark mode (`fast_local`, `standard_qsar`, `challenging_qsar`, or their `benchmark_*` aliases) and an ensemble/consensus request, do not call `benchmark_qsar_models`, training tools, or curation tools. Ask the user to switch to `benchmark_robust_qsar` or remove the ensemble request.",
     "  - In benchmark ensemble mode, keep ablation-only variants such as `morgan_only` and `rdkit_basic_only` in the leaderboard, but do not include them in the consensus unless the user explicitly requests an ablation ensemble.",
+    "  - In benchmark ensemble reports, always compare the ensemble against the best individual model on the hardest split. If the ensemble does not improve R², say that explicitly even if RMSE or MAE improves.",
     "  - In benchmark modes, every trained candidate model must be persisted and cataloged independently, exactly as if it had been trained alone.",
     "  - Preserve split artifacts, per-split test predictions, training summaries, and checkpoint paths.",
     "  - Build and persist the training-set applicability domain when the model can be trained successfully, and carry its summary forward in the training outputs.",

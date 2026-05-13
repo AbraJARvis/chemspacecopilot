@@ -15,7 +15,7 @@ import pandas as pd
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
-from .chemprop_toolkit import ChempropToolkit
+from .chemprop_toolkit import ChempropToolkit, _bundle_artifacts
 from .ensemble_toolkit import EnsembleToolkit
 from .lightgbm_toolkit import LightGBMToolkit
 from .qsar_training_policy import describe_compute_environment, resolve_training_profile, safe_slug
@@ -1081,6 +1081,7 @@ class BenchmarkToolkit(Toolkit):
                     "selected after a robust_qsar benchmark."
                 ),
                 source="benchmark_robust_qsar_explicit_request",
+                known_metrics=ensemble_metrics,
                 agent=agent,
             )
 
@@ -1132,6 +1133,23 @@ class BenchmarkToolkit(Toolkit):
         summary_path = campaign_root / "benchmark_summary.json"
         summary_path.write_text(json.dumps(benchmark_summary, indent=2) + "\n")
 
+        bundle_path = (
+            Path(".files")
+            / "prediction_outputs"
+            / f"{campaign_root.name}_benchmark_bundle.zip"
+        ).resolve()
+        bundle_files = [path for path in campaign_root.rglob("*") if path.is_file()]
+        if ensemble_result:
+            for artifact_key in ("model_path", "metadata_path"):
+                artifact_path = ensemble_result.get(artifact_key)
+                if artifact_path:
+                    bundle_files.append(Path(str(artifact_path)).expanduser())
+        benchmark_bundle = _bundle_artifacts(bundle_path, bundle_files)
+        benchmark_summary["bundle_file_ref"] = str(benchmark_bundle)
+        benchmark_summary["benchmark_bundle"] = str(benchmark_bundle)
+        benchmark_summary["bundle_download_tag"] = f"<file>{benchmark_bundle}</file>"
+        summary_path.write_text(json.dumps(benchmark_summary, indent=2) + "\n")
+
         return {
             "benchmark_mode": benchmark_mode,
             "benchmark_protocol": benchmark_protocol,
@@ -1147,5 +1165,8 @@ class BenchmarkToolkit(Toolkit):
             "ensemble_model_path": (ensemble_result or {}).get("model_path"),
             "ensemble_metrics": ensemble_metrics,
             "ensemble": ensemble_result,
+            "bundle_file_ref": str(benchmark_bundle),
+            "benchmark_bundle": str(benchmark_bundle),
+            "bundle_download_tag": f"<file>{benchmark_bundle}</file>",
             **recommendations,
         }

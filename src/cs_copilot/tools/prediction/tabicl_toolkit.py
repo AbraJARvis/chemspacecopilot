@@ -325,9 +325,22 @@ class TabICLToolkit(Toolkit):
         if value is None:
             return None
         if isinstance(value, str):
-            parsed = json.loads(value)
+            stripped = value.strip()
+            if not stripped:
+                return []
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                if "," in stripped:
+                    items = [item.strip() for item in stripped.split(",") if item.strip()]
+                    if argument_name == "split_sizes":
+                        return [float(item) for item in items]
+                    return items
+                return [stripped]
             if not isinstance(parsed, list):
-                raise ValueError(f"{argument_name} must be a list or a JSON-encoded list.")
+                if isinstance(parsed, str):
+                    return [parsed]
+                raise ValueError(f"{argument_name} must be a list, scalar string, or JSON-encoded list.")
             return parsed
         return list(value)
 
@@ -897,15 +910,15 @@ class TabICLToolkit(Toolkit):
     ) -> Dict[str, Any]:
         """Run TabICL batch prediction from a tabular CSV input file."""
         if isinstance(target_columns, str):
-            parsed = json.loads(target_columns)
-            if not isinstance(parsed, list):
-                raise ValueError("target_columns must be a list or a JSON-encoded list.")
-            target_columns = parsed
+            target_columns = self._normalize_json_list_argument(
+                target_columns,
+                argument_name="target_columns",
+            )
         if isinstance(feature_columns, str):
-            parsed = json.loads(feature_columns)
-            if not isinstance(parsed, list):
-                raise ValueError("feature_columns must be a list or a JSON-encoded list.")
-            feature_columns = parsed
+            feature_columns = self._normalize_json_list_argument(
+                feature_columns,
+                argument_name="feature_columns",
+            )
 
         model_record_extra = dict(extra_args or {})
         if feature_columns:

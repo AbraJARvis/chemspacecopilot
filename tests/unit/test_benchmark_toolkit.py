@@ -438,6 +438,8 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     assert Path(result["summary_path"]).exists()
     assert Path(result["leaderboard_path"]).exists()
     assert Path(result["report_path"]).exists()
+    assert Path(result["benchmark_bundle"]).exists()
+    assert result["bundle_download_tag"].startswith("<file>")
 
     candidate_ids = {item["candidate_id"] for item in result["persisted_model_mapping"]}
     assert "chemprop_default" in candidate_ids

@@ -116,3 +116,13 @@ def test_ensemble_component_validation_rejects_deprecated_component(tmp_path):
 
     with pytest.raises(InvalidPredictionInputError, match="Deprecated"):
         toolkit._validate_components(records)
+
+
+def test_ensemble_governance_downgrades_promoted_status():
+    toolkit = EnsembleToolkit(backend=EnsembleBackend(backends={"fake": FakeRegressionBackend()}))
+
+    final_status, note = toolkit._govern_ensemble_status("validated")
+
+    assert final_status == "workflow_demo"
+    assert note is not None
+    assert "dedicated ensemble-level validation gate" in note
