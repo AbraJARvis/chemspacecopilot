@@ -17,7 +17,6 @@ from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
 from cs_copilot.tools.activity_cliffs import (
-    attach_activity_cliff_variant_training,
     build_activity_cliff_loop_comparison_plots,
     prepare_activity_cliff_context,
     split_activity_cliff_args,
@@ -580,12 +579,73 @@ class LightGBMToolkit(Toolkit):
         baseline_split_results: List[Dict[str, Any]],
         variant_split_results: Dict[str, List[Dict[str, Any]]],
     ) -> Dict[str, Any]:
-        return attach_activity_cliff_variant_training(
+        if not activity_cliffs.get("enabled"):
+            return activity_cliffs
+        if int(activity_cliffs.get("feedback_loops_requested") or 0) <= 0:
+            activity_cliffs["reporting_handoff"] = self._activity_cliff_reporting_handoff(
+                activity_cliffs=activity_cliffs,
+                variant_comparison_rows=[],
+                recommended_variant=None,
+                recommendation_reason=None,
+            )
+            return activity_cliffs
+
+        variants = list(activity_cliffs.get("variants") or [])
+        by_variant = {
+            "baseline_loop_0": baseline_split_results,
+            **variant_split_results,
+        }
+        variant_summaries: List[Dict[str, Any]] = []
+        for variant in variants:
+            variant_id = str(variant.get("variant_id"))
+            split_results = by_variant.get(variant_id, [])
+            summary = self._variant_summary(variant=variant, split_results=split_results)
+            variant["training_result"] = summary
+            variant_summaries.append(summary)
+
+        comparable = [
+            item
+            for item in variant_summaries
+            if item.get("training_completed")
+            and self._hardest_split_r2(item.get("validation_assessment") or {}) is not None
+        ]
+        recommended_variant = None
+        recommendation_reason = None
+        if comparable:
+            comparable.sort(
+                key=lambda item: (
+                    self._hardest_split_r2(item.get("validation_assessment") or {}) or float("-inf"),
+                    -int(item.get("loop_index") or 0),
+                ),
+                reverse=True,
+            )
+            recommended_variant = comparable[0].get("variant_id")
+            best_r2 = self._hardest_split_r2(comparable[0].get("validation_assessment") or {})
+            recommendation_reason = (
+                "Selection par meilleur R2 sur le split le plus difficile, avec holdouts fixes "
+                f"(R2={best_r2:.3f})."
+                if best_r2 is not None
+                else None
+            )
+
+        activity_cliffs["variant_training"] = variant_summaries
+        variant_comparison_rows = self._variant_comparison_rows(variant_summaries)
+        activity_cliffs["variant_comparison_table"] = variant_comparison_rows
+        activity_cliffs["recommended_variant"] = recommended_variant
+        activity_cliffs["recommendation_reason"] = recommendation_reason
+        activity_cliffs["reporting_handoff"] = self._activity_cliff_reporting_handoff(
             activity_cliffs=activity_cliffs,
-            baseline_split_results=baseline_split_results,
-            variant_split_results=variant_split_results,
-            backend_name=self.backend.backend_name,
+            variant_comparison_rows=variant_comparison_rows,
+            recommended_variant=recommended_variant,
+            recommendation_reason=recommendation_reason,
         )
+        activity_cliffs["loop_training_policy"] = {
+            "baseline_trained": True,
+            "train_filtering": "remove selected activity-cliff tiers from train split only",
+            "holdout_policy": "validation and test indices remain fixed and non-filtered",
+            "comparison_metric": "hardest_split_r2",
+        }
+        return activity_cliffs
 
     def describe_lightgbm_backend(self) -> Dict[str, Any]:
         """Describe the LightGBM backend defaults and current runtime support."""

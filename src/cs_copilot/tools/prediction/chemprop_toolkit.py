@@ -10,7 +10,6 @@ import json
 import math
 import os
 import shutil
-from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -24,12 +23,7 @@ from scipy.stats import kendalltau, spearmanr
 
 from cs_copilot.storage import S3
 from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
-from cs_copilot.tools.activity_cliffs import (
-    attach_activity_cliff_variant_training,
-    build_activity_cliff_loop_comparison_plots,
-    prepare_activity_cliff_context,
-    split_activity_cliff_args,
-)
+from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, split_activity_cliff_args
 
 from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionModelRecord, PredictionTaskSpec
@@ -112,31 +106,6 @@ def _sanitize_activity_cliff_description(description: Optional[str], activity_pa
     sanitized = description.replace("1 feedback loop", replacement)
     sanitized = sanitized.replace("1 feedback loops", replacement)
     return sanitized
-
-
-def _normalize_json_list_argument(
-    value: Optional[List[Any] | str],
-    *,
-    argument_name: str,
-) -> Optional[List[Any]]:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return []
-        try:
-            parsed = json.loads(stripped)
-        except json.JSONDecodeError:
-            if "," in stripped:
-                return [item.strip() for item in stripped.split(",") if item.strip()]
-            return [stripped]
-        if isinstance(parsed, list):
-            return parsed
-        if isinstance(parsed, str):
-            return [parsed]
-        raise ValueError(f"{argument_name} must be a list, scalar string, or JSON-encoded list.")
-    return list(value)
 
 
 def _latest_curation_artifacts(agent: Agent) -> Dict[str, Any]:
@@ -371,7 +340,6 @@ class ChempropToolkit(Toolkit):
         backend: Optional[ChempropBackend] = None,
         *,
         include_prediction_summary_export: bool = True,
-        include_model_management: bool = True,
     ):
         super().__init__("chemprop_prediction")
         primary_backend = backend or ChempropBackend()
@@ -395,18 +363,17 @@ class ChempropToolkit(Toolkit):
         self.catalog.refresh_from_internal_store(persist=True)
         self.register(self.describe_backend)
         self.register(self.describe_backends)
-        if include_model_management:
-            self.register(self.describe_catalog)
-            self.register(self.list_catalog_models)
-            self.register(self.summarize_catalog_model)
-            self.register(self.recommend_catalog_model)
-            self.register(self.register_catalog_model)
-            self.register(self.persist_registered_model)
-            self.register(self.register_model)
-            self.register(self.list_registered_models)
-            self.register(self.summarize_model)
-            self.register(self.predict_from_csv)
-            self.register(self.predict_from_smiles)
+        self.register(self.describe_catalog)
+        self.register(self.list_catalog_models)
+        self.register(self.summarize_catalog_model)
+        self.register(self.recommend_catalog_model)
+        self.register(self.register_catalog_model)
+        self.register(self.persist_registered_model)
+        self.register(self.register_model)
+        self.register(self.list_registered_models)
+        self.register(self.summarize_model)
+        self.register(self.predict_from_csv)
+        self.register(self.predict_from_smiles)
         if include_prediction_summary_export:
             self.register(self.export_prediction_summary)
         self.register(self.prepare_training_dataset)
@@ -626,150 +593,6 @@ class ChempropToolkit(Toolkit):
                 output_dir=output_dir,
                 task=task,
             )
-        )
-        self._attach_split_count_metadata(result, requested_exclusion_count=0)
-        return result
-
-    def _attach_split_count_metadata(
-        self,
-        result: Dict[str, Any],
-        *,
-        requested_exclusion_count: int,
-        excluded_from_train: Optional[List[int]] = None,
-        source_train_count: Optional[int] = None,
-    ) -> None:
-        split_payload = None
-        splits_path = result.get("splits_path")
-        if splits_path:
-            path = Path(str(splits_path)).expanduser()
-            if path.exists():
-                try:
-                    split_payload = json.loads(path.read_text())
-                except Exception:
-                    split_payload = None
-        if not split_payload or not isinstance(split_payload, list) or not split_payload:
-            return
-        split_map = split_payload[0] or {}
-        train_idx = [int(idx) for idx in (split_map.get("train") or [])]
-        val_idx = [int(idx) for idx in (split_map.get("val") or [])]
-        test_idx = [int(idx) for idx in (split_map.get("test") or [])]
-        excluded = [int(idx) for idx in (excluded_from_train or split_map.get("excluded_from_train") or [])]
-        result["split_payload"] = split_payload
-        result["effective_split_payload"] = split_payload
-        result["source_train_count"] = int(source_train_count if source_train_count is not None else len(train_idx))
-        result["effective_train_count"] = int(len(train_idx))
-        result["validation_count"] = int(len(val_idx))
-        result["test_count"] = int(len(test_idx))
-        result["removed_from_train_count"] = int(len(excluded))
-        result["requested_exclusion_count"] = int(requested_exclusion_count)
-
-    def _write_chemprop_fixed_split_csv(
-        self,
-        *,
-        train_csv: str,
-        baseline_split_payload: List[Dict[str, Any]],
-        excluded_train_indices: List[int],
-        output_dir: Path,
-        split_column: str = "cs_copilot_split",
-    ) -> Dict[str, Any]:
-        if not baseline_split_payload or not isinstance(baseline_split_payload[0], dict):
-            raise ValueError("Chemprop activity-cliff loop training requires a baseline split payload.")
-        split_map = baseline_split_payload[0]
-        source_train = [int(idx) for idx in (split_map.get("train") or [])]
-        val_indices = [int(idx) for idx in (split_map.get("val") or [])]
-        test_indices = [int(idx) for idx in (split_map.get("test") or [])]
-        excluded = sorted(set(int(idx) for idx in excluded_train_indices) & set(source_train))
-        effective_train = [idx for idx in source_train if idx not in set(excluded)]
-        if not effective_train or not val_indices or not test_indices:
-            raise ValueError("Chemprop activity-cliff loop split would create an empty train/val/test split.")
-
-        source_df = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
-        ordered_original_indices = sorted(set(effective_train + val_indices + test_indices))
-        split_label_by_original = {idx: "train" for idx in effective_train}
-        split_label_by_original.update({idx: "val" for idx in val_indices})
-        split_label_by_original.update({idx: "test" for idx in test_indices})
-
-        variant_df = source_df.iloc[ordered_original_indices].copy()
-        variant_df[split_column] = [split_label_by_original[int(idx)] for idx in ordered_original_indices]
-        variant_df["cs_copilot_source_row_index"] = [int(idx) for idx in ordered_original_indices]
-
-        new_position_by_original = {
-            int(original_idx): int(new_idx)
-            for new_idx, original_idx in enumerate(ordered_original_indices)
-        }
-        fixed_payload = [
-            {
-                "train": [new_position_by_original[idx] for idx in effective_train],
-                "val": [new_position_by_original[idx] for idx in val_indices],
-                "test": [new_position_by_original[idx] for idx in test_indices],
-                "excluded_from_train": [int(idx) for idx in excluded],
-                "source_train": [int(idx) for idx in source_train],
-                "source_row_indices": [int(idx) for idx in ordered_original_indices],
-            }
-        ]
-
-        output_dir.mkdir(parents=True, exist_ok=True)
-        fixed_csv = output_dir / "activity_cliff_fixed_split_training.csv"
-        variant_df.to_csv(fixed_csv, index=False)
-        (output_dir / "cs_copilot_fixed_split_payload.json").write_text(
-            json.dumps(fixed_payload, indent=2) + "\n"
-        )
-        return {
-            "train_csv": str(fixed_csv),
-            "split_column": split_column,
-            "split_payload": fixed_payload,
-            "excluded_from_train": excluded,
-            "source_train_count": len(source_train),
-        }
-
-    def _train_activity_cliff_variant_run(
-        self,
-        *,
-        train_csv: str,
-        task: PredictionTaskSpec,
-        output_dir: str,
-        train_args: Dict[str, Any],
-        baseline_result: Dict[str, Any],
-        excluded_train_indices: List[int],
-        variant_id: str,
-    ) -> Dict[str, Any]:
-        output_path = Path(output_dir).expanduser().resolve()
-        fixed = self._write_chemprop_fixed_split_csv(
-            train_csv=train_csv,
-            baseline_split_payload=list(baseline_result.get("split_payload") or []),
-            excluded_train_indices=excluded_train_indices,
-            output_dir=output_path,
-        )
-        variant_args = {
-            **train_args,
-            "splits_column": fixed["split_column"],
-            "num_replicates": 1,
-            "ensemble_size": 1,
-        }
-        variant_args.pop("split_type", None)
-        variant_args.pop("split_sizes", None)
-        result = self.backend.train_model(
-            train_csv=fixed["train_csv"],
-            output_dir=str(output_path),
-            task=task,
-            extra_args=variant_args,
-        )
-        splits_path = output_path / "splits.json"
-        splits_path.write_text(json.dumps(fixed["split_payload"], indent=2) + "\n")
-        result.update(
-            self._compute_training_metrics(
-                train_csv=fixed["train_csv"],
-                output_dir=str(output_path),
-                task=task,
-            )
-        )
-        result["activity_cliff_variant_id"] = variant_id
-        result["fixed_split_training_csv"] = fixed["train_csv"]
-        self._attach_split_count_metadata(
-            result,
-            requested_exclusion_count=len(excluded_train_indices),
-            excluded_from_train=fixed["excluded_from_train"],
-            source_train_count=fixed["source_train_count"],
         )
         return result
 
@@ -1102,10 +925,8 @@ class ChempropToolkit(Toolkit):
                     split_label = split_result.get("strategy_label") or split_result.get("strategy_family") or "split"
                     for artifact_key in (
                         "model_path",
-                        "best_model_path",
                         "test_predictions_path",
                         "splits_path",
-                        "fixed_split_training_csv",
                     ):
                         raw_path = split_result.get(artifact_key)
                         if raw_path:
@@ -1281,13 +1102,8 @@ class ChempropToolkit(Toolkit):
                 "index_name": activity_payload.get("index_name"),
                 "flagged_count": activity_payload.get("flagged_count"),
                 "priority_counts": activity_payload.get("priority_counts"),
-                "feedback_loops_requested": activity_payload.get("feedback_loops_requested"),
-                "feedback_evaluation_status": activity_payload.get("feedback_evaluation_status"),
                 "recommended_variant": activity_payload.get("recommended_variant"),
-                "selected_activity_cliff_variant": activity_payload.get("recommended_variant"),
                 "recommendation_reason": activity_payload.get("recommendation_reason"),
-                "loop_training_policy": activity_payload.get("loop_training_policy"),
-                "chemprop_replicate_policy": activity_payload.get("chemprop_replicate_policy"),
                 "artifacts": copied_activity_cliff_artifacts,
             }
             if activity_payload.get("variant_training"):
@@ -1382,34 +1198,8 @@ class ChempropToolkit(Toolkit):
         if artifacts.get("plot_artifacts"):
             payload["plot_artifacts"] = artifacts.get("plot_artifacts")
         if artifacts.get("activity_cliffs") and record.training_data_summary.get("activity_cliffs"):
-            activity_payload = deepcopy(record.training_data_summary.get("activity_cliffs") or {})
-            activity_payload["artifacts"] = artifacts.get("activity_cliffs")
-            if artifacts.get("activity_cliff_variant_models"):
-                activity_payload["variant_model_artifacts"] = artifacts.get(
-                    "activity_cliff_variant_models"
-                )
-            if activity_payload.get("recommended_variant") and not activity_payload.get(
-                "selected_activity_cliff_variant"
-            ):
-                activity_payload["selected_activity_cliff_variant"] = activity_payload.get(
-                    "recommended_variant"
-                )
-            reporting_handoff = activity_payload.get("reporting_handoff") or {}
-            if (
-                reporting_handoff.get("recommended_variant")
-                and not reporting_handoff.get("selected_activity_cliff_variant")
-            ):
-                reporting_handoff["selected_activity_cliff_variant"] = reporting_handoff.get(
-                    "recommended_variant"
-                )
-            if (
-                reporting_handoff.get("variant_comparison_rows")
-                and not activity_payload.get("variant_comparison_table")
-            ):
-                activity_payload["variant_comparison_table"] = reporting_handoff.get(
-                    "variant_comparison_rows"
-                )
-            payload["activity_cliffs"] = activity_payload
+            payload["activity_cliffs"] = record.training_data_summary.get("activity_cliffs")
+            payload["activity_cliffs"]["artifacts"] = artifacts.get("activity_cliffs")
         if governance_assessment:
             payload["governance_assessment"] = governance_assessment
         if status_reason:
@@ -1764,20 +1554,6 @@ class ChempropToolkit(Toolkit):
             model_id=canonical_model_id,
             source_artifacts=source_artifacts,
         )
-        if not materialized.get("materialized"):
-            return {
-                "catalog_path": str(self.catalog.source_path),
-                "model_id": current.model_id,
-                "status": current.status,
-                "persisted": False,
-                "materialized": False,
-                "reason": materialized.get("reason") or "model_materialization_failed",
-                "model_path": current.model_path,
-                "usage_hint": (
-                    "The model remains available as a session artifact only. Do not report it as "
-                    "catalogued until persist_registered_model returns persisted=true and a model_root."
-                ),
-            }
         resolved_model_path = materialized.get("model_path", current.model_path)
         resolved_metadata_path = materialized.get("metadata_path", current.metadata_path)
         requested_status = status or current.status
@@ -1827,7 +1603,15 @@ class ChempropToolkit(Toolkit):
                 "seed_policy_report": seed_policy_reporting_text(
                     summary_payload.get("seed_policy") or current.training_data_summary.get("seed_policy")
                 ),
-                "activity_cliffs": deepcopy(activity_summary_payload)
+                "activity_cliffs": {
+                    "enabled": bool(activity_summary_payload.get("enabled")),
+                    "mode": activity_summary_payload.get("mode"),
+                    "index_name": activity_summary_payload.get("index_name"),
+                    "flagged_count": activity_summary_payload.get("flagged_count"),
+                    "priority_counts": activity_summary_payload.get("priority_counts"),
+                    "recommended_variant": activity_summary_payload.get("recommended_variant"),
+                    "reporting_handoff": activity_summary_payload.get("reporting_handoff"),
+                }
                 if activity_summary_payload
                 else {},
             },
@@ -2144,23 +1928,6 @@ class ChempropToolkit(Toolkit):
         y_true = actual_values[valid_mask].astype(float)
         y_pred = predicted_values[valid_mask].astype(float)
         residuals = y_true - y_pred
-        try:
-            enriched_predictions = predictions.copy()
-            enriched_predictions["y_true"] = actual_values.astype(float)
-            enriched_predictions["y_pred"] = predicted_values.astype(float)
-            enriched_predictions["residual"] = (
-                enriched_predictions["y_true"] - enriched_predictions["y_pred"]
-            )
-            source_row_indices = split_payload[0].get("source_row_indices") or []
-            if source_row_indices and all(int(idx) < len(source_row_indices) for idx in test_indices):
-                enriched_predictions["source_row_index"] = [
-                    int(source_row_indices[int(idx)]) for idx in test_indices
-                ]
-            else:
-                enriched_predictions["source_row_index"] = [int(idx) for idx in test_indices]
-            enriched_predictions.to_csv(preds_path, index=False)
-        except Exception:
-            pass
         mse = float((residuals.pow(2)).mean())
         mae = float(residuals.abs().mean())
         rae_denom = float((y_true - float(y_true.mean())).abs().sum())
@@ -2214,10 +1981,16 @@ class ChempropToolkit(Toolkit):
         with S3.open(input_csv, "r") as fh:
             df = pd.read_csv(fh)
 
-        target_columns = _normalize_json_list_argument(
-            target_columns,
-            argument_name="target_columns",
-        ) or []
+        if isinstance(target_columns, str):
+            try:
+                parsed = json.loads(target_columns)
+            except json.JSONDecodeError:
+                target_columns = [target_columns]
+            else:
+                if isinstance(parsed, list):
+                    target_columns = parsed
+                else:
+                    target_columns = [str(parsed)]
 
         df = standardize_smiles_column(df, smiles_column)
         missing_targets = [column for column in target_columns if column not in df.columns]
@@ -2243,7 +2016,6 @@ class ChempropToolkit(Toolkit):
         smiles_columns: Optional[List[str] | str] = None,
         target_columns: Optional[List[str] | str] = None,
         reaction_columns: Optional[List[str] | str] = None,
-        validation_protocol: Optional[str] = None,
         activity_cliff_index: str = "sali",
         activity_cliff_feedback: bool = False,
         activity_cliff_feedback_loops: int = 0,
@@ -2254,26 +2026,21 @@ class ChempropToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Launch Chemprop training and persist a lightweight training record."""
-        smiles_columns = _normalize_json_list_argument(
-            smiles_columns,
-            argument_name="smiles_columns",
-        )
-        target_columns = _normalize_json_list_argument(
-            target_columns,
-            argument_name="target_columns",
-        )
-        reaction_columns = _normalize_json_list_argument(
-            reaction_columns,
-            argument_name="reaction_columns",
-        )
+        if isinstance(smiles_columns, str):
+            parsed = json.loads(smiles_columns)
+            smiles_columns = parsed if isinstance(parsed, list) else [str(parsed)]
+        if isinstance(target_columns, str):
+            parsed = json.loads(target_columns)
+            target_columns = parsed if isinstance(parsed, list) else [str(parsed)]
+        if isinstance(reaction_columns, str):
+            parsed = json.loads(reaction_columns)
+            reaction_columns = parsed if isinstance(parsed, list) else [str(parsed)]
 
         resolved_output_dir = str(Path(output_dir).expanduser().resolve())
         root_output_path = Path(resolved_output_dir)
         active_marker_path = root_output_path / ".training_in_progress"
         trained_at = project_now()
         cleaned_extra_args, extra_activity_args = split_activity_cliff_args(extra_args)
-        if validation_protocol is not None:
-            cleaned_extra_args["validation_protocol"] = validation_protocol
         activity_args = {
             "activity_cliff_index": activity_cliff_index,
             "activity_cliff_feedback": activity_cliff_feedback,
@@ -2317,16 +2084,6 @@ class ChempropToolkit(Toolkit):
                     "index_name": activity_args.get("activity_cliff_index", "sali"),
                     "warnings": [f"Activity-cliff annotation skipped: {exc}"],
                 }
-        if activity_cliffs.get("mode") == "with_feedback_loops":
-            training_policy["extra_args"]["num_replicates"] = 1
-            training_policy["extra_args"]["ensemble_size"] = 1
-            activity_cliffs["chemprop_replicate_policy"] = {
-                "effective_num_replicates": 1,
-                "reason": (
-                    "Feedback-loop variant comparisons use one Chemprop replicate per split in V1 "
-                    "so the persisted model and reported metrics refer to the same artifact."
-                ),
-            }
         prediction_state = None
         qsar_training_state = None
         active_run_record = {
@@ -2413,166 +2170,6 @@ class ChempropToolkit(Toolkit):
             if primary_run is None or primary_output_dir is None:
                 raise ValueError("Training protocol did not produce a primary run.")
 
-            activity_cliff_variant_split_results: Dict[str, List[Dict[str, Any]]] = {}
-            final_split_results = split_results
-            final_primary_run = primary_run
-            final_primary_output_dir = primary_output_dir
-            if activity_cliffs.get("mode") == "with_feedback_loops":
-                baseline_variant = next(
-                    (
-                        variant
-                        for variant in (activity_cliffs.get("variants") or [])
-                        if str(variant.get("variant_id")) == "baseline_loop_0"
-                    ),
-                    {},
-                )
-                fixed_baseline_split_results: List[Dict[str, Any]] = []
-                for baseline_result in split_results:
-                    label = str(baseline_result.get("strategy_label") or baseline_result.get("strategy") or "split")
-                    run_output_dir = (
-                        root_output_path
-                        / "activity_cliff_variants"
-                        / "baseline_loop_0"
-                        / f"{safe_slug(label)}_split"
-                    )
-                    run_args = {
-                        **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
-                        "data_seed": baseline_result.get("seed"),
-                    }
-                    active_run_record["current_split_label"] = f"baseline_loop_0:{label}"
-                    if prediction_state is not None:
-                        prediction_state["active_training_run"] = dict(active_run_record)
-                    if qsar_training_state is not None:
-                        qsar_training_state["active_run"] = dict(active_run_record)
-                    _write_active_training_marker(active_marker_path, active_run_record)
-
-                    fixed_baseline_result = self._train_activity_cliff_variant_run(
-                        train_csv=train_csv,
-                        task=task,
-                        output_dir=str(run_output_dir),
-                        train_args=run_args,
-                        baseline_result=baseline_result,
-                        excluded_train_indices=[],
-                        variant_id="baseline_loop_0",
-                    )
-                    fixed_baseline_result["strategy"] = baseline_result.get("strategy")
-                    fixed_baseline_result["strategy_family"] = baseline_result.get("strategy_family")
-                    fixed_baseline_result["strategy_label"] = label
-                    fixed_baseline_result["backend_split_type"] = baseline_result.get("backend_split_type")
-                    fixed_baseline_result["seed"] = baseline_result.get("seed")
-                    fixed_baseline_result["output_dir"] = str(run_output_dir)
-                    fixed_baseline_result["validation_protocol"] = protocol_policy["protocol"]
-                    fixed_baseline_result["removed_tiers"] = []
-                    fixed_baseline_result["removed_count"] = 0
-                    fixed_baseline_result["remaining_rows"] = baseline_variant.get("remaining_rows")
-                    fixed_baseline_split_results.append(fixed_baseline_result)
-
-                final_split_results = fixed_baseline_split_results
-                primary_label = primary_run.get("strategy_label")
-                final_primary_run = next(
-                    (
-                        item
-                        for item in fixed_baseline_split_results
-                        if item.get("strategy_label") == primary_label
-                    ),
-                    fixed_baseline_split_results[0] if fixed_baseline_split_results else primary_run,
-                )
-                final_primary_output_dir = Path(str(final_primary_run.get("output_dir")))
-
-                trainable_variants = [
-                    variant
-                    for variant in (activity_cliffs.get("variants") or [])
-                    if variant.get("loop_index", 0) > 0 and variant.get("removed_count", 0) > 0
-                ]
-                for variant in trainable_variants:
-                    variant_id = str(variant.get("variant_id"))
-                    removed_indices = [int(idx) for idx in (variant.get("removed_row_indices") or [])]
-                    variant_results: List[Dict[str, Any]] = []
-                    for baseline_result in split_results:
-                        label = str(baseline_result.get("strategy_label") or baseline_result.get("strategy") or "split")
-                        run_output_dir = (
-                            root_output_path
-                            / "activity_cliff_variants"
-                            / safe_slug(variant_id)
-                            / f"{safe_slug(label)}_split"
-                        )
-                        run_args = {
-                            **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
-                            "data_seed": baseline_result.get("seed"),
-                        }
-                        active_run_record["current_split_label"] = f"{variant_id}:{label}"
-                        if prediction_state is not None:
-                            prediction_state["active_training_run"] = dict(active_run_record)
-                        if qsar_training_state is not None:
-                            qsar_training_state["active_run"] = dict(active_run_record)
-                        _write_active_training_marker(active_marker_path, active_run_record)
-
-                        variant_result = self._train_activity_cliff_variant_run(
-                            train_csv=train_csv,
-                            task=task,
-                            output_dir=str(run_output_dir),
-                            train_args=run_args,
-                            baseline_result=baseline_result,
-                            excluded_train_indices=removed_indices,
-                            variant_id=variant_id,
-                        )
-                        variant_result["strategy"] = baseline_result.get("strategy")
-                        variant_result["strategy_family"] = baseline_result.get("strategy_family")
-                        variant_result["strategy_label"] = label
-                        variant_result["backend_split_type"] = baseline_result.get("backend_split_type")
-                        variant_result["seed"] = baseline_result.get("seed")
-                        variant_result["output_dir"] = str(run_output_dir)
-                        variant_result["validation_protocol"] = protocol_policy["protocol"]
-                        variant_result["removed_tiers"] = variant.get("removed_tiers") or []
-                        variant_result["removed_count"] = variant.get("removed_count", 0)
-                        variant_result["remaining_rows"] = variant.get("remaining_rows")
-                        variant_results.append(variant_result)
-                    activity_cliff_variant_split_results[variant_id] = variant_results
-
-                activity_cliffs = attach_activity_cliff_variant_training(
-                    activity_cliffs=activity_cliffs,
-                    baseline_split_results=fixed_baseline_split_results,
-                    variant_split_results=activity_cliff_variant_split_results,
-                    backend_name=self.backend.backend_name,
-                )
-                if activity_cliffs.get("variant_comparison_table"):
-                    try:
-                        loop_plot_artifacts = build_activity_cliff_loop_comparison_plots(
-                            activity_cliffs,
-                            output_dir=str(root_output_path / "activity_cliffs"),
-                        )
-                        if loop_plot_artifacts:
-                            activity_cliffs["loop_comparison_plot_artifacts"] = loop_plot_artifacts
-                    except Exception:
-                        logger.warning("Could not generate Chemprop activity-cliff loop comparison plots.")
-                if activity_cliffs.get("summary_path"):
-                    try:
-                        Path(str(activity_cliffs["summary_path"])).write_text(
-                            json.dumps(activity_cliffs, indent=2) + "\n"
-                        )
-                    except Exception:
-                        logger.warning("Could not update Chemprop activity-cliff summary.")
-
-                recommended_variant = activity_cliffs.get("recommended_variant")
-                if (
-                    recommended_variant
-                    and recommended_variant != "baseline_loop_0"
-                    and recommended_variant in activity_cliff_variant_split_results
-                ):
-                    candidate_split_results = activity_cliff_variant_split_results[recommended_variant]
-                    if candidate_split_results:
-                        final_split_results = candidate_split_results
-                        primary_label = primary_run.get("strategy_label")
-                        final_primary_run = next(
-                            (
-                                item
-                                for item in candidate_split_results
-                                if item.get("strategy_label") == primary_label
-                            ),
-                            candidate_split_results[0],
-                        )
-                        final_primary_output_dir = Path(str(final_primary_run.get("output_dir")))
-
             if prediction_state is not None:
                 prediction_state["training_runs"].append(
                     {
@@ -2591,58 +2188,46 @@ class ChempropToolkit(Toolkit):
                                 "output_dir": item["output_dir"],
                                 "seed": item["seed"],
                             }
-                            for item in final_split_results
+                            for item in split_results
                         ],
-                        "activity_cliffs": {
-                            "enabled": bool(activity_cliffs.get("enabled")),
-                            "mode": activity_cliffs.get("mode"),
-                            "index_name": activity_cliffs.get("index_name"),
-                            "summary_path": activity_cliffs.get("summary_path"),
-                            "recommended_variant": activity_cliffs.get("recommended_variant"),
-                        },
                     }
                 )
 
             root_artifacts = self._materialize_primary_protocol_artifacts(
                 root_output_dir=root_output_path,
-                primary_output_dir=final_primary_output_dir,
+                primary_output_dir=primary_output_dir,
             )
-            validation_assessment = self._assess_protocol_results(final_split_results)
-            primary_ad_train_csv = final_primary_run.get("fixed_split_training_csv") or train_csv
+            validation_assessment = self._assess_protocol_results(split_results)
             ad_summary = self._build_applicability_domain(
-                train_csv=primary_ad_train_csv,
-                primary_run=final_primary_run,
-                primary_output_dir=final_primary_output_dir,
+                train_csv=train_csv,
+                primary_run=primary_run,
+                primary_output_dir=primary_output_dir,
                 model_id_hint=Path(resolved_output_dir).name,
                 task=task,
             )
             plot_artifacts: Dict[str, str] = {}
             target_column = task.target_columns[0] if task.target_columns else None
-            variant_uses_fixed_split_csv = any(
-                item.get("fixed_split_training_csv") for item in final_split_results
-            )
-            if target_column and not variant_uses_fixed_split_csv:
+            if target_column:
                 plots_output_dir = root_output_path / "artifacts" / "plots"
                 try:
                     plot_artifacts = build_qsar_training_plots(
                         train_csv=train_csv,
-                        split_results=final_split_results,
-                        primary_run=final_primary_run,
+                        split_results=split_results,
+                        primary_run=primary_run,
                         output_dir=str(plots_output_dir),
                         target_column=target_column,
                     )
                 except Exception:
                     plot_artifacts = {}
 
-            result = dict(final_primary_run)
+            result = dict(primary_run)
             result["output_dir"] = resolved_output_dir
             result["validation_protocol"] = protocol_policy["protocol"]
             result["validation_protocol_reason"] = protocol_policy["reason"]
             result["seed_policy"] = protocol_policy["seed_policy"]
             result["seed_policy_report"] = seed_policy_reporting_text(protocol_policy["seed_policy"])
             result["reproducibility"] = seed_policy_reproducibility_metadata(protocol_policy["seed_policy"])
-            result["split_results"] = final_split_results
-            result["baseline_split_results"] = split_results
+            result["split_results"] = split_results
             result["validation_assessment"] = validation_assessment
             result["compute_environment"] = training_policy["compute_environment"]
             result["training_profile"] = training_policy["training_profile"]
@@ -2656,20 +2241,16 @@ class ChempropToolkit(Toolkit):
             )
             total_completed_at = project_now()
             result["training_durations"] = self._summarize_training_durations(
-                split_results=final_split_results,
+                split_results=split_results,
                 total_started_at=total_started_at,
                 total_completed_at=total_completed_at,
             )
             result["applicability_domain"] = ad_summary
             result["activity_cliffs"] = activity_cliffs
-            result["selected_activity_cliff_variant"] = activity_cliffs.get("recommended_variant") or "baseline_loop_0"
             result["plot_artifacts"] = plot_artifacts
             result["trained_at"] = trained_at.isoformat()
             result["trained_date"] = trained_at.strftime("%d/%m/%Y")
             result["trained_time"] = trained_at.strftime("%H:%M:%S")
-            result["train_csv"] = train_csv
-            if final_primary_run.get("fixed_split_training_csv"):
-                result["selected_variant_training_csv"] = final_primary_run.get("fixed_split_training_csv")
 
             training_summary_path = Path(resolved_output_dir) / "cs_copilot_training_summary.json"
             training_summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2686,17 +2267,7 @@ class ChempropToolkit(Toolkit):
             result["summary_path"] = str(training_summary_path)
             if best_model_path.exists():
                 result["best_model_path"] = str(best_model_path)
-                result["model_path"] = str(best_model_path)
                 result["download_file_ref"] = str(best_model_path)
-            result["catalog_persisted"] = False
-            result["catalog_model_id"] = None
-            result["catalog_model_root"] = None
-            result["persistence_status"] = "session_artifact_only"
-            result["persistence_note"] = (
-                "Training completed, but catalog persistence requires a successful "
-                "persist_registered_model call. Do not report a catalog model_id unless "
-                "that persistence call returns persisted=true."
-            )
             result["summary_file_ref"] = str(training_summary_path)
             if root_artifacts.get("test_predictions_path"):
                 result["test_predictions_file_ref"] = root_artifacts["test_predictions_path"]
@@ -2716,7 +2287,7 @@ class ChempropToolkit(Toolkit):
                 config_path,
                 splits_path,
             ]
-            for item in [*final_split_results, *split_results]:
+            for item in split_results:
                 if item.get("summary_path"):
                     bundle_files.append(Path(item["summary_path"]).expanduser())
                 if item.get("test_predictions_path"):
@@ -2739,13 +2310,7 @@ class ChempropToolkit(Toolkit):
                     bundle_files.append(Path(variant["filtered_training_csv"]).expanduser())
                 training_result = variant.get("training_result") or {}
                 for split_result in training_result.get("split_results") or []:
-                    for artifact_key in (
-                        "model_path",
-                        "best_model_path",
-                        "test_predictions_path",
-                        "splits_path",
-                        "fixed_split_training_csv",
-                    ):
+                    for artifact_key in ("model_path", "test_predictions_path", "splits_path"):
                         if split_result.get(artifact_key):
                             bundle_files.append(Path(split_result[artifact_key]).expanduser())
             for plot_path in (activity_cliffs.get("plot_artifacts") or {}).values():
@@ -2759,7 +2324,6 @@ class ChempropToolkit(Toolkit):
             result["bundle_file_ref"] = str(bundle)
             result["training_bundle"] = str(bundle)
             result["bundle_download_tag"] = f"<file>{bundle}</file>"
-            training_summary_path.write_text(json.dumps(result, indent=2) + "\n")
             return result
         except Exception as exc:
             active_run_record["status"] = "failed"

@@ -496,7 +496,6 @@ QSAR_TRAINING_INSTRUCTIONS = [
     "  - Do not use OOF residuals, A-Wave, percentiles of retained compounds, or composite scores for V1 activity-cliff decisions.",
     "  - Feedback loops are opt-in only. If loops are not requested, keep the workflow as a standard QSAR training report enriched with Activity Cliffs; do not call it `annotate_only` in the user-facing report.",
     "  - If loops are requested, use only 1, 2, or 3 loops and preserve a fixed holdout policy for comparable variant evaluation.",
-    "  - If the user requests feedback loops, pass `activity_cliff_feedback=True` and `activity_cliff_feedback_loops=<requested_count>` directly in the same training tool call. Never run a separate initial training without those flags.",
     "  - Activity-cliff feedback loops are not benchmark campaigns. Do not call `benchmark_qsar_models` after a standard training run with Activity Cliffs unless the user separately requested a benchmark.",
     "  - Never pass columns beginning with `activity_cliff_` as model features.",
     "  - Canonical QSAR statuses are `experimental`, `workflow_demo`, `validated`, and `robust_validated`.",
@@ -522,8 +521,6 @@ QSAR_TRAINING_INSTRUCTIONS = [
     "  - Use the canonical gate labels exactly as written: `Dataset Gate`, `Hardest Split Gate`, `Robustness Gap Gate`, `Random Stability Gate`.",
     "  - If scaffold or cluster performance exceeds random performance, report it plainly as an observed result, not as an inconsistency.",
     "  - If any hard gate fails, stop immediately and present only completed steps, blocking issues, available files, and next steps.",
-    "  - In `FILES`, include the exact trained checkpoint path, training summary path, output_dir, task_type, SMILES column(s), target column(s), backend name, and validation_protocol so the model registry agent can register and persist the model from its own session.",
-    "  - Do not call the session checkpoint path a catalog path. Catalog persistence is only confirmed after the model registry agent returns `persisted=true` and a `model_root` under the internal model store.",
 ] + HANDLING_NEW_FILES_INSTRUCTIONS
 
 
@@ -539,7 +536,6 @@ MODEL_REGISTRY_INSTRUCTIONS = [
     "  - Distinguish strictly between `trained`, `session-registered`, `catalogued`, and `decision-ready`.",
     "  - Preserve applicability-domain artifacts and summaries when they are available from the training handoff.",
     "Step 3: Persist only what the evidence supports.",
-    "  - The training agent session state is not shared with you. For a newly trained model handoff, first call `register_model` with the checkpoint path, backend name, task type, SMILES columns, target columns, and training metadata from the handoff; then call `persist_registered_model` on that registered session model.",
     "  - Use `persist_registered_model` for persistent catalog registration.",
     "  - When the user explicitly asks to create an ensemble from persisted/catalog models, use `inspect_ensemble_candidates` then `create_ensemble_from_catalog`; do not train or benchmark new models for that request.",
     "  - A newly created ensemble is `workflow_demo` until it receives its own explicit ensemble-level evaluation.",
@@ -551,7 +547,6 @@ MODEL_REGISTRY_INSTRUCTIONS = [
     "  - If the training workflow succeeded but required gates are incomplete, persist only as `workflow_demo` and explicitly exclude it from routine selection.",
     "  - Do not skip persistence solely because stronger catalog models already exist for the same target or dataset. Existing stronger models affect recommendation/selection, not whether the current completed training run can be persisted as `workflow_demo`.",
     "  - When persisting a completed training run as `workflow_demo`, preserve all generated training artifacts including plots, applicability-domain files, and Activity Cliffs artifacts when present.",
-    "  - If `persist_registered_model` returns `persisted=false` or `materialized=false`, report the model as `Modele disponible en artefact de session uniquement`; do not call it catalogued and do not invent a catalog model id.",
     "Step 4: Be concise and deterministic.",
     "  - Final answer should be a machine-like handoff for another QSAR agent, not a polished report for the user.",
     "  - Use only these flat sections: HANDOFF_STATUS, MODEL_ID, REGISTRY_STATUS, BLOCKERS, FILES, NEXT_STEP.",

@@ -180,8 +180,6 @@ class TabICLBackend(PredictionBackend):
             "validation_protocol",
             "feature_columns",
             "split_payload",
-            "excluded_train_indices",
-            "activity_cliff_variant_id",
             "heartbeat_seconds",
             "heartbeat_path",
             "heartbeat_label",
@@ -367,10 +365,6 @@ class TabICLBackend(PredictionBackend):
             )
         split_sizes = _coerce_split_sizes(sanitized_args.pop("split_sizes", None))
         split_payload = sanitized_args.pop("split_payload", None)
-        excluded_train_indices = {
-            int(idx) for idx in (sanitized_args.pop("excluded_train_indices", None) or [])
-        }
-        activity_cliff_variant_id = sanitized_args.pop("activity_cliff_variant_id", None)
         random_state = int(sanitized_args.get("random_state", 42))
         split_type = str(sanitized_args.get("split_type", "random"))
         validation_protocol = str(sanitized_args.get("validation_protocol", "standard_qsar"))
@@ -405,20 +399,11 @@ class TabICLBackend(PredictionBackend):
             )
 
         split_map = split_payload[0]
-        source_train_indices = [int(idx) for idx in (split_map.get("train") or [])]
-        train_indices = [idx for idx in source_train_indices if idx not in excluded_train_indices]
-        excluded_from_train = sorted(set(source_train_indices) & excluded_train_indices)
+        train_indices = [int(idx) for idx in (split_map.get("train") or [])]
         val_indices = [int(idx) for idx in (split_map.get("val") or [])]
         test_indices = [int(idx) for idx in (split_map.get("test") or [])]
         if not train_indices or not val_indices or not test_indices:
             raise InvalidPredictionInputError("TabICL split payload must provide non-empty train/val/test indices.")
-        effective_split_payload = [
-            {
-                **split_map,
-                "train": train_indices,
-                "excluded_from_train": excluded_from_train,
-            }
-        ]
         train_df = working.iloc[train_indices].reset_index(drop=True)
         val_df = working.iloc[val_indices].reset_index(drop=True)
         test_df = working.iloc[test_indices].reset_index(drop=True)
@@ -558,11 +543,6 @@ class TabICLBackend(PredictionBackend):
             with model_artifact_path.open("wb") as fh:
                 pickle.dump(estimator, fh)
 
-        source_row_indices = split_map.get("source_row_indices") or []
-        if source_row_indices and all(int(idx) < len(source_row_indices) for idx in test_indices):
-            prediction_source_indices = [int(source_row_indices[int(idx)]) for idx in test_indices]
-        else:
-            prediction_source_indices = [int(idx) for idx in test_indices]
         predictions_df = pd.DataFrame(
             {
                 **(
@@ -572,8 +552,6 @@ class TabICLBackend(PredictionBackend):
                 target_column: y_pred.reset_index(drop=True),
                 "y_true": y_test.reset_index(drop=True),
                 "y_pred": y_pred.reset_index(drop=True),
-                "residual": y_test.reset_index(drop=True) - y_pred.reset_index(drop=True),
-                "source_row_index": prediction_source_indices,
             }
         )
         with S3.open(str(test_predictions_path), "w") as fh:
@@ -602,16 +580,6 @@ class TabICLBackend(PredictionBackend):
             "validation_protocol": validation_protocol,
             "split_sizes": split_sizes,
             "random_state": random_state,
-            "split_payload": split_payload,
-            "effective_split_payload": effective_split_payload,
-            "excluded_train_indices": sorted(excluded_train_indices),
-            "source_train_count": int(len(source_train_indices)),
-            "effective_train_count": int(len(train_indices)),
-            "validation_count": int(len(val_indices)),
-            "test_count": int(len(test_indices)),
-            "removed_from_train_count": int(len(excluded_from_train)),
-            "requested_exclusion_count": int(len(excluded_train_indices)),
-            "activity_cliff_variant_id": activity_cliff_variant_id,
             "checkpoint_version": checkpoint_cfg["checkpoint_version"],
             "checkpoint_path": persisted_checkpoint or str(checkpoint_path),
             "checkpoint_present_after_run": checkpoint_path.exists(),
@@ -633,7 +601,7 @@ class TabICLBackend(PredictionBackend):
             f'checkpoint_version = "{checkpoint_cfg["checkpoint_version"]}"',
         ]
         config_path.write_text("\n".join(config_payload) + "\n")
-        splits_path.write_text(json.dumps(effective_split_payload, indent=2) + "\n")
+        splits_path.write_text(json.dumps(split_payload, indent=2) + "\n")
         completed_at = project_now()
         summary["completed_at"] = completed_at.isoformat()
         summary["duration_seconds"] = round((completed_at - started_at).total_seconds(), 3)
@@ -655,16 +623,6 @@ class TabICLBackend(PredictionBackend):
             "split_type": split_type,
             "validation_protocol": validation_protocol,
             "split_sizes": split_sizes,
-            "split_payload": split_payload,
-            "effective_split_payload": effective_split_payload,
-            "excluded_train_indices": sorted(excluded_train_indices),
-            "source_train_count": int(len(source_train_indices)),
-            "effective_train_count": int(len(train_indices)),
-            "validation_count": int(len(val_indices)),
-            "test_count": int(len(test_indices)),
-            "removed_from_train_count": int(len(excluded_from_train)),
-            "requested_exclusion_count": int(len(excluded_train_indices)),
-            "activity_cliff_variant_id": activity_cliff_variant_id,
             "train_rows": train_rows,
             "val_rows": val_rows,
             "test_rows": test_rows,

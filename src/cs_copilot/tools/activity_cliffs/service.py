@@ -55,24 +55,10 @@ ACTIVITY_CLIFF_ARG_KEYS = {
     "activity_cliff_index",
     "activity_cliff_feedback",
     "activity_cliff_feedback_loops",
-    "activity_cliff_loops",
-    "feedback_loops",
-    "feedback_loop_count",
-    "sali_feedback_loops",
-    "sali_loops",
     "activity_cliff_similarity_threshold",
     "activity_cliff_top_k_neighbors",
     "activity_cliff_k_neighbors",
     "activity_cliff_flag_threshold",
-}
-
-ACTIVITY_CLIFF_ARG_ALIASES = {
-    "activity_cliff_k_neighbors": "activity_cliff_top_k_neighbors",
-    "activity_cliff_loops": "activity_cliff_feedback_loops",
-    "feedback_loops": "activity_cliff_feedback_loops",
-    "feedback_loop_count": "activity_cliff_feedback_loops",
-    "sali_feedback_loops": "activity_cliff_feedback_loops",
-    "sali_loops": "activity_cliff_feedback_loops",
 }
 
 
@@ -245,10 +231,12 @@ def split_activity_cliff_args(extra_args: Optional[Dict[str, Any]]) -> tuple[Dic
     cleaned: Dict[str, Any] = {}
     for key, value in raw.items():
         if key in ACTIVITY_CLIFF_ARG_KEYS:
-            normalized_key = ACTIVITY_CLIFF_ARG_ALIASES.get(key, key)
+            normalized_key = (
+                "activity_cliff_top_k_neighbors"
+                if key == "activity_cliff_k_neighbors"
+                else key
+            )
             activity_args[normalized_key] = value
-            if normalized_key == "activity_cliff_feedback_loops" and int(value or 0) > 0:
-                activity_args.setdefault("activity_cliff_feedback", True)
         else:
             cleaned[key] = value
     return cleaned, activity_args
@@ -849,11 +837,7 @@ def _load_test_indices_from_split_result(split_result: Dict[str, Any]) -> List[i
         return []
     if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
         return []
-    test_indices = [int(idx) for idx in (payload[0].get("test") or [])]
-    source_row_indices = payload[0].get("source_row_indices") or []
-    if source_row_indices and all(idx < len(source_row_indices) for idx in test_indices):
-        return [int(source_row_indices[idx]) for idx in test_indices]
-    return test_indices
+    return [int(idx) for idx in (payload[0].get("test") or [])]
 
 
 def _load_activity_cliff_tier_map(activity_cliffs: Dict[str, Any]) -> Dict[int, str]:
