@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -59,6 +60,28 @@ def _load_json(path: Optional[str]) -> Dict[str, Any]:
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def _resolve_catalog_model_id(catalog: PredictionModelCatalog, raw_model_id: str) -> str:
+    requested = str(raw_model_id or "").strip()
+    try:
+        catalog.get_model(requested)
+        return requested
+    except ValueError:
+        pass
+
+    tokens = [
+        match.group(0)
+        for match in re.finditer(r"[A-Za-z0-9][A-Za-z0-9_.:-]*", requested)
+        if len(match.group(0)) > 8
+    ]
+    for token in sorted(tokens, key=len, reverse=True):
+        try:
+            catalog.get_model(token)
+            return token
+        except ValueError:
+            continue
+    raise ValueError(f"Unknown catalog model_id: {raw_model_id}")
 
 
 def _flatten(value: Any) -> str:
@@ -606,6 +629,7 @@ class EnsembleToolkit(Toolkit):
     def summarize_ensemble(self, model_id: str, agent: Optional[Agent] = None) -> Dict[str, Any]:
         """Summarize a persisted ensemble model."""
         self.catalog.refresh_from_internal_store(persist=True)
+        model_id = _resolve_catalog_model_id(self.catalog, model_id)
         record = self.catalog.get_model(model_id)
         if record.backend_name != "ensemble":
             raise ValueError(f"Model `{model_id}` is not an ensemble.")
@@ -669,6 +693,7 @@ class EnsembleToolkit(Toolkit):
         if evaluation_kind not in EVALUATION_KINDS:
             raise ValueError(f"Unsupported evaluation_kind: {evaluation_kind}")
         self.catalog.refresh_from_internal_store(persist=True)
+        model_id = _resolve_catalog_model_id(self.catalog, model_id)
         record = self.catalog.get_model(model_id)
         if record.backend_name != "ensemble":
             raise ValueError(f"Model `{model_id}` is not an ensemble.")
