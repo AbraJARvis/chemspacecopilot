@@ -19,7 +19,12 @@ import pandas as pd
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
-from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, split_activity_cliff_args
+from cs_copilot.tools.activity_cliffs import (
+    attach_activity_cliff_variant_training,
+    build_activity_cliff_loop_comparison_plots,
+    prepare_activity_cliff_context,
+    split_activity_cliff_args,
+)
 
 from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionExecutionError, PredictionTaskSpec
@@ -475,7 +480,11 @@ class TabICLToolkit(Toolkit):
                 run_output_dir.mkdir(parents=True, exist_ok=True)
                 started_at = project_now()
                 run_args = {
-                    **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
+                    **{
+                        key: value
+                        for key, value in training_policy["extra_args"].items()
+                        if key not in {"seed_policy", "activity_cliffs"}
+                    },
                     "feature_columns": feature_columns,
                     "split_sizes": split_sizes,
                     "split_type": split_run["backend_split_type"],
@@ -547,6 +556,117 @@ class TabICLToolkit(Toolkit):
         if primary_run is None:
             raise ValueError("TabICL validation protocol did not produce a primary run.")
 
+        activity_cliff_variant_split_results: Dict[str, List[Dict[str, Any]]] = {}
+        if requested_extra_args.get("activity_cliffs", {}).get("mode") == "with_feedback_loops":
+            activity_cliffs = requested_extra_args["activity_cliffs"]
+            trainable_variants = [
+                variant
+                for variant in (activity_cliffs.get("variants") or [])
+                if variant.get("loop_index", 0) > 0 and variant.get("removed_count", 0) > 0
+            ]
+            for variant in trainable_variants:
+                variant_id = str(variant.get("variant_id"))
+                removed_indices = [int(idx) for idx in (variant.get("removed_row_indices") or [])]
+                variant_results: List[Dict[str, Any]] = []
+                for baseline_result in split_results:
+                    label = str(baseline_result.get("strategy_label") or baseline_result.get("strategy") or "split")
+                    run_output_dir = (
+                        root_output_path
+                        / "activity_cliff_variants"
+                        / safe_slug(variant_id)
+                        / f"{safe_slug(label)}_split"
+                    )
+                    run_output_dir.mkdir(parents=True, exist_ok=True)
+                    started_at = project_now()
+                    run_args = {
+                        **{
+                            key: value
+                            for key, value in training_policy["extra_args"].items()
+                            if key not in {"seed_policy", "activity_cliffs"}
+                        },
+                        "feature_columns": feature_columns,
+                        "split_sizes": split_sizes,
+                        "split_type": baseline_result.get("backend_split_type"),
+                        "split_payload": baseline_result.get("split_payload"),
+                        "excluded_train_indices": removed_indices,
+                        "activity_cliff_variant_id": variant_id,
+                        "random_state": baseline_result.get("seed", random_state),
+                        "validation_protocol": protocol_policy["protocol"],
+                        "heartbeat_path": str(marker_path),
+                        "heartbeat_label": f"{variant_id}:{label}",
+                        "heartbeat_seconds": 120.0,
+                        "disk_offload_dir": str((run_output_dir / "disk_offload").resolve()),
+                    }
+                    variant_result = self.backend.train_model(
+                        train_csv=train_csv,
+                        output_dir=str(run_output_dir),
+                        task=task,
+                        extra_args=run_args,
+                    )
+                    completed_at = project_now()
+                    variant_result["strategy"] = baseline_result.get("strategy")
+                    variant_result["strategy_family"] = baseline_result.get("strategy_family")
+                    variant_result["strategy_label"] = label
+                    variant_result["backend_split_type"] = baseline_result.get("backend_split_type")
+                    variant_result["seed"] = baseline_result.get("seed")
+                    variant_result["validation_protocol"] = protocol_policy["protocol"]
+                    variant_result["output_dir"] = str(run_output_dir)
+                    variant_result["started_at"] = variant_result.get("started_at") or started_at.isoformat()
+                    variant_result["completed_at"] = variant_result.get("completed_at") or completed_at.isoformat()
+                    variant_result["duration_seconds"] = variant_result.get("duration_seconds") or round(
+                        (completed_at - started_at).total_seconds(), 3
+                    )
+                    variant_result["activity_cliff_variant_id"] = variant_id
+                    variant_result["removed_tiers"] = variant.get("removed_tiers") or []
+                    variant_result["removed_count"] = variant.get("removed_count", 0)
+                    variant_result["remaining_rows"] = variant.get("remaining_rows")
+                    variant_results.append(variant_result)
+                activity_cliff_variant_split_results[variant_id] = variant_results
+
+            activity_cliffs = attach_activity_cliff_variant_training(
+                activity_cliffs=activity_cliffs,
+                baseline_split_results=split_results,
+                variant_split_results=activity_cliff_variant_split_results,
+                backend_name=self.backend.backend_name,
+            )
+            if activity_cliffs.get("variant_comparison_table"):
+                try:
+                    loop_plot_artifacts = build_activity_cliff_loop_comparison_plots(
+                        activity_cliffs,
+                        output_dir=str(root_output_path / "activity_cliffs"),
+                    )
+                    if loop_plot_artifacts:
+                        activity_cliffs["loop_comparison_plot_artifacts"] = loop_plot_artifacts
+                except Exception:
+                    logger.warning("Could not generate TabICL activity-cliff loop comparison plots.")
+            if activity_cliffs.get("summary_path"):
+                try:
+                    Path(str(activity_cliffs["summary_path"])).write_text(
+                        json.dumps(activity_cliffs, indent=2) + "\n"
+                    )
+                except Exception:
+                    logger.warning("Could not update TabICL activity-cliff summary.")
+            requested_extra_args["activity_cliffs"] = activity_cliffs
+
+            recommended_variant = activity_cliffs.get("recommended_variant")
+            if (
+                recommended_variant
+                and recommended_variant != "baseline_loop_0"
+                and recommended_variant in activity_cliff_variant_split_results
+            ):
+                candidate_split_results = activity_cliff_variant_split_results[recommended_variant]
+                if candidate_split_results:
+                    split_results = candidate_split_results
+                    primary_label = primary_run.get("strategy_label")
+                    primary_run = next(
+                        (
+                            item
+                            for item in candidate_split_results
+                            if item.get("strategy_label") == primary_label
+                        ),
+                        candidate_split_results[0],
+                    )
+
         root_artifacts = self._materialize_primary_protocol_artifacts(
             root_output_dir=root_output_path,
             primary_run=primary_run,
@@ -603,6 +723,9 @@ class TabICLToolkit(Toolkit):
         result["test_predictions_path"] = root_artifacts.get("test_predictions_path") or primary_run.get(
             "test_predictions_path"
         )
+        result["selected_activity_cliff_variant"] = (
+            requested_extra_args.get("activity_cliffs", {}).get("recommended_variant") or "baseline_loop_0"
+        )
         result["validation_protocol"] = protocol_policy["protocol"]
         result["validation_protocol_reason"] = protocol_policy["reason"]
         result["seed_policy"] = protocol_policy["seed_policy"]
@@ -614,7 +737,9 @@ class TabICLToolkit(Toolkit):
         result["training_profile"] = training_policy["training_profile"]
         result["profile_reason"] = training_policy["profile_reason"]
         result["effective_train_args"] = {
-            key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"
+            key: value
+            for key, value in training_policy["extra_args"].items()
+            if key not in {"seed_policy", "activity_cliffs"}
         }
         result["training_resources"] = self._summarize_training_resources(
             compute_env=training_policy["compute_environment"],
@@ -626,6 +751,8 @@ class TabICLToolkit(Toolkit):
             total_completed_at=total_completed_at,
         )
         result["applicability_domain"] = ad_summary
+        if requested_extra_args.get("activity_cliffs"):
+            result["activity_cliffs"] = requested_extra_args["activity_cliffs"]
         result["plot_artifacts"] = plot_artifacts
         result["trained_at"] = trained_at.isoformat()
         result["trained_date"] = trained_at.strftime("%d/%m/%Y")
@@ -861,6 +988,7 @@ class TabICLToolkit(Toolkit):
                     key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"
                 },
                 "seed_policy": protocol_policy["seed_policy"],
+                "activity_cliffs": activity_cliffs,
             },
         }
         job_path = self._write_worker_job(job_dir=job_dir, payload=job_payload)
@@ -897,7 +1025,7 @@ class TabICLToolkit(Toolkit):
         )
         if prediction_state is not None:
             prediction_state["active_training_run"] = None
-        result["activity_cliffs"] = activity_cliffs
+        result["activity_cliffs"] = result.get("activity_cliffs") or activity_cliffs
         result["plot_artifacts"] = result.get("plot_artifacts") or {}
         summary_path = result.get("canonical_summary_path") or result.get("summary_path")
         if summary_path:
