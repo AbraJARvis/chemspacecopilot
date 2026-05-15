@@ -714,11 +714,12 @@ class ChempropToolkit(Toolkit):
         )
         variant_args = {
             **train_args,
-            "split_type": "predetermined",
             "splits_column": fixed["split_column"],
             "num_replicates": 1,
             "ensemble_size": 1,
         }
+        variant_args.pop("split_type", None)
+        variant_args.pop("split_sizes", None)
         result = self.backend.train_model(
             train_csv=fixed["train_csv"],
             output_dir=str(output_path),
