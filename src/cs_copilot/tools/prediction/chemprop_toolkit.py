@@ -1786,15 +1786,7 @@ class ChempropToolkit(Toolkit):
                 "seed_policy_report": seed_policy_reporting_text(
                     summary_payload.get("seed_policy") or current.training_data_summary.get("seed_policy")
                 ),
-                "activity_cliffs": {
-                    "enabled": bool(activity_summary_payload.get("enabled")),
-                    "mode": activity_summary_payload.get("mode"),
-                    "index_name": activity_summary_payload.get("index_name"),
-                    "flagged_count": activity_summary_payload.get("flagged_count"),
-                    "priority_counts": activity_summary_payload.get("priority_counts"),
-                    "recommended_variant": activity_summary_payload.get("recommended_variant"),
-                    "reporting_handoff": activity_summary_payload.get("reporting_handoff"),
-                }
+                "activity_cliffs": deepcopy(activity_summary_payload)
                 if activity_summary_payload
                 else {},
             },
@@ -2216,6 +2208,7 @@ class ChempropToolkit(Toolkit):
         smiles_columns: Optional[List[str] | str] = None,
         target_columns: Optional[List[str] | str] = None,
         reaction_columns: Optional[List[str] | str] = None,
+        validation_protocol: Optional[str] = None,
         activity_cliff_index: str = "sali",
         activity_cliff_feedback: bool = False,
         activity_cliff_feedback_loops: int = 0,
@@ -2241,6 +2234,8 @@ class ChempropToolkit(Toolkit):
         active_marker_path = root_output_path / ".training_in_progress"
         trained_at = project_now()
         cleaned_extra_args, extra_activity_args = split_activity_cliff_args(extra_args)
+        if validation_protocol is not None:
+            cleaned_extra_args["validation_protocol"] = validation_protocol
         activity_args = {
             "activity_cliff_index": activity_cliff_index,
             "activity_cliff_feedback": activity_cliff_feedback,
