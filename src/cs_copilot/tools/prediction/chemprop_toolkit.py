@@ -10,6 +10,7 @@ import json
 import math
 import os
 import shutil
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -1354,8 +1355,34 @@ class ChempropToolkit(Toolkit):
         if artifacts.get("plot_artifacts"):
             payload["plot_artifacts"] = artifacts.get("plot_artifacts")
         if artifacts.get("activity_cliffs") and record.training_data_summary.get("activity_cliffs"):
-            payload["activity_cliffs"] = record.training_data_summary.get("activity_cliffs")
-            payload["activity_cliffs"]["artifacts"] = artifacts.get("activity_cliffs")
+            activity_payload = deepcopy(record.training_data_summary.get("activity_cliffs") or {})
+            activity_payload["artifacts"] = artifacts.get("activity_cliffs")
+            if artifacts.get("activity_cliff_variant_models"):
+                activity_payload["variant_model_artifacts"] = artifacts.get(
+                    "activity_cliff_variant_models"
+                )
+            if activity_payload.get("recommended_variant") and not activity_payload.get(
+                "selected_activity_cliff_variant"
+            ):
+                activity_payload["selected_activity_cliff_variant"] = activity_payload.get(
+                    "recommended_variant"
+                )
+            reporting_handoff = activity_payload.get("reporting_handoff") or {}
+            if (
+                reporting_handoff.get("recommended_variant")
+                and not reporting_handoff.get("selected_activity_cliff_variant")
+            ):
+                reporting_handoff["selected_activity_cliff_variant"] = reporting_handoff.get(
+                    "recommended_variant"
+                )
+            if (
+                reporting_handoff.get("variant_comparison_rows")
+                and not activity_payload.get("variant_comparison_table")
+            ):
+                activity_payload["variant_comparison_table"] = reporting_handoff.get(
+                    "variant_comparison_rows"
+                )
+            payload["activity_cliffs"] = activity_payload
         if governance_assessment:
             payload["governance_assessment"] = governance_assessment
         if status_reason:
@@ -2084,6 +2111,23 @@ class ChempropToolkit(Toolkit):
         y_true = actual_values[valid_mask].astype(float)
         y_pred = predicted_values[valid_mask].astype(float)
         residuals = y_true - y_pred
+        try:
+            enriched_predictions = predictions.copy()
+            enriched_predictions["y_true"] = actual_values.astype(float)
+            enriched_predictions["y_pred"] = predicted_values.astype(float)
+            enriched_predictions["residual"] = (
+                enriched_predictions["y_true"] - enriched_predictions["y_pred"]
+            )
+            source_row_indices = split_payload[0].get("source_row_indices") or []
+            if source_row_indices and all(int(idx) < len(source_row_indices) for idx in test_indices):
+                enriched_predictions["source_row_index"] = [
+                    int(source_row_indices[int(idx)]) for idx in test_indices
+                ]
+            else:
+                enriched_predictions["source_row_index"] = [int(idx) for idx in test_indices]
+            enriched_predictions.to_csv(preds_path, index=False)
+        except Exception:
+            pass
         mse = float((residuals.pow(2)).mean())
         mae = float(residuals.abs().mean())
         rae_denom = float((y_true - float(y_true.mean())).abs().sum())

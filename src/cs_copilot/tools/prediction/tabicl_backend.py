@@ -558,6 +558,11 @@ class TabICLBackend(PredictionBackend):
             with model_artifact_path.open("wb") as fh:
                 pickle.dump(estimator, fh)
 
+        source_row_indices = split_map.get("source_row_indices") or []
+        if source_row_indices and all(int(idx) < len(source_row_indices) for idx in test_indices):
+            prediction_source_indices = [int(source_row_indices[int(idx)]) for idx in test_indices]
+        else:
+            prediction_source_indices = [int(idx) for idx in test_indices]
         predictions_df = pd.DataFrame(
             {
                 **(
@@ -567,6 +572,8 @@ class TabICLBackend(PredictionBackend):
                 target_column: y_pred.reset_index(drop=True),
                 "y_true": y_test.reset_index(drop=True),
                 "y_pred": y_pred.reset_index(drop=True),
+                "residual": y_test.reset_index(drop=True) - y_pred.reset_index(drop=True),
+                "source_row_index": prediction_source_indices,
             }
         )
         with S3.open(str(test_predictions_path), "w") as fh:

@@ -837,7 +837,11 @@ def _load_test_indices_from_split_result(split_result: Dict[str, Any]) -> List[i
         return []
     if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
         return []
-    return [int(idx) for idx in (payload[0].get("test") or [])]
+    test_indices = [int(idx) for idx in (payload[0].get("test") or [])]
+    source_row_indices = payload[0].get("source_row_indices") or []
+    if source_row_indices and all(idx < len(source_row_indices) for idx in test_indices):
+        return [int(source_row_indices[idx]) for idx in test_indices]
+    return test_indices
 
 
 def _load_activity_cliff_tier_map(activity_cliffs: Dict[str, Any]) -> Dict[int, str]:
