@@ -337,9 +337,19 @@ class TabICLToolkit(Toolkit):
         if value is None:
             return None
         if isinstance(value, str):
-            parsed = json.loads(value)
+            stripped = value.strip()
+            if not stripped:
+                return []
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                if "," in stripped:
+                    return [item.strip() for item in stripped.split(",") if item.strip()]
+                return [stripped]
             if not isinstance(parsed, list):
-                raise ValueError(f"{argument_name} must be a list or a JSON-encoded list.")
+                if isinstance(parsed, str):
+                    return [parsed]
+                raise ValueError(f"{argument_name} must be a list, scalar string, or JSON-encoded list.")
             return parsed
         return list(value)
 

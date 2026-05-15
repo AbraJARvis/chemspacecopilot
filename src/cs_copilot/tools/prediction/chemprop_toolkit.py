@@ -114,6 +114,31 @@ def _sanitize_activity_cliff_description(description: Optional[str], activity_pa
     return sanitized
 
 
+def _normalize_json_list_argument(
+    value: Optional[List[Any] | str],
+    *,
+    argument_name: str,
+) -> Optional[List[Any]]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            if "," in stripped:
+                return [item.strip() for item in stripped.split(",") if item.strip()]
+            return [stripped]
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, str):
+            return [parsed]
+        raise ValueError(f"{argument_name} must be a list, scalar string, or JSON-encoded list.")
+    return list(value)
+
+
 def _latest_curation_artifacts(agent: Agent) -> Dict[str, Any]:
     """Return the latest QSAR curation artifacts recorded in the shared session."""
     curation_state = agent.session_state.get("qsar_curation") or {}
@@ -2189,16 +2214,10 @@ class ChempropToolkit(Toolkit):
         with S3.open(input_csv, "r") as fh:
             df = pd.read_csv(fh)
 
-        if isinstance(target_columns, str):
-            try:
-                parsed = json.loads(target_columns)
-            except json.JSONDecodeError:
-                target_columns = [target_columns]
-            else:
-                if isinstance(parsed, list):
-                    target_columns = parsed
-                else:
-                    target_columns = [str(parsed)]
+        target_columns = _normalize_json_list_argument(
+            target_columns,
+            argument_name="target_columns",
+        ) or []
 
         df = standardize_smiles_column(df, smiles_column)
         missing_targets = [column for column in target_columns if column not in df.columns]
@@ -2235,15 +2254,18 @@ class ChempropToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Launch Chemprop training and persist a lightweight training record."""
-        if isinstance(smiles_columns, str):
-            parsed = json.loads(smiles_columns)
-            smiles_columns = parsed if isinstance(parsed, list) else [str(parsed)]
-        if isinstance(target_columns, str):
-            parsed = json.loads(target_columns)
-            target_columns = parsed if isinstance(parsed, list) else [str(parsed)]
-        if isinstance(reaction_columns, str):
-            parsed = json.loads(reaction_columns)
-            reaction_columns = parsed if isinstance(parsed, list) else [str(parsed)]
+        smiles_columns = _normalize_json_list_argument(
+            smiles_columns,
+            argument_name="smiles_columns",
+        )
+        target_columns = _normalize_json_list_argument(
+            target_columns,
+            argument_name="target_columns",
+        )
+        reaction_columns = _normalize_json_list_argument(
+            reaction_columns,
+            argument_name="reaction_columns",
+        )
 
         resolved_output_dir = str(Path(output_dir).expanduser().resolve())
         root_output_path = Path(resolved_output_dir)
