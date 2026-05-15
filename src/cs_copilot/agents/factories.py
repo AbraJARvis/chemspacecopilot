@@ -691,7 +691,10 @@ class QSARTrainingFactory(BaseAgentFactory):
             tools=[
                 BenchmarkToolkit(),
                 ActivityCliffToolkit(),
-                ChempropToolkit(include_prediction_summary_export=False),
+                ChempropToolkit(
+                    include_prediction_summary_export=False,
+                    include_model_management=False,
+                ),
                 LightGBMToolkit(),
                 TabICLToolkit(),
                 MolecularFeatureToolkit(),

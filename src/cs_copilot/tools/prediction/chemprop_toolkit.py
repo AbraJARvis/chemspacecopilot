@@ -346,6 +346,7 @@ class ChempropToolkit(Toolkit):
         backend: Optional[ChempropBackend] = None,
         *,
         include_prediction_summary_export: bool = True,
+        include_model_management: bool = True,
     ):
         super().__init__("chemprop_prediction")
         primary_backend = backend or ChempropBackend()
@@ -369,17 +370,18 @@ class ChempropToolkit(Toolkit):
         self.catalog.refresh_from_internal_store(persist=True)
         self.register(self.describe_backend)
         self.register(self.describe_backends)
-        self.register(self.describe_catalog)
-        self.register(self.list_catalog_models)
-        self.register(self.summarize_catalog_model)
-        self.register(self.recommend_catalog_model)
-        self.register(self.register_catalog_model)
-        self.register(self.persist_registered_model)
-        self.register(self.register_model)
-        self.register(self.list_registered_models)
-        self.register(self.summarize_model)
-        self.register(self.predict_from_csv)
-        self.register(self.predict_from_smiles)
+        if include_model_management:
+            self.register(self.describe_catalog)
+            self.register(self.list_catalog_models)
+            self.register(self.summarize_catalog_model)
+            self.register(self.recommend_catalog_model)
+            self.register(self.register_catalog_model)
+            self.register(self.persist_registered_model)
+            self.register(self.register_model)
+            self.register(self.list_registered_models)
+            self.register(self.summarize_model)
+            self.register(self.predict_from_csv)
+            self.register(self.predict_from_smiles)
         if include_prediction_summary_export:
             self.register(self.export_prediction_summary)
         self.register(self.prepare_training_dataset)
@@ -1737,6 +1739,20 @@ class ChempropToolkit(Toolkit):
             model_id=canonical_model_id,
             source_artifacts=source_artifacts,
         )
+        if not materialized.get("materialized"):
+            return {
+                "catalog_path": str(self.catalog.source_path),
+                "model_id": current.model_id,
+                "status": current.status,
+                "persisted": False,
+                "materialized": False,
+                "reason": materialized.get("reason") or "model_materialization_failed",
+                "model_path": current.model_path,
+                "usage_hint": (
+                    "The model remains available as a session artifact only. Do not report it as "
+                    "catalogued until persist_registered_model returns persisted=true and a model_root."
+                ),
+            }
         resolved_model_path = materialized.get("model_path", current.model_path)
         resolved_metadata_path = materialized.get("metadata_path", current.metadata_path)
         requested_status = status or current.status
@@ -2589,6 +2605,15 @@ class ChempropToolkit(Toolkit):
                 result["best_model_path"] = str(best_model_path)
                 result["model_path"] = str(best_model_path)
                 result["download_file_ref"] = str(best_model_path)
+            result["catalog_persisted"] = False
+            result["catalog_model_id"] = None
+            result["catalog_model_root"] = None
+            result["persistence_status"] = "session_artifact_only"
+            result["persistence_note"] = (
+                "Training completed, but catalog persistence requires a successful "
+                "persist_registered_model call. Do not report a catalog model_id unless "
+                "that persistence call returns persisted=true."
+            )
             result["summary_file_ref"] = str(training_summary_path)
             if root_artifacts.get("test_predictions_path"):
                 result["test_predictions_file_ref"] = root_artifacts["test_predictions_path"]
