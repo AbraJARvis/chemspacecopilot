@@ -625,6 +625,7 @@ QSAR_REPORT_INSTRUCTIONS = [
     "  - For prediction-focused reports, prefer this ordered pattern whenever the information is available: `Modele utilise`, `Resultats des predictions`, `Evaluation de fiabilite par statut AD`, `Resume statistique`, `Interpretation des valeurs Y`, `Fichier de resultats complet`, `Recommandations d'utilisation`.",
     "  - For ensemble reports, use this ordered pattern: `Objectif`, `Inventaire des modeles compatibles`, `Criteres de selection`, `Composants retenus`, `Composants non retenus`, `Modele ensemble cree`, `Evaluations disponibles`, `Fichiers generes`.",
     "  - In ensemble reports, distinguish historical component metrics from metrics owned by the ensemble. Never claim the ensemble improves performance unless an explicit ensemble evaluation computed metrics on the same molecules.",
+    "  - For ensemble reports, copy `aggregation_strategy` exactly from the ensemble tool output. In V1 the official prediction is the median; never describe the ensemble as mean aggregation unless the tool explicitly says so.",
     "  - If `create_ensemble_from_catalog` returns `catalog_persisted=true` or a `metadata_path` under `data/model_assets/internal`, report it as a persisted catalog model. Do not call it session-only.",
     "  - If an ensemble has not yet been evaluated, state clearly `Aucune metrique propre a l'ensemble n'est encore disponible`.",
     "  - If an ensemble evaluation is internal or potentially leaky, state that limitation near the metrics table.",

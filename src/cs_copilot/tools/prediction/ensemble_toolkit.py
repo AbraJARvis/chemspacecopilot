@@ -610,17 +610,46 @@ class EnsembleToolkit(Toolkit):
         if record.backend_name != "ensemble":
             raise ValueError(f"Model `{model_id}` is not an ensemble.")
         payload = _load_json(record.model_path)
+        evidence_path = (record.selection_hints or {}).get("selection_evidence_path")
+        evidence_payload = _load_json(evidence_path)
+        included = set(evidence_payload.get("included_components") or [])
+        candidates = evidence_payload.get("candidates") or []
+        non_retained = [
+            {
+                "model_id": item.get("model_id"),
+                "backend_name": item.get("backend_name"),
+                "selection_decision": item.get("selection_decision"),
+                "selection_reason": item.get("selection_reason"),
+            }
+            for item in candidates
+            if item.get("model_id") not in included
+        ]
         return {
             "model_id": model_id,
             "status": record.status,
             "model_path": record.model_path,
             "metadata_path": record.metadata_path,
+            "aggregation_strategy": payload.get("aggregation_strategy"),
+            "official_prediction": "ensemble_prediction_median",
+            "uncertainty_strategy": payload.get("uncertainty_strategy"),
+            "created_from": payload.get("created_from"),
+            "created_at": payload.get("created_at"),
+            "selection_policy": payload.get("selection_policy") or {},
+            "selection_evidence_path": evidence_path,
+            "selection_report_path": (record.selection_hints or {}).get("selection_report_path"),
+            "models_inspected": evidence_payload.get("models_inspected"),
+            "compatible_count": evidence_payload.get("compatible_count"),
+            "non_retained_count": len(non_retained),
+            "non_retained_models": non_retained[:12],
             "component_count": len(payload.get("components") or []),
             "components": [
                 {
                     "model_id": item.get("model_id"),
                     "backend_name": item.get("backend_name"),
                     "status": item.get("status"),
+                    "representation_name": item.get("representation_name"),
+                    "evidence_tier": item.get("evidence_tier"),
+                    "selection_reason": item.get("selection_reason"),
                 }
                 for item in payload.get("components") or []
             ],
