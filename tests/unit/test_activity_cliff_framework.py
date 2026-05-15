@@ -249,3 +249,51 @@ def test_chemprop_fixed_split_csv_removes_train_only_and_keeps_holdouts(tmp_path
     assert fixed["split_payload"][0]["train"] == [0, 1]
     assert fixed_df["cs_copilot_source_row_index"].tolist() == [0, 2, 3, 4, 5]
     assert fixed_df["cs_copilot_split"].tolist() == ["train", "train", "val", "test", "test"]
+
+
+def test_chemprop_activity_cliff_baseline_variant_uses_fixed_split_contract(tmp_path):
+    dataset = pd.DataFrame(
+        {
+            "smiles": ["CCO", "CCN", "CCC", "CCCl", "CCBr", "CCI"],
+            "Y": [1.0, 1.2, 1.4, 2.0, 2.2, 2.4],
+        }
+    )
+    train_csv = tmp_path / "train.csv"
+    dataset.to_csv(train_csv, index=False)
+
+    captured = {}
+
+    class FakeBackend:
+        def train_model(self, *, train_csv, output_dir, task, extra_args):
+            captured["train_csv"] = train_csv
+            captured["output_dir"] = output_dir
+            captured["task"] = task
+            captured["extra_args"] = dict(extra_args)
+            return {"output_dir": output_dir, "metrics": {"test": {"r2": 0.1}}}
+
+    toolkit = object.__new__(ChempropToolkit)
+    toolkit.backend = FakeBackend()
+    toolkit._compute_training_metrics = lambda **_: {
+        "metrics": {"test": {"r2": 0.1, "rmse": 1.0, "mae": 0.8, "mse": 1.0, "n": 2}},
+        "source_train_count": 3,
+        "effective_train_count": 3,
+        "validation_count": 1,
+        "test_count": 2,
+    }
+
+    result = toolkit._train_activity_cliff_variant_run(
+        train_csv=str(train_csv),
+        task=PredictionTaskSpec(task_type="regression", smiles_columns=["smiles"], target_columns=["Y"]),
+        output_dir=str(tmp_path / "baseline_variant"),
+        train_args={"split_type": "random", "split_sizes": [0.8, 0.1, 0.1], "data_seed": 123},
+        baseline_result={"split_payload": [{"train": [0, 1, 2], "val": [3], "test": [4, 5]}]},
+        excluded_train_indices=[],
+        variant_id="baseline_loop_0",
+    )
+
+    assert captured["extra_args"]["splits_column"] == "cs_copilot_split"
+    assert "split_type" not in captured["extra_args"]
+    assert "split_sizes" not in captured["extra_args"]
+    assert captured["extra_args"]["num_replicates"] == 1
+    assert result["fixed_split_training_csv"].endswith("activity_cliff_fixed_split_training.csv")
+    assert result["removed_from_train_count"] == 0

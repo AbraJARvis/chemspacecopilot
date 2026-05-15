@@ -2418,6 +2418,67 @@ class ChempropToolkit(Toolkit):
             final_primary_run = primary_run
             final_primary_output_dir = primary_output_dir
             if activity_cliffs.get("mode") == "with_feedback_loops":
+                baseline_variant = next(
+                    (
+                        variant
+                        for variant in (activity_cliffs.get("variants") or [])
+                        if str(variant.get("variant_id")) == "baseline_loop_0"
+                    ),
+                    {},
+                )
+                fixed_baseline_split_results: List[Dict[str, Any]] = []
+                for baseline_result in split_results:
+                    label = str(baseline_result.get("strategy_label") or baseline_result.get("strategy") or "split")
+                    run_output_dir = (
+                        root_output_path
+                        / "activity_cliff_variants"
+                        / "baseline_loop_0"
+                        / f"{safe_slug(label)}_split"
+                    )
+                    run_args = {
+                        **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
+                        "data_seed": baseline_result.get("seed"),
+                    }
+                    active_run_record["current_split_label"] = f"baseline_loop_0:{label}"
+                    if prediction_state is not None:
+                        prediction_state["active_training_run"] = dict(active_run_record)
+                    if qsar_training_state is not None:
+                        qsar_training_state["active_run"] = dict(active_run_record)
+                    _write_active_training_marker(active_marker_path, active_run_record)
+
+                    fixed_baseline_result = self._train_activity_cliff_variant_run(
+                        train_csv=train_csv,
+                        task=task,
+                        output_dir=str(run_output_dir),
+                        train_args=run_args,
+                        baseline_result=baseline_result,
+                        excluded_train_indices=[],
+                        variant_id="baseline_loop_0",
+                    )
+                    fixed_baseline_result["strategy"] = baseline_result.get("strategy")
+                    fixed_baseline_result["strategy_family"] = baseline_result.get("strategy_family")
+                    fixed_baseline_result["strategy_label"] = label
+                    fixed_baseline_result["backend_split_type"] = baseline_result.get("backend_split_type")
+                    fixed_baseline_result["seed"] = baseline_result.get("seed")
+                    fixed_baseline_result["output_dir"] = str(run_output_dir)
+                    fixed_baseline_result["validation_protocol"] = protocol_policy["protocol"]
+                    fixed_baseline_result["removed_tiers"] = []
+                    fixed_baseline_result["removed_count"] = 0
+                    fixed_baseline_result["remaining_rows"] = baseline_variant.get("remaining_rows")
+                    fixed_baseline_split_results.append(fixed_baseline_result)
+
+                final_split_results = fixed_baseline_split_results
+                primary_label = primary_run.get("strategy_label")
+                final_primary_run = next(
+                    (
+                        item
+                        for item in fixed_baseline_split_results
+                        if item.get("strategy_label") == primary_label
+                    ),
+                    fixed_baseline_split_results[0] if fixed_baseline_split_results else primary_run,
+                )
+                final_primary_output_dir = Path(str(final_primary_run.get("output_dir")))
+
                 trainable_variants = [
                     variant
                     for variant in (activity_cliffs.get("variants") or [])
@@ -2470,7 +2531,7 @@ class ChempropToolkit(Toolkit):
 
                 activity_cliffs = attach_activity_cliff_variant_training(
                     activity_cliffs=activity_cliffs,
-                    baseline_split_results=split_results,
+                    baseline_split_results=fixed_baseline_split_results,
                     variant_split_results=activity_cliff_variant_split_results,
                     backend_name=self.backend.backend_name,
                 )
