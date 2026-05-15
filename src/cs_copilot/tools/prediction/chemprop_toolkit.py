@@ -1256,6 +1256,7 @@ class ChempropToolkit(Toolkit):
 
     def summarize_catalog_model(self, model_id: str) -> Dict[str, Any]:
         """Return the catalog metadata for one model, enriched with runtime checks."""
+        self.catalog.refresh_from_internal_store(persist=True)
         return self._annotate_record(self.catalog.get_model(model_id))
 
     def recommend_catalog_model(

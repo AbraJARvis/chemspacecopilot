@@ -552,9 +552,11 @@ class EnsembleToolkit(Toolkit):
             }
         return {
             "created": True,
+            "catalog_persisted": True,
             "model_id": model_id,
             "backend_name": "ensemble",
             "status": "workflow_demo",
+            "model_root": str(model_root.resolve()),
             "model_path": str(ensemble_path.resolve()),
             "metadata_path": str((model_root / "metadata.json").resolve()),
             "selection_evidence_path": str(evidence_path.resolve()),
