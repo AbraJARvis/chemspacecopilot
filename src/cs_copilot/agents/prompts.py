@@ -496,6 +496,7 @@ QSAR_TRAINING_INSTRUCTIONS = [
     "  - Do not use OOF residuals, A-Wave, percentiles of retained compounds, or composite scores for V1 activity-cliff decisions.",
     "  - Feedback loops are opt-in only. If loops are not requested, keep the workflow as a standard QSAR training report enriched with Activity Cliffs; do not call it `annotate_only` in the user-facing report.",
     "  - If loops are requested, use only 1, 2, or 3 loops and preserve a fixed holdout policy for comparable variant evaluation.",
+    "  - If the user requests feedback loops, pass `activity_cliff_feedback=True` and `activity_cliff_feedback_loops=<requested_count>` directly in the same training tool call. Never run a separate initial training without those flags.",
     "  - Activity-cliff feedback loops are not benchmark campaigns. Do not call `benchmark_qsar_models` after a standard training run with Activity Cliffs unless the user separately requested a benchmark.",
     "  - Never pass columns beginning with `activity_cliff_` as model features.",
     "  - Canonical QSAR statuses are `experimental`, `workflow_demo`, `validated`, and `robust_validated`.",

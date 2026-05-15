@@ -55,10 +55,24 @@ ACTIVITY_CLIFF_ARG_KEYS = {
     "activity_cliff_index",
     "activity_cliff_feedback",
     "activity_cliff_feedback_loops",
+    "activity_cliff_loops",
+    "feedback_loops",
+    "feedback_loop_count",
+    "sali_feedback_loops",
+    "sali_loops",
     "activity_cliff_similarity_threshold",
     "activity_cliff_top_k_neighbors",
     "activity_cliff_k_neighbors",
     "activity_cliff_flag_threshold",
+}
+
+ACTIVITY_CLIFF_ARG_ALIASES = {
+    "activity_cliff_k_neighbors": "activity_cliff_top_k_neighbors",
+    "activity_cliff_loops": "activity_cliff_feedback_loops",
+    "feedback_loops": "activity_cliff_feedback_loops",
+    "feedback_loop_count": "activity_cliff_feedback_loops",
+    "sali_feedback_loops": "activity_cliff_feedback_loops",
+    "sali_loops": "activity_cliff_feedback_loops",
 }
 
 
@@ -231,12 +245,10 @@ def split_activity_cliff_args(extra_args: Optional[Dict[str, Any]]) -> tuple[Dic
     cleaned: Dict[str, Any] = {}
     for key, value in raw.items():
         if key in ACTIVITY_CLIFF_ARG_KEYS:
-            normalized_key = (
-                "activity_cliff_top_k_neighbors"
-                if key == "activity_cliff_k_neighbors"
-                else key
-            )
+            normalized_key = ACTIVITY_CLIFF_ARG_ALIASES.get(key, key)
             activity_args[normalized_key] = value
+            if normalized_key == "activity_cliff_feedback_loops" and int(value or 0) > 0:
+                activity_args.setdefault("activity_cliff_feedback", True)
         else:
             cleaned[key] = value
     return cleaned, activity_args
