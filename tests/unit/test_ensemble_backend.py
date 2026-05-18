@@ -12,6 +12,7 @@ from cs_copilot.tools.prediction.backend import (
     PredictionModelRecord,
     PredictionTaskSpec,
 )
+from cs_copilot.tools.prediction.backend_capabilities import BackendCapabilities
 from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
 from cs_copilot.tools.prediction.ensemble_backend import EnsembleBackend
 from cs_copilot.tools.prediction.ensemble_toolkit import EnsembleToolkit
@@ -42,6 +43,52 @@ class FakeBackend(PredictionBackend):
 
     def train_model(self, train_csv, output_dir, task, *, extra_args=None):
         raise NotImplementedError
+
+
+class TabularFakeBackend(FakeBackend):
+    backend_name = "fake_tabular"
+
+    def predict_from_csv(self, input_csv, model_record, preds_path, *, return_uncertainty=False, extra_args=None):
+        df = pd.read_csv(input_csv)
+        pd.DataFrame({"prediction": df["fp_0000"].astype(float) + self.offset}).to_csv(preds_path, index=False)
+        return {"predictions_path": preds_path}
+
+
+FAKE_CAPABILITIES = {
+    "fake": BackendCapabilities(
+        backend_name="fake",
+        can_train=False,
+        can_predict=True,
+        prediction_input_kinds=("smiles_csv",),
+        requires_feature_preparation=False,
+        supported_task_types=("regression",),
+        supported_representations=("fake",),
+        supports_applicability_domain=False,
+        supports_uncertainty="none",
+    ),
+    "fake2": BackendCapabilities(
+        backend_name="fake2",
+        can_train=False,
+        can_predict=True,
+        prediction_input_kinds=("smiles_csv",),
+        requires_feature_preparation=False,
+        supported_task_types=("regression",),
+        supported_representations=("fake",),
+        supports_applicability_domain=False,
+        supports_uncertainty="none",
+    ),
+    "fake_tabular": BackendCapabilities(
+        backend_name="fake_tabular",
+        can_train=False,
+        can_predict=True,
+        prediction_input_kinds=("tabular_features_csv",),
+        requires_feature_preparation=True,
+        supported_task_types=("regression",),
+        supported_representations=("morgan_only",),
+        supports_applicability_domain=False,
+        supports_uncertainty="none",
+    ),
+}
 
 
 def _record(model_id: str, backend: str, model_path: Path, target: str = "pEC50", **kwargs):
@@ -95,7 +142,10 @@ def test_ensemble_backend_predicts_component_columns(tmp_path):
             }
         )
     )
-    backend = EnsembleBackend(backends={"fake": FakeBackend(1.0), "fake2": FakeBackend(3.0)})
+    backend = EnsembleBackend(
+        backends={"fake": FakeBackend(1.0), "fake2": FakeBackend(3.0)},
+        backend_capabilities=FAKE_CAPABILITIES,
+    )
     output = tmp_path / "preds.csv"
     record = _record("ens", "ensemble", ensemble_path)
 
@@ -124,6 +174,88 @@ def test_ensemble_backend_predicts_component_columns(tmp_path):
     assert [component["backend_name"] for component in summary["components"]] == ["fake", "fake2"]
     assert summary["prediction_summary"]["mean"] == 3.5
     assert summary["disagreement_summary"]["max"] == 1.0
+
+
+def test_ensemble_backend_uses_capabilities_for_tabular_preparation(tmp_path):
+    input_csv = tmp_path / "input.csv"
+    pd.DataFrame({"smiles": ["CC", "CCC"], "x": [1.0, 2.0]}).to_csv(input_csv, index=False)
+    model_path = tmp_path / "tabular.fake"
+    model_path.write_text("model")
+    ensemble_path = tmp_path / "ensemble.json"
+    ensemble_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "ensemble_kind": "catalog_consensus_regression",
+                "aggregation_strategy": "median",
+                "components": [
+                    {
+                        "model_id": "tabular",
+                        "component_slug": "tabular",
+                        "backend_name": "fake_tabular",
+                        "model_path": str(model_path),
+                        "inference_profile": {
+                            "representation_name": "morgan_only",
+                            "feature_columns": ["fp_0000"],
+                        },
+                        "task": {"task_type": "regression", "smiles_columns": ["smiles"], "target_columns": ["pEC50"]},
+                    },
+                ],
+            }
+        )
+    )
+    backend = EnsembleBackend(
+        backends={"fake_tabular": TabularFakeBackend(10.0)},
+        backend_capabilities=FAKE_CAPABILITIES,
+    )
+
+    def fake_morgan(input_csv, smiles_column="smiles", output_csv=None, **kwargs):
+        source = pd.read_csv(input_csv)
+        pd.DataFrame({"smiles": source["smiles"], "fp_0000": [5.0, 7.0]}).to_csv(output_csv, index=False)
+        return {"output_csv": output_csv}
+
+    backend.feature_toolkit = SimpleNamespace(smiles_to_morgan_fingerprints=fake_morgan)
+    output = tmp_path / "preds.csv"
+    record = _record("ens", "ensemble", ensemble_path)
+
+    result = backend.predict_from_csv(str(input_csv), record, str(output))
+
+    preds = pd.read_csv(output)
+    assert preds["prediction"].tolist() == [15.0, 17.0]
+    component_input = Path(result["component_input_paths"]["tabular"])
+    assert component_input.exists()
+    assert "fp_0000" in pd.read_csv(component_input).columns
+
+
+def test_ensemble_backend_rejects_configured_backend_without_capabilities(tmp_path):
+    input_csv = tmp_path / "input.csv"
+    pd.DataFrame({"smiles": ["CC"], "x": [1.0]}).to_csv(input_csv, index=False)
+    model_path = tmp_path / "model.fake"
+    model_path.write_text("model")
+    ensemble_path = tmp_path / "ensemble.json"
+    ensemble_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "ensemble_kind": "catalog_consensus_regression",
+                "aggregation_strategy": "median",
+                "components": [
+                    {
+                        "model_id": "uncap",
+                        "component_slug": "uncap",
+                        "backend_name": "uncap",
+                        "model_path": str(model_path),
+                        "task": {"task_type": "regression", "smiles_columns": ["smiles"], "target_columns": ["pEC50"]},
+                    },
+                ],
+            }
+        )
+    )
+    backend = EnsembleBackend(backends={"uncap": FakeBackend(1.0)})
+    record = _record("ens", "ensemble", ensemble_path)
+
+    with pytest.raises(Exception, match="no registered capabilities"):
+        backend.predict_from_csv(str(input_csv), record, str(tmp_path / "preds.csv"))
 
 
 def test_ensemble_backend_rejects_invalid_json(tmp_path):

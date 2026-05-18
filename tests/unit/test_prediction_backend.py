@@ -1,4 +1,6 @@
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +10,53 @@ from cs_copilot.tools.prediction.backend import (
     PredictionTaskSpec,
 )
 from cs_copilot.tools.prediction.chemprop_backend import ChempropBackend
+from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
+from cs_copilot.tools.prediction.backend_capabilities import (
+    backend_requires_feature_preparation,
+    describe_backend_capabilities,
+    get_backend_capabilities,
+)
+
+
+def test_backend_capabilities_registry_core_contracts():
+    chemprop = get_backend_capabilities("chemprop")
+    lightgbm = get_backend_capabilities("lightgbm")
+    tabicl = get_backend_capabilities("tabicl")
+    ensemble = get_backend_capabilities("ensemble")
+
+    assert chemprop.requires_feature_preparation is False
+    assert backend_requires_feature_preparation("lightgbm") is True
+    assert tabicl.requires_feature_preparation is True
+    assert ensemble.supports_component_orchestration is True
+    assert ensemble.supports_uncertainty == "component_disagreement_std"
+
+
+def test_backend_capabilities_unknown_backend_is_clear():
+    with pytest.raises(KeyError, match="No backend capabilities registered"):
+        get_backend_capabilities("unknown_backend")
+
+
+def test_describe_backend_capabilities_is_serializable():
+    payload = describe_backend_capabilities()
+
+    json.dumps(payload)
+    assert payload["chemprop"]["backend_name"] == "chemprop"
+    assert "morgan_rdkit_all" in payload["lightgbm"]["supported_representations"]
+
+
+def test_describe_backends_includes_official_capabilities(monkeypatch):
+    import cs_copilot.tools.prediction.chemprop_toolkit as toolkit_module
+
+    catalog = SimpleNamespace(refresh_from_internal_store=lambda persist=True: None)
+    monkeypatch.setattr(toolkit_module.PredictionModelCatalog, "load", lambda: catalog)
+
+    toolkit = ChempropToolkit(include_prediction_summary_export=False)
+
+    descriptions = toolkit.describe_backends()
+
+    assert descriptions["chemprop"]["capabilities"]["backend_name"] == "chemprop"
+    assert descriptions["lightgbm"]["capabilities"]["requires_feature_preparation"] is True
+    assert descriptions["ensemble"]["capabilities"]["supports_component_orchestration"] is True
 
 
 def test_chemprop_backend_describe_environment_shape():

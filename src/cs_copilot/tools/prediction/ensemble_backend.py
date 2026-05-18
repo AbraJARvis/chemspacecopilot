@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 import pandas as pd
 
@@ -19,6 +19,12 @@ from .backend import (
     PredictionExecutionError,
     PredictionModelRecord,
     PredictionTaskSpec,
+)
+from .backend_capabilities import (
+    BACKEND_CAPABILITIES,
+    BackendCapabilities,
+    backend_requires_feature_preparation,
+    get_backend_capabilities,
 )
 from .chemprop_backend import ChempropBackend
 from .lightgbm_backend import LightGBMBackend
@@ -92,11 +98,20 @@ class EnsembleBackend(PredictionBackend):
 
     backend_name = "ensemble"
 
-    def __init__(self, backends: Optional[Dict[str, PredictionBackend]] = None) -> None:
+    def __init__(
+        self,
+        backends: Optional[Dict[str, PredictionBackend]] = None,
+        *,
+        backend_capabilities: Optional[Mapping[str, BackendCapabilities]] = None,
+    ) -> None:
         self.backends = backends or {
             "chemprop": ChempropBackend(),
             "lightgbm": LightGBMBackend(),
             "tabicl": TabICLBackend(),
+        }
+        self.backend_capabilities: Dict[str, BackendCapabilities] = {
+            **BACKEND_CAPABILITIES,
+            **dict(backend_capabilities or {}),
         }
         self.feature_toolkit = MolecularFeatureToolkit()
 
@@ -107,11 +122,25 @@ class EnsembleBackend(PredictionBackend):
         return {
             "backend_name": self.backend_name,
             "available": True,
-            "capabilities": ["regression", "post_hoc_consensus", "median_aggregation"],
+            "capabilities": get_backend_capabilities(
+                self.backend_name,
+                registry=self.backend_capabilities,
+            ).as_dict(),
             "component_backends": {
                 name: backend.describe_environment() for name, backend in self.backends.items()
             },
         }
+
+    def _requires_feature_preparation(self, backend_name: str) -> bool:
+        try:
+            return backend_requires_feature_preparation(
+                backend_name,
+                registry=self.backend_capabilities,
+            )
+        except KeyError as exc:
+            raise InvalidPredictionInputError(
+                f"Backend `{backend_name}` is configured but has no registered capabilities."
+            ) from exc
 
     def validate_model_path(self, model_path: str) -> Path:
         path = Path(model_path).expanduser()
@@ -176,7 +205,7 @@ class EnsembleBackend(PredictionBackend):
         feature_cache: Dict[str, str],
         prefer_rdkit_all: bool,
     ) -> str:
-        if backend_name not in {"lightgbm", "tabicl"}:
+        if not self._requires_feature_preparation(backend_name):
             return source_csv
 
         expected_columns = _expected_feature_columns(record)
@@ -322,7 +351,9 @@ class EnsembleBackend(PredictionBackend):
         prefer_rdkit_all = False
         for component in components:
             backend_name = str(component.get("backend_name") or "")
-            if backend_name not in {"lightgbm", "tabicl"}:
+            if backend_name not in self.backends:
+                continue
+            if not self._requires_feature_preparation(backend_name):
                 continue
             record = self._component_record(component, model_record)
             representation = _component_representation(component).strip().lower()

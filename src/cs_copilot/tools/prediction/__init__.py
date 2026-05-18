@@ -9,6 +9,13 @@ from .backend import (
     PredictionModelRecord,
     PredictionTaskSpec,
 )
+from .backend_capabilities import (
+    BACKEND_CAPABILITIES,
+    BackendCapabilities,
+    backend_requires_feature_preparation,
+    describe_backend_capabilities,
+    get_backend_capabilities,
+)
 from .catalog import CatalogRecommendation, PredictionModelCatalog
 from .benchmark_toolkit import BenchmarkToolkit
 from .chemprop_backend import ChempropBackend
@@ -28,6 +35,11 @@ __all__ = [
     "InvalidPredictionInputError",
     "PredictionTaskSpec",
     "PredictionModelRecord",
+    "BackendCapabilities",
+    "BACKEND_CAPABILITIES",
+    "get_backend_capabilities",
+    "describe_backend_capabilities",
+    "backend_requires_feature_preparation",
     "PredictionModelCatalog",
     "CatalogRecommendation",
     "BenchmarkToolkit",

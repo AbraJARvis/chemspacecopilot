@@ -27,6 +27,7 @@ from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, spl
 
 from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionModelRecord, PredictionTaskSpec
+from .backend_capabilities import get_backend_capabilities
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
 from .chemprop_backend import ChempropBackend
 from .ensemble_backend import EnsembleBackend
@@ -1208,10 +1209,12 @@ class ChempropToolkit(Toolkit):
 
     def describe_backends(self) -> Dict[str, Any]:
         """Describe all configured prediction backends."""
-        return {
-            name: backend.describe_environment()
-            for name, backend in self.backends.items()
-        }
+        descriptions: Dict[str, Any] = {}
+        for name, backend in self.backends.items():
+            environment = backend.describe_environment()
+            environment["capabilities"] = get_backend_capabilities(name).as_dict()
+            descriptions[name] = environment
+        return descriptions
 
     def _get_backend(self, backend_name: str):
         backend = self.backends.get(backend_name)
