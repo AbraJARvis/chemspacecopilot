@@ -6,6 +6,7 @@ Enhanced PandasTools with pointer-based dataframe management and S3 support.
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Dict, Optional, Union
 from uuid import uuid4
@@ -40,6 +41,8 @@ _OPERATION_ALIASES = {
     "stat": "describe",
     "describe_dataframe": "describe",
     "describe_data": "describe",
+    "numeric_summary": "describe_numeric",
+    "numeric_stats": "describe_numeric",
     "list_columns": "columns",
     "column_info": "dtypes",
     "head_rows": "head",
@@ -160,6 +163,15 @@ def _normalize_operation_name(operation: str) -> str:
     if op.startswith("DataFrame."):
         op = op.split(".", 1)[1]
     return op
+
+
+def _parse_series_describe_expression(operation: str) -> Optional[str]:
+    """Accept the common LLM pseudo-operation df['column'].describe()."""
+    match = re.fullmatch(
+        r"(?:df|[A-Za-z_]\w*)\[['\"]([^'\"]+)['\"]\]\.describe\(\)",
+        operation.strip(),
+    )
+    return match.group(1) if match else None
 
 
 def _normalize_param_aliases(params: dict, canonical: str, aliases: tuple[str, ...]) -> None:
@@ -530,6 +542,10 @@ class PointerPandasTools(PandasTools):
             raise ValueError("operation cannot be empty")
 
         operation = _normalize_operation_name(operation)
+        described_column = _parse_series_describe_expression(operation)
+        if described_column is not None:
+            operation = "describe"
+            operation_parameters = {"column": described_column}
         operation = _OPERATION_ALIASES.get(operation.lower(), operation)
         params = _coerce_parameter_dict(
             operation_parameters, param_name="operation_parameters"
@@ -606,6 +622,10 @@ class PointerPandasTools(PandasTools):
                     "rows_returned": len(sample),
                     "total_rows": int(df.shape[0]),
                 }
+
+            if operation == "describe_numeric":
+                operation = "describe"
+                params.setdefault("include", "number")
 
             # Intercept to_dict to avoid context blow-up
             if operation == "to_dict":
@@ -833,6 +853,10 @@ class PointerPandasTools(PandasTools):
                         func = params.pop("operation_parameters")
                     elif "functions" in params:
                         func = params.pop("functions")
+                    elif "aggfunc" in params:
+                        func = params.pop("aggfunc")
+                    elif "agg_func" in params:
+                        func = params.pop("agg_func")
                     elif "agg_dict" in params:
                         func = params.pop("agg_dict")
                     elif "aggregation_dict" in params:
@@ -844,6 +868,10 @@ class PointerPandasTools(PandasTools):
                             f"func={{'column': 'mean'}}, func={{'column': ['min', 'max']}}. "
                             f"Received params: {params}"
                         )
+                if "column" in params and not isinstance(func, dict):
+                    columns = _coerce_columns(params.pop("column"), param_name="column")
+                    _validate_columns(df, columns, param_name="column")
+                    func = {column: func for column in columns}
 
                 # Ensure func is properly formatted
                 if isinstance(func, str):

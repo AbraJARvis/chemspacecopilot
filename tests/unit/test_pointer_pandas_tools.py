@@ -318,3 +318,32 @@ class TestPointerPandasTools:
         result_df = tools.dataframes[result["dataframe_name"]]
         assert result_df.loc["min", "standard_value"] == 100
         assert result_df.loc["max", "standard_value"] == 300
+
+    def test_prediction_report_dataframe_pseudo_ops(self, tools, sample_df):
+        """Accept harmless LLM pseudo-ops seen in QSAR prediction reports."""
+        tools.dataframes["test_df"] = sample_df
+
+        described = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="df['standard_value'].describe()",
+        )
+        assert described["name"] == "standard_value"
+        assert described["sample"]["count"] == 3.0
+
+        numeric = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="describe_numeric",
+        )
+        assert "dataframe_name" in numeric
+
+        aggregated = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="aggregate",
+            operation_parameters={
+                "column": "standard_value",
+                "aggfunc": ["min", "max", "mean", "std"],
+            },
+        )
+        result_df = tools.dataframes[aggregated["dataframe_name"]]
+        assert result_df.loc["min", "standard_value"] == 100
+        assert result_df.loc["max", "standard_value"] == 300
