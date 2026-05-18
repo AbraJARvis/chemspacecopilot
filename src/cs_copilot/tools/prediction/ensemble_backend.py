@@ -67,6 +67,26 @@ def _expected_feature_columns(record: PredictionModelRecord) -> list[str]:
     return [str(column) for column in columns]
 
 
+def _finite_float(value: Any) -> Optional[float]:
+    if pd.isna(value):
+        return None
+    return float(value)
+
+
+def _numeric_summary(series: pd.Series) -> Dict[str, Optional[float]]:
+    values = pd.to_numeric(series, errors="coerce").dropna()
+    if values.empty:
+        return {"min": None, "max": None, "mean": None, "median": None, "q90": None, "q95": None}
+    return {
+        "min": _finite_float(values.min()),
+        "max": _finite_float(values.max()),
+        "mean": _finite_float(values.mean()),
+        "median": _finite_float(values.median()),
+        "q90": _finite_float(values.quantile(0.90)),
+        "q95": _finite_float(values.quantile(0.95)),
+    }
+
+
 class EnsembleBackend(PredictionBackend):
     """Aggregate predictions from already-persisted component models."""
 
@@ -240,6 +260,40 @@ class EnsembleBackend(PredictionBackend):
         assembled.to_csv(component_input, index=False)
         return str(component_input)
 
+    def _top_disagreement_rows(
+        self,
+        *,
+        source_df: pd.DataFrame,
+        aggregate: pd.DataFrame,
+        limit: int = 5,
+    ) -> list[Dict[str, Any]]:
+        if "ensemble_prediction_std" not in aggregate.columns:
+            return []
+        rows: list[Dict[str, Any]] = []
+        sorted_indices = aggregate["ensemble_prediction_std"].sort_values(ascending=False).head(limit).index
+        id_columns = [
+            column for column in ("Molecule Name", "molecule_name", "OCNT_ID", "id", "smiles")
+            if column in source_df.columns
+        ]
+        for index in sorted_indices:
+            item: Dict[str, Any] = {"row_index": int(index)}
+            for column in id_columns:
+                item[column] = source_df.iloc[int(index)][column]
+            item["ensemble_prediction_median"] = _finite_float(
+                aggregate.iloc[int(index)]["ensemble_prediction_median"]
+            )
+            item["ensemble_prediction_std"] = _finite_float(
+                aggregate.iloc[int(index)]["ensemble_prediction_std"]
+            )
+            item["ensemble_prediction_min"] = _finite_float(
+                aggregate.iloc[int(index)]["ensemble_prediction_min"]
+            )
+            item["ensemble_prediction_max"] = _finite_float(
+                aggregate.iloc[int(index)]["ensemble_prediction_max"]
+            )
+            rows.append(item)
+        return rows
+
     def predict_from_csv(
         self,
         input_csv: str,
@@ -263,6 +317,7 @@ class EnsembleBackend(PredictionBackend):
         component_columns: Dict[str, pd.Series] = {}
         component_paths: Dict[str, str] = {}
         component_input_paths: Dict[str, str] = {}
+        component_summaries: list[Dict[str, Any]] = []
         feature_cache: Dict[str, str] = {}
         prefer_rdkit_all = False
         for component in components:
@@ -315,6 +370,18 @@ class EnsembleBackend(PredictionBackend):
                 component_columns[f"prediction_{slug}"] = values.reset_index(drop=True)
                 component_paths[slug] = str(component_path)
                 component_input_paths[slug] = prepared_input_csv
+                component_summaries.append(
+                    {
+                        "model_id": record.model_id,
+                        "component_slug": slug,
+                        "backend_name": backend_name,
+                        "representation_name": _component_representation(component) or "unknown",
+                        "prediction_column": f"prediction_{slug}",
+                        "predictions_path": str(component_path),
+                        "input_csv": prepared_input_csv,
+                        "status": "ok",
+                    }
+                )
             except Exception as exc:
                 failures.append(f"{component.get('model_id')}: {exc}")
 
@@ -337,14 +404,41 @@ class EnsembleBackend(PredictionBackend):
         )
         result_df = pd.concat([aggregate, component_df], axis=1)
         result_df.to_csv(output_path, index=False)
+        ensemble_inference_summary = {
+            "report_kind": "ensemble_inference",
+            "model_id": model_record.model_id,
+            "target_columns": list(model_record.task.target_columns),
+            "task_type": model_record.task.task_type,
+            "rows_in": int(len(source_df)),
+            "rows_predicted": int(len(result_df)),
+            "rows_failed": 0,
+            "aggregation_strategy": "median",
+            "official_prediction_column": "ensemble_prediction_median",
+            "uncertainty_strategy": "component_disagreement_std",
+            "uncertainty_note": (
+                "ensemble_prediction_std is inter-component disagreement, not calibrated predictive uncertainty."
+            ),
+            "component_count": len(component_columns),
+            "components": component_summaries,
+            "output_columns": list(result_df.columns),
+            "prediction_summary": _numeric_summary(aggregate["ensemble_prediction_median"]),
+            "disagreement_summary": _numeric_summary(aggregate["ensemble_prediction_std"]),
+            "top_disagreement_rows": self._top_disagreement_rows(
+                source_df=source_df,
+                aggregate=aggregate,
+            ),
+            "applicability_domain_applied": False,
+        }
         return {
             "backend_name": self.backend_name,
             "predictions_path": str(output_path),
             "component_prediction_paths": component_paths,
             "component_input_paths": component_input_paths,
+            "components": component_summaries,
             "component_count": len(component_columns),
             "aggregation_strategy": "median",
             "uncertainty_strategy": "component_disagreement_std",
+            "ensemble_inference_summary": ensemble_inference_summary,
             "return_uncertainty": return_uncertainty,
         }
 

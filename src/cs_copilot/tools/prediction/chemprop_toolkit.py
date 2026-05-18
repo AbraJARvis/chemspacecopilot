@@ -1763,6 +1763,7 @@ class ChempropToolkit(Toolkit):
             "return_uncertainty": return_uncertainty,
             "applicability_domain": result.get("applicability_domain") or {},
             "applicability_domain_columns": result.get("applicability_domain_columns") or [],
+            "ensemble_inference_summary": result.get("ensemble_inference_summary") or {},
         }
         history_entry = {
             "model_id": model_id,
@@ -1776,6 +1777,7 @@ class ChempropToolkit(Toolkit):
             "num_rows": num_rows,
             "applicability_domain": result.get("applicability_domain") or {},
             "applicability_domain_columns": result.get("applicability_domain_columns") or [],
+            "ensemble_inference_summary": result.get("ensemble_inference_summary") or {},
         }
         prediction_state["prediction_history"].append(history_entry)
         result["preds_path"] = str(output_path)

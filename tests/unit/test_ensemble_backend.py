@@ -116,6 +116,14 @@ def test_ensemble_backend_predicts_component_columns(tmp_path):
     ]
     assert preds["prediction"].tolist() == [3.0, 4.0]
     assert preds["ensemble_component_count"].tolist() == [2, 2]
+    summary = result["ensemble_inference_summary"]
+    assert summary["report_kind"] == "ensemble_inference"
+    assert summary["rows_predicted"] == 2
+    assert summary["official_prediction_column"] == "ensemble_prediction_median"
+    assert summary["uncertainty_strategy"] == "component_disagreement_std"
+    assert [component["backend_name"] for component in summary["components"]] == ["fake", "fake2"]
+    assert summary["prediction_summary"]["mean"] == 3.5
+    assert summary["disagreement_summary"]["max"] == 1.0
 
 
 def test_ensemble_backend_rejects_invalid_json(tmp_path):
