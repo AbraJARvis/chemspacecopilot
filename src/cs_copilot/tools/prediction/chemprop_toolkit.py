@@ -1728,7 +1728,7 @@ class ChempropToolkit(Toolkit):
         df = standardize_smiles_column(df, smiles_found)
         if smiles_found != "smiles":
             df = df.rename(columns={smiles_found: "smiles"})
-        local_input = Path(".files") / "prediction_inputs" / f"{model_id}_input.csv"
+        local_input = (Path(".files") / "prediction_inputs" / f"{model_id}_input.csv").resolve()
         local_input.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(local_input, index=False)
 
