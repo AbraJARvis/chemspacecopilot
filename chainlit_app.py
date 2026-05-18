@@ -370,12 +370,17 @@ def _find_polished_qsar_report_start(full_content: str, *, after: int = -1) -> i
         r"(?im)^\s*Rapport(?:\s|$|[QSARdEéeD'’:\-—])",
         r"(?im)^\s*pEC50 Prediction Report\b",
         r"(?im)^\s*Prediction Report\b",
+        r"(?im)^\s*Résumé de l['’]ensemble\b",
+        r"(?im)^\s*Resume de l['’]ensemble\b",
+        r"(?im)^\s*Ensemble Summary\b",
         r"(?im)^\s*Résumé des prédictions\b",
         r"(?im)^\s*Resume des predictions\b",
         r"(?im)^\s*Résumé des résultats\b",
         r"(?im)^\s*Resume des resultats\b",
         r"(?i)L['’]inférence a été réalisée",
         r"(?i)L['’]inference a ete realisee",
+        r"(?i)Voici le résumé",
+        r"(?i)Voici le resume",
         r"(?i)Voici les résultats",
         r"(?i)Voici les resultats",
         r"(?i)Here are the results",
@@ -408,7 +413,12 @@ def _extract_qsar_final_report(full_content: str) -> str:
 
     polished_start = _find_polished_qsar_report_start(full_content)
     if polished_start >= 0:
-        return full_content[polished_start:].strip()
+        candidate = full_content[polished_start:].strip()
+        handoff_tail = _QSAR_HANDOFF_LABEL_RE.search(candidate)
+        if handoff_tail:
+            candidate = candidate[:handoff_tail.start()].strip()
+        if candidate:
+            return candidate
 
     report_markers = [
         "QSAR Dataset Curation Report",

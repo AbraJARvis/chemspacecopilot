@@ -261,6 +261,7 @@ def get_qsar_agent_team(
             "For curation-only requests, orchestrate: dataset_curation -> qsar_report.",
             "For training requests, orchestrate: dataset_curation -> qsar_training -> model_registry -> qsar_report.",
             "For prediction requests on existing models, orchestrate: model_inference -> qsar_report.",
+            "For existing ensemble summary requests, orchestrate: model_registry -> qsar_report. Do not return the model_registry handoff directly to the user.",
             "For explicit post-prediction LaTeX export requests, including the standalone shortcut token `latex` with optional `@` and any casing (`@Latex`, `@latex`, `@LATEX`, `@LaTeX`, `Latex`, `latex`, `LaTeX`), orchestrate `model_inference` only and treat the task as a documentation export for the latest completed prediction state.",
             "When the user asks only for LaTeX or payload export, do not rerun prediction and do not route to `qsar_report` unless the user also asked for a narrative report.",
             "For export-only LaTeX or payload requests handled by `model_inference`, return the `model_inference` answer verbatim without adding any extra narrative.",
