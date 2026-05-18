@@ -1076,6 +1076,7 @@ async def _stream_line_with_elements(
     if "<file>" in line:
         line = re.sub(r"^\s*[-*•]\s+", "", line)
         line = re.sub(r"\s+[—-]\s*<file>", " <file>", line)
+        line = re.sub(r"`\s*(<file>.*?</file>)\s*`", r"\1", line)
 
     if _should_suppress_file_path_line(line):
         return assistant or await _create_streaming_message()
