@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from zipfile import ZipFile
 
 import pytest
 
@@ -16,6 +17,13 @@ from cs_copilot.tools.prediction.backend_capabilities import (
     backend_supports_component_orchestration,
     describe_backend_capabilities,
     get_backend_capabilities,
+)
+from cs_copilot.tools.prediction.session_state import (
+    bundle_artifacts,
+    discover_curation_artifacts_near_dataset,
+    get_prediction_state,
+    latest_curation_artifacts,
+    write_active_training_marker,
 )
 
 
@@ -46,6 +54,71 @@ def test_describe_backend_capabilities_is_serializable():
     json.dumps(payload)
     assert payload["chemprop"]["backend_name"] == "chemprop"
     assert "morgan_rdkit_all" in payload["lightgbm"]["supported_representations"]
+
+
+def test_shared_prediction_state_helpers_initialize_backend_neutral_state(tmp_path):
+    agent = SimpleNamespace(session_state={})
+
+    state = get_prediction_state(agent)
+
+    assert state["registered"] == {}
+    assert state["prediction_history"] == []
+    assert state["training_runs"] == []
+    assert state["active_training_run"] is None
+
+    marker = tmp_path / "run" / ".training_in_progress"
+    write_active_training_marker(marker, {"status": "running", "backend_name": "fake"})
+    assert json.loads(marker.read_text())["backend_name"] == "fake"
+
+
+def test_shared_curation_artifact_helpers_are_backend_neutral(tmp_path):
+    report = tmp_path / "dataset_curation_report.json"
+    report.write_text("{}")
+    artifacts_dir = tmp_path / "dataset_curation_artifacts"
+    artifacts_dir.mkdir()
+    (artifacts_dir / "curation_manifest.json").write_text("{}")
+    dataset = tmp_path / "dataset_curated.csv"
+    dataset.write_text("smiles,pEC50\nCCO,5.0\n")
+
+    discovered = discover_curation_artifacts_near_dataset(str(dataset))
+
+    assert discovered["artifacts"]["curation_report_json"] == str(report)
+    assert discovered["artifacts"]["manifest_json"] == str(artifacts_dir / "curation_manifest.json")
+
+    agent = SimpleNamespace(
+        session_state={
+            "qsar_curation": {
+                "last_result": {
+                    "curation_backend_used": "chembl_structure_v1",
+                    "curated_dataset_path": str(dataset),
+                    "rows_in": 2,
+                    "rows_out": 1,
+                    "report_path": str(report),
+                }
+            }
+        }
+    )
+    latest = latest_curation_artifacts(agent)
+
+    assert latest["curation_backend"] == "chembl_structure_v1"
+    assert latest["artifacts"]["curation_report_json"] == str(report)
+
+
+def test_shared_bundle_artifacts_deduplicates_archive_names(tmp_path):
+    first = tmp_path / "a" / "same.txt"
+    second = tmp_path / "b" / "same.txt"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_text("first")
+    second.write_text("second")
+
+    bundle = bundle_artifacts(tmp_path / "bundle.zip", [first, second])
+
+    assert bundle.exists()
+    with ZipFile(bundle) as zf:
+        names = zf.namelist()
+    assert len(names) == 2
+    assert len(set(names)) == 2
 
 
 def test_describe_backends_includes_official_capabilities(monkeypatch):

@@ -13,7 +13,6 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from zipfile import ZIP_DEFLATED, ZipFile
 
 import pandas as pd
 import torch
@@ -47,17 +46,14 @@ from .qsar_training_policy import (
     summarize_training_durations,
 )
 from .qsar_plots import build_qsar_training_plots
+from .session_state import (
+    bundle_artifacts,
+    discover_curation_artifacts_near_dataset,
+    get_prediction_state,
+    latest_curation_artifacts,
+    write_active_training_marker,
+)
 from .tabicl_backend import TabICLBackend
-
-def _get_prediction_state(agent: Agent) -> Dict[str, Any]:
-    state = agent.session_state.setdefault("prediction_models", {})
-    state.setdefault("registered", {})
-    state.setdefault("last_prediction", {})
-    state.setdefault("prediction_history", [])
-    state.setdefault("catalog_recommendations", {})
-    state.setdefault("training_runs", [])
-    state.setdefault("active_training_run", None)
-    return state
 
 
 def _prediction_output_path(model_id: str, preds_path: Optional[str] = None) -> Path:
@@ -68,24 +64,6 @@ def _prediction_output_path(model_id: str, preds_path: Optional[str] = None) -> 
 
 def _strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed:")].copy()
-
-
-def _bundle_artifacts(bundle_path: Path, files: List[Path]) -> Path:
-    bundle_path.parent.mkdir(parents=True, exist_ok=True)
-    seen_names: Dict[str, int] = {}
-    with ZipFile(bundle_path, "w", compression=ZIP_DEFLATED) as zf:
-        for file_path in files:
-            if file_path.exists():
-                arcname = "/".join(file_path.parts[-8:])
-                duplicate_count = seen_names.get(arcname, 0)
-                seen_names[arcname] = duplicate_count + 1
-                if duplicate_count:
-                    path = Path(arcname)
-                    arcname = str(
-                        path.with_name(f"{path.stem}_{duplicate_count}{path.suffix}")
-                    )
-                zf.write(file_path, arcname=arcname)
-    return bundle_path
 
 
 def _relative_posix(path: Path, start: Path) -> str:
@@ -107,67 +85,6 @@ def _sanitize_activity_cliff_description(description: Optional[str], activity_pa
     sanitized = description.replace("1 feedback loop", replacement)
     sanitized = sanitized.replace("1 feedback loops", replacement)
     return sanitized
-
-
-def _latest_curation_artifacts(agent: Agent) -> Dict[str, Any]:
-    """Return the latest QSAR curation artifacts recorded in the shared session."""
-    curation_state = agent.session_state.get("qsar_curation") or {}
-    latest = curation_state.get("last_result") or {}
-    if not isinstance(latest, dict):
-        return {}
-    artifacts = dict(latest.get("curation_artifacts") or {})
-    if latest.get("report_path"):
-        artifacts["curation_report_json"] = latest.get("report_path")
-    if latest.get("bundle_file_ref"):
-        artifacts["curation_bundle_zip"] = latest.get("bundle_file_ref")
-    if not artifacts and not latest.get("curated_dataset_path"):
-        return {}
-    return {
-        "curation_backend": latest.get("curation_backend_used") or latest.get("curation_backend"),
-        "curated_dataset_path": latest.get("curated_dataset_path"),
-        "rows_in": latest.get("rows_in"),
-        "rows_out": latest.get("rows_out"),
-        "artifacts": artifacts,
-    }
-
-
-def _discover_curation_artifacts_near_dataset(dataset_path: Optional[str]) -> Dict[str, Any]:
-    """Best-effort discovery for curation files written next to session datasets."""
-    if not dataset_path:
-        return {}
-    path = Path(str(dataset_path)).expanduser()
-    parent = path.parent
-    if not parent.exists():
-        return {}
-    artifacts: Dict[str, str] = {}
-    artifact_dirs = sorted(
-        parent.glob("*_curation_artifacts"),
-        key=lambda candidate: candidate.stat().st_mtime if candidate.exists() else 0,
-        reverse=True,
-    )
-    if artifact_dirs:
-        artifact_dir = artifact_dirs[0]
-        known_files = {
-            "standardization_map_csv": "curation_standardization_map.csv",
-            "duplicate_identity_groups_csv": "curation_duplicate_identity_groups.csv",
-            "removed_rows_csv": "curation_removed_rows.csv",
-            "identity_diagnostics_json": "curation_identity_diagnostics.json",
-            "manifest_json": "curation_manifest.json",
-        }
-        for key, filename in known_files.items():
-            candidate = artifact_dir / filename
-            if candidate.exists():
-                artifacts[key] = str(candidate)
-    report_candidates = sorted(
-        parent.glob("*curation_report*.json"),
-        key=lambda candidate: candidate.stat().st_mtime if candidate.exists() else 0,
-        reverse=True,
-    )
-    if report_candidates:
-        artifacts["curation_report_json"] = str(report_candidates[0])
-    if not artifacts:
-        return {}
-    return {"artifacts": artifacts}
 
 
 def _load_json_if_available(path: Path) -> Dict[str, Any]:
@@ -301,11 +218,6 @@ def _canonical_display_name(
         parts.append(_safe_display_token(representation))
     parts.append(version_token)
     return " ".join(parts).strip()
-
-
-def _write_active_training_marker(marker_path: Path, payload: Dict[str, Any]) -> None:
-    marker_path.parent.mkdir(parents=True, exist_ok=True)
-    marker_path.write_text(json.dumps(payload, indent=2))
 
 
 def _find_first_existing_path(candidates: List[Path]) -> Optional[Path]:
@@ -1287,7 +1199,7 @@ class ChempropToolkit(Toolkit):
         )
 
         if agent is not None:
-            prediction_state = _get_prediction_state(agent)
+            prediction_state = get_prediction_state(agent)
             prediction_state["catalog_recommendations"] = recommendation
 
         return recommendation
@@ -1410,7 +1322,7 @@ class ChempropToolkit(Toolkit):
             applicability_domain=applicability_domain or {},
         )
 
-        prediction_state = _get_prediction_state(agent)
+        prediction_state = get_prediction_state(agent)
         prediction_state["registered"][model_id] = record.as_dict()
         return record.as_dict()
 
@@ -1440,7 +1352,7 @@ class ChempropToolkit(Toolkit):
             raise ValueError("Agent is required to persist a registered model")
 
         current = self._resolve_record(model_id, agent)
-        prediction_state = _get_prediction_state(agent)
+        prediction_state = get_prediction_state(agent)
         training_runs = prediction_state.get("training_runs") or []
         train_csv = None
         matching_training_run = None
@@ -1544,8 +1456,8 @@ class ChempropToolkit(Toolkit):
             "activity_cliffs": summary_payload.get("activity_cliffs") or {},
             "curation": (
                 summary_payload.get("curation")
-                or _latest_curation_artifacts(agent)
-                or _discover_curation_artifacts_near_dataset(train_csv)
+                or latest_curation_artifacts(agent)
+                or discover_curation_artifacts_near_dataset(train_csv)
             ),
         }
 
@@ -1660,21 +1572,21 @@ class ChempropToolkit(Toolkit):
         """List models registered in the current session."""
         if agent is None:
             return []
-        prediction_state = _get_prediction_state(agent)
+        prediction_state = get_prediction_state(agent)
         return list(prediction_state["registered"].values())
 
     def summarize_model(self, model_id: str, agent: Optional[Agent] = None) -> Dict[str, Any]:
         """Return the stored summary for a registered model."""
         if agent is None:
             raise ValueError("Agent is required to summarize a model")
-        prediction_state = _get_prediction_state(agent)
+        prediction_state = get_prediction_state(agent)
         record = prediction_state["registered"].get(model_id)
         if not record:
             raise ValueError(f"Unknown model_id: {model_id}")
         return self._annotate_record(PredictionModelRecord.from_dict(record))
 
     def _resolve_record(self, model_id: str, agent: Agent) -> PredictionModelRecord:
-        prediction_state = _get_prediction_state(agent)
+        prediction_state = get_prediction_state(agent)
         payload = prediction_state["registered"].get(model_id)
         if payload is None:
             raise ValueError(f"Unknown model_id: {model_id}")
@@ -1755,7 +1667,7 @@ class ChempropToolkit(Toolkit):
         preview = preview_df.head(5).to_dict(orient="records")
         num_rows = int(len(preview_df))
 
-        prediction_state = _get_prediction_state(agent)
+        prediction_state = get_prediction_state(agent)
         prediction_state["last_prediction"] = {
             "model_id": model_id,
             "input_csv": str(local_input),
@@ -1829,7 +1741,7 @@ class ChempropToolkit(Toolkit):
         if agent is None:
             raise ValueError("Agent is required to export a prediction summary")
 
-        prediction_state = _get_prediction_state(agent)
+        prediction_state = get_prediction_state(agent)
         history = prediction_state.get("prediction_history") or []
         if not history:
             raise ValueError("No prediction history is available for summary export")
@@ -2102,12 +2014,12 @@ class ChempropToolkit(Toolkit):
         }
 
         if agent is not None:
-            prediction_state = _get_prediction_state(agent)
+            prediction_state = get_prediction_state(agent)
             prediction_state["active_training_run"] = dict(active_run_record)
             qsar_training_state = agent.session_state.setdefault("qsar_training", {})
             qsar_training_state["active_run"] = dict(active_run_record)
 
-        _write_active_training_marker(active_marker_path, active_run_record)
+        write_active_training_marker(active_marker_path, active_run_record)
 
         split_results: List[Dict[str, Any]] = []
         primary_run: Optional[Dict[str, Any]] = None
@@ -2135,7 +2047,7 @@ class ChempropToolkit(Toolkit):
                     prediction_state["active_training_run"] = dict(active_run_record)
                 if qsar_training_state is not None:
                     qsar_training_state["active_run"] = dict(active_run_record)
-                _write_active_training_marker(active_marker_path, active_run_record)
+                write_active_training_marker(active_marker_path, active_run_record)
 
                 single_result = self._train_single_run(
                     train_csv=train_csv,
@@ -2321,7 +2233,7 @@ class ChempropToolkit(Toolkit):
                 bundle_files.append(Path(plot_path).expanduser())
             for plot_path in (activity_cliffs.get("loop_comparison_plot_artifacts") or {}).values():
                 bundle_files.append(Path(plot_path).expanduser())
-            bundle = _bundle_artifacts(
+            bundle = bundle_artifacts(
                 bundle_path,
                 bundle_files,
             )
@@ -2336,7 +2248,7 @@ class ChempropToolkit(Toolkit):
                 prediction_state["active_training_run"] = dict(active_run_record)
             if qsar_training_state is not None:
                 qsar_training_state["active_run"] = dict(active_run_record)
-            _write_active_training_marker(active_marker_path, active_run_record)
+            write_active_training_marker(active_marker_path, active_run_record)
             raise
         finally:
             if active_marker_path.exists():

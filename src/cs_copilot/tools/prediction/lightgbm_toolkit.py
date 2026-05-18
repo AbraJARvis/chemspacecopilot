@@ -24,13 +24,6 @@ from cs_copilot.tools.activity_cliffs import (
 
 from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionTaskSpec
-from .chemprop_toolkit import (
-    _bundle_artifacts,
-    _discover_curation_artifacts_near_dataset,
-    _get_prediction_state,
-    _latest_curation_artifacts,
-    _write_active_training_marker,
-)
 from .lightgbm_backend import LightGBMBackend
 from .qsar_plots import build_qsar_training_plots
 from .qsar_training_policy import (
@@ -43,6 +36,13 @@ from .qsar_training_policy import (
     seed_policy_reporting_text,
     seed_policy_reproducibility_metadata,
     summarize_training_durations,
+)
+from .session_state import (
+    bundle_artifacts,
+    discover_curation_artifacts_near_dataset,
+    get_prediction_state,
+    latest_curation_artifacts,
+    write_active_training_marker,
 )
 
 logger = logging.getLogger(__name__)
@@ -802,7 +802,7 @@ class LightGBMToolkit(Toolkit):
         training_policy["extra_args"]["random_state"] = protocol_policy["seed_policy"]["model_seed"]
         trained_at = project_now()
         active_marker_path = root_output_path / ".training_in_progress"
-        prediction_state = _get_prediction_state(agent) if agent is not None else None
+        prediction_state = get_prediction_state(agent) if agent is not None else None
 
         active_run_record = {
             "status": "running",
@@ -820,7 +820,7 @@ class LightGBMToolkit(Toolkit):
         }
         if prediction_state is not None:
             prediction_state["active_training_run"] = dict(active_run_record)
-        _write_active_training_marker(active_marker_path, active_run_record)
+        write_active_training_marker(active_marker_path, active_run_record)
 
         task = PredictionTaskSpec(
             task_type=task_type,
@@ -860,7 +860,7 @@ class LightGBMToolkit(Toolkit):
                 )
                 if prediction_state is not None:
                     prediction_state["active_training_run"] = dict(active_run_record)
-                _write_active_training_marker(active_marker_path, active_run_record)
+                write_active_training_marker(active_marker_path, active_run_record)
 
                 single_result = self.backend.train_model(
                     train_csv=train_csv,
@@ -904,7 +904,7 @@ class LightGBMToolkit(Toolkit):
             active_run_record["completed_at"] = project_now().isoformat()
             if prediction_state is not None:
                 prediction_state["active_training_run"] = None
-            _write_active_training_marker(active_marker_path, active_run_record)
+            write_active_training_marker(active_marker_path, active_run_record)
 
         if primary_run is None:
             raise ValueError("LightGBM validation protocol did not produce a primary run.")
@@ -951,7 +951,7 @@ class LightGBMToolkit(Toolkit):
                     )
                     if prediction_state is not None:
                         prediction_state["active_training_run"] = dict(active_run_record)
-                    _write_active_training_marker(active_marker_path, active_run_record)
+                    write_active_training_marker(active_marker_path, active_run_record)
 
                     variant_result = self.backend.train_model(
                         train_csv=train_csv,
@@ -981,7 +981,7 @@ class LightGBMToolkit(Toolkit):
 
         active_run_record["status"] = "completed"
         active_run_record["completed_at"] = project_now().isoformat()
-        _write_active_training_marker(active_marker_path, active_run_record)
+        write_active_training_marker(active_marker_path, active_run_record)
 
         activity_cliffs = self._attach_activity_cliff_variant_training(
             activity_cliffs=activity_cliffs,
@@ -1108,9 +1108,9 @@ class LightGBMToolkit(Toolkit):
             total_started_at=total_started_at,
             total_completed_at=total_completed_at,
         )
-        curation_artifacts = _latest_curation_artifacts(agent) if agent is not None else {}
+        curation_artifacts = latest_curation_artifacts(agent) if agent is not None else {}
         if not (curation_artifacts.get("artifacts") if curation_artifacts else None):
-            curation_artifacts = _discover_curation_artifacts_near_dataset(train_csv)
+            curation_artifacts = discover_curation_artifacts_near_dataset(train_csv)
         result["curation"] = curation_artifacts
         result["applicability_domain"] = ad_summary
         result["activity_cliffs"] = activity_cliffs
@@ -1180,7 +1180,7 @@ class LightGBMToolkit(Toolkit):
         for artifact_path in (activity_cliffs.get("loop_comparison_plot_artifacts") or {}).values():
             bundle_files.append(Path(str(artifact_path)).expanduser())
 
-        bundle = _bundle_artifacts(bundle_path, bundle_files)
+        bundle = bundle_artifacts(bundle_path, bundle_files)
         result["bundle_file_ref"] = str(bundle)
         result["training_bundle"] = str(bundle)
         result["bundle_download_tag"] = f"<file>{bundle}</file>"

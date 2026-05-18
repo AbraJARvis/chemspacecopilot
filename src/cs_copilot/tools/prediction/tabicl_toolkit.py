@@ -23,7 +23,6 @@ from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, spl
 
 from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionExecutionError, PredictionTaskSpec
-from .chemprop_toolkit import _get_prediction_state, _write_active_training_marker
 from .qsar_plots import build_qsar_training_plots
 from .qsar_training_policy import (
     assess_protocol_results,
@@ -35,6 +34,10 @@ from .qsar_training_policy import (
     seed_policy_reporting_text,
     seed_policy_reproducibility_metadata,
     summarize_training_durations,
+)
+from .session_state import (
+    get_prediction_state,
+    write_active_training_marker,
 )
 from .tabicl_backend import (
     DEFAULT_TABICL_CHECKPOINT_DIR,
@@ -459,7 +462,7 @@ class TabICLToolkit(Toolkit):
         )
         if prediction_state is not None:
             prediction_state["active_training_run"] = dict(active_run_record)
-        _write_active_training_marker(marker_path, active_run_record)
+        write_active_training_marker(marker_path, active_run_record)
 
         split_results: List[Dict[str, Any]] = []
         primary_run: Optional[Dict[str, Any]] = None
@@ -497,7 +500,7 @@ class TabICLToolkit(Toolkit):
                 active_run_record["worker_status"] = "running"
                 if prediction_state is not None:
                     prediction_state["active_training_run"] = dict(active_run_record)
-                _write_active_training_marker(marker_path, active_run_record)
+                write_active_training_marker(marker_path, active_run_record)
 
                 single_result = self.backend.train_model(
                     train_csv=train_csv,
@@ -542,7 +545,7 @@ class TabICLToolkit(Toolkit):
             active_run_record["worker_status"] = "completed" if primary_run is not None else "failed"
             if prediction_state is not None:
                 prediction_state["active_training_run"] = None
-            _write_active_training_marker(marker_path, active_run_record)
+            write_active_training_marker(marker_path, active_run_record)
 
         if primary_run is None:
             raise ValueError("TabICL validation protocol did not produce a primary run.")
@@ -830,7 +833,7 @@ class TabICLToolkit(Toolkit):
         training_policy["extra_args"]["random_state"] = protocol_policy["seed_policy"]["model_seed"]
         trained_at = project_now()
         active_marker_path = root_output_path / ".training_in_progress"
-        prediction_state = _get_prediction_state(agent) if agent is not None else None
+        prediction_state = get_prediction_state(agent) if agent is not None else None
 
         active_run_record = self._build_active_run_record(
             train_csv=train_csv,
@@ -843,7 +846,7 @@ class TabICLToolkit(Toolkit):
         )
         if prediction_state is not None:
             prediction_state["active_training_run"] = dict(active_run_record)
-        _write_active_training_marker(active_marker_path, active_run_record)
+        write_active_training_marker(active_marker_path, active_run_record)
 
         job_dir = root_output_path / "_worker_job"
         worker_log_path = job_dir / "worker.log"
@@ -877,7 +880,7 @@ class TabICLToolkit(Toolkit):
             active_run_record["completed_at"] = project_now().isoformat()
             if prediction_state is not None:
                 prediction_state["active_training_run"] = None
-            _write_active_training_marker(active_marker_path, active_run_record)
+            write_active_training_marker(active_marker_path, active_run_record)
             raise PredictionExecutionError(f"TabICL worker execution failed: {exc}") from exc
 
         task = PredictionTaskSpec(
