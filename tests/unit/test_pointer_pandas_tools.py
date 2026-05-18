@@ -218,6 +218,40 @@ class TestPointerPandasTools:
             assert result["length"] == 3
             assert result["name"] == "canonical_smiles"
 
+    def test_llm_friendly_dataframe_aliases(self, tools, sample_df):
+        """Test common LLM-generated aliases for dataframe operations."""
+        tools.dataframes["test_df"] = sample_df
+
+        column = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="get_column",
+            operation_parameters={"column": "standard_value"},
+        )
+        assert column["name"] == "standard_value"
+        assert column["sample"][0] == 100
+
+        identity = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="to_pandas",
+        )
+        assert identity["dataframe_name"] == "test_df"
+        assert "preview" in identity
+
+        as_list = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="to_list",
+        )
+        assert as_list["columns"][0] == "molecule_chembl_id"
+        assert as_list["sample"][0][0] == "CHEMBL1"
+
+        renamed = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="rename_columns",
+            operation_parameters={"columns": {"standard_value": "value"}},
+        )
+        renamed_df = tools.dataframes[renamed["dataframe_name"]]
+        assert "value" in renamed_df.columns
+
     def test_describe_with_comma_separated_columns(self, tools, sample_df):
         """Test describe operation with comma-separated columns."""
         tools.dataframes["test_df"] = sample_df

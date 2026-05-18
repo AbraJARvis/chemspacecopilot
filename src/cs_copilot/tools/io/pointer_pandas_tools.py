@@ -54,10 +54,15 @@ _OPERATION_ALIASES = {
     "concatenate": "concat",
     "select": "select",
     "select_columns": "select",
+    "get_column": "__getitem__",
     "subset": "select",
     "drop_columns": "drop",
     "remove_columns": "drop",
     "drop_rows": "drop",
+    "rename_columns": "rename",
+    "to_pandas": "_identity",
+    "to_list": "_to_list",
+    "tolist": "_to_list",
     "len": "_len",
     "length": "_len",
     "n_rows": "_len",
@@ -583,6 +588,24 @@ class PointerPandasTools(PandasTools):
 
             if operation == "_len":
                 return int(len(df))
+
+            if operation == "_identity":
+                return {
+                    "dataframe_name": dataframe_name,
+                    "note": "DataFrame is already loaded; returning pointer and preview.",
+                    "preview": _preview(df),
+                }
+
+            if operation == "_to_list":
+                sample = df.head(SAMPLE_ROWS).values.tolist()
+                return {
+                    "dataframe_name": dataframe_name,
+                    "note": "sample only – full list omitted to save tokens",
+                    "columns": list(df.columns),
+                    "sample": sample,
+                    "rows_returned": len(sample),
+                    "total_rows": int(df.shape[0]),
+                }
 
             # Intercept to_dict to avoid context blow-up
             if operation == "to_dict":
