@@ -529,6 +529,7 @@ MODEL_REGISTRY_INSTRUCTIONS = [
     "  - Do not train models.",
     "  - Do not choose business recommendations or interpret predictions.",
     "  - Do not write a polished user-facing report or conclusion.",
+    "  - In QSAR context, interpret `ensemble QSAR`, `modele ensemble QSAR`, or `consensus QSAR` as an ensemble of predictive models by default, not as a dataset.",
     "Step 2: Validate the registration gates strictly.",
     "  - Require: real dataset source, completed curation, real split, checkpoint exists, successful smoke test, and real test metrics.",
     "  - When multiple validation splits exist, treat the hardest split and the robustness assessment as the primary governance evidence.",
@@ -1031,6 +1032,7 @@ AGENT_TEAM_INSTRUCTIONS = [
     "    • Route to SynPlanner agent",
     # QSAR routing awareness
     "**QSAR ROUTING**:",
+    "  - In QSAR context, interpret `ensemble QSAR`, `modele ensemble QSAR`, or `consensus QSAR` as an ensemble of predictive models by default, not as a dataset. Do not ask whether `ensemble` means dataset unless the user explicitly mentions dataset/set/jeu de donnees ambiguity.",
     "  - When the user asks to create/build/make an ensemble QSAR model for a target (for example `cree un ensemble QSAR sur pEC50`) and does not provide a dataset to evaluate on:",
     "    • Treat this as a catalog/model-registry ensemble request, not a dataset workflow",
     "    • Do not call `inspect_dataset_schema`, curation tools, training tools, benchmark tools, prediction tools, or evaluation tools",
