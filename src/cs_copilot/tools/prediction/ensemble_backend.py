@@ -24,7 +24,7 @@ from .backend_capabilities import (
     BACKEND_CAPABILITIES,
     BackendCapabilities,
     backend_requires_feature_preparation,
-    get_backend_capabilities,
+    enrich_backend_environment,
 )
 from .chemprop_backend import ChempropBackend
 from .lightgbm_backend import LightGBMBackend
@@ -119,17 +119,17 @@ class EnsembleBackend(PredictionBackend):
         return True
 
     def describe_environment(self) -> Dict[str, Any]:
-        return {
-            "backend_name": self.backend_name,
-            "available": True,
-            "capabilities": get_backend_capabilities(
-                self.backend_name,
-                registry=self.backend_capabilities,
-            ).as_dict(),
-            "component_backends": {
-                name: backend.describe_environment() for name, backend in self.backends.items()
+        return enrich_backend_environment(
+            self.backend_name,
+            {
+                "backend_name": self.backend_name,
+                "available": True,
+                "component_backends": {
+                    name: backend.describe_environment() for name, backend in self.backends.items()
+                },
             },
-        }
+            registry=self.backend_capabilities,
+        )
 
     def _requires_feature_preparation(self, backend_name: str) -> bool:
         try:

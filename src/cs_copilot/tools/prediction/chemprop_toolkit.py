@@ -318,6 +318,10 @@ def _find_first_existing_path(candidates: List[Path]) -> Optional[Path]:
     return None
 
 
+def _first_existing_or_default(candidates: List[Path]) -> Path:
+    return _find_first_existing_path(candidates) or candidates[0]
+
+
 def _find_training_summary_from_model_run(run_dir: Optional[Path]) -> Optional[Path]:
     if run_dir is None:
         return None
@@ -816,33 +820,28 @@ class ChempropToolkit(Toolkit):
 
         source_model_path = Path(record.model_path).expanduser()
         copied_files: Dict[str, str] = {}
+        backend_capabilities = get_backend_capabilities(record.backend_name)
 
         if source_model_path.exists():
-            target_name = source_model_path.name
-            if record.backend_name == "tabicl":
-                target_name = "best.pkl"
+            target_name = backend_capabilities.catalog_model_filename or source_model_path.name
             target_model_path = model_dir / target_name
             shutil.copy2(source_model_path, target_model_path)
             copied_files["model_path"] = _relative_posix(target_model_path, model_root)
         else:
             return {"materialized": False, "reason": "model_artifact_missing"}
 
+        training_summary_candidates = [
+            run_dir / filename for filename in backend_capabilities.training_summary_filenames
+        ]
+        test_prediction_candidates = [
+            run_dir / relative_path
+            for relative_path in backend_capabilities.test_prediction_relative_paths
+        ]
         optional_artifacts = {
             "config_path": run_dir / "config.toml",
-            "training_summary_path": (
-                run_dir / "cs_copilot_training_summary.json"
-                if (run_dir / "cs_copilot_training_summary.json").exists()
-                else run_dir / "tabicl_training_summary.json"
-                if record.backend_name == "tabicl"
-                else run_dir / "cs_copilot_training_summary.json"
-            ),
+            "training_summary_path": _first_existing_or_default(training_summary_candidates),
             "splits_path": run_dir / "splits.json",
-            "test_predictions_path": (
-                run_dir / "test_predictions.csv"
-                if record.backend_name == "tabicl"
-                else self._resolve_chemprop_run_artifacts(run_dir).get("test_predictions_path")
-                or run_dir / "model_0" / "test_predictions.csv"
-            ),
+            "test_predictions_path": _first_existing_or_default(test_prediction_candidates),
             "reference_store_path": run_dir / "applicability_domain" / "reference_fingerprints.npz",
             "reference_manifest_path": run_dir / "applicability_domain" / "reference_manifest.json",
             "applicability_domain_path": run_dir / "applicability_domain" / "applicability_domain.json",
@@ -1209,12 +1208,10 @@ class ChempropToolkit(Toolkit):
 
     def describe_backends(self) -> Dict[str, Any]:
         """Describe all configured prediction backends."""
-        descriptions: Dict[str, Any] = {}
-        for name, backend in self.backends.items():
-            environment = backend.describe_environment()
-            environment["capabilities"] = get_backend_capabilities(name).as_dict()
-            descriptions[name] = environment
-        return descriptions
+        return {
+            name: backend.describe_environment()
+            for name, backend in self.backends.items()
+        }
 
     def _get_backend(self, backend_name: str):
         backend = self.backends.get(backend_name)

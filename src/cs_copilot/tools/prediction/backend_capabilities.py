@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Dict, Mapping, Tuple
+from typing import Any, Dict, Mapping, Tuple
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,12 @@ class BackendCapabilities:
     supports_applicability_domain: bool
     supports_uncertainty: str
     supports_component_orchestration: bool = False
+    catalog_model_filename: str | None = None
+    training_summary_filenames: Tuple[str, ...] = ("cs_copilot_training_summary.json",)
+    test_prediction_relative_paths: Tuple[str, ...] = (
+        "model_0/test_predictions.csv",
+        "test_predictions.csv",
+    )
 
     def as_dict(self) -> Dict[str, object]:
         """Return a JSON-serializable representation."""
@@ -55,6 +61,7 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         ),
         supports_applicability_domain=True,
         supports_uncertainty="none",
+        test_prediction_relative_paths=("test_predictions.csv",),
     ),
     "tabicl": BackendCapabilities(
         backend_name="tabicl",
@@ -71,6 +78,12 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         ),
         supports_applicability_domain=True,
         supports_uncertainty="none",
+        catalog_model_filename="best.pkl",
+        training_summary_filenames=(
+            "cs_copilot_training_summary.json",
+            "tabicl_training_summary.json",
+        ),
+        test_prediction_relative_paths=("test_predictions.csv",),
     ),
     "ensemble": BackendCapabilities(
         backend_name="ensemble",
@@ -109,6 +122,21 @@ def describe_backend_capabilities() -> Dict[str, Dict[str, object]]:
     }
 
 
+def enrich_backend_environment(
+    backend_name: str,
+    environment: Mapping[str, Any],
+    *,
+    registry: Mapping[str, BackendCapabilities] | None = None,
+) -> Dict[str, Any]:
+    """Attach the canonical capability block to a runtime environment snapshot."""
+    enriched = dict(environment)
+    enriched["capabilities"] = get_backend_capabilities(
+        backend_name,
+        registry=registry,
+    ).as_dict()
+    return enriched
+
+
 def backend_requires_feature_preparation(
     backend_name: str,
     *,
@@ -119,3 +147,15 @@ def backend_requires_feature_preparation(
         backend_name,
         registry=registry,
     ).requires_feature_preparation
+
+
+def backend_supports_component_orchestration(
+    backend_name: str,
+    *,
+    registry: Mapping[str, BackendCapabilities] | None = None,
+) -> bool:
+    """Return whether a backend represents a component-orchestrating model."""
+    return get_backend_capabilities(
+        backend_name,
+        registry=registry,
+    ).supports_component_orchestration

@@ -15,6 +15,7 @@ from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
 from .backend import PredictionModelRecord, PredictionTaskSpec
+from .backend_capabilities import backend_supports_component_orchestration
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
 from .chemprop_backend import ChempropBackend
 from .ensemble_backend import EnsembleBackend
@@ -31,6 +32,13 @@ EVALUATION_KINDS = {
     "catalog_common_holdout",
     "training_like_or_potentially_leaky",
 }
+
+
+def _is_ensemble_backend(backend_name: str) -> bool:
+    try:
+        return backend_supports_component_orchestration(backend_name)
+    except KeyError as exc:
+        raise ValueError(f"Backend `{backend_name}` has no registered capabilities.") from exc
 
 
 def _state(agent: Agent) -> Dict[str, Any]:
@@ -631,7 +639,7 @@ class EnsembleToolkit(Toolkit):
         self.catalog.refresh_from_internal_store(persist=True)
         model_id = _resolve_catalog_model_id(self.catalog, model_id)
         record = self.catalog.get_model(model_id)
-        if record.backend_name != "ensemble":
+        if not _is_ensemble_backend(record.backend_name):
             raise ValueError(f"Model `{model_id}` is not an ensemble.")
         payload = _load_json(record.model_path)
         evidence_path = (record.selection_hints or {}).get("selection_evidence_path")
@@ -695,7 +703,7 @@ class EnsembleToolkit(Toolkit):
         self.catalog.refresh_from_internal_store(persist=True)
         model_id = _resolve_catalog_model_id(self.catalog, model_id)
         record = self.catalog.get_model(model_id)
-        if record.backend_name != "ensemble":
+        if not _is_ensemble_backend(record.backend_name):
             raise ValueError(f"Model `{model_id}` is not an ensemble.")
         ensemble_payload = _load_json(record.model_path)
         model_root = Path(record.model_path).expanduser().parents[1]

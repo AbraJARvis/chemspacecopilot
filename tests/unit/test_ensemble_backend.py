@@ -359,7 +359,10 @@ def test_evaluate_ensemble_appends_evaluations_and_writes_artifacts(tmp_path, mo
     catalog.save()
     toolkit = EnsembleToolkit(catalog=catalog)
     toolkit.backends = {"fake": FakeBackend(0.0), "fake2": FakeBackend(2.0)}
-    toolkit.ensemble_backend = EnsembleBackend(backends=toolkit.backends)
+    toolkit.ensemble_backend = EnsembleBackend(
+        backends=toolkit.backends,
+        backend_capabilities=FAKE_CAPABILITIES,
+    )
     created = toolkit.create_ensemble_from_catalog("pEC50")
     test_csv = tmp_path / "test.csv"
     pd.DataFrame({"smiles": ["CC", "CCC"], "x": [1.0, 2.0], "pEC50": [2.0, 3.0]}).to_csv(test_csv, index=False)

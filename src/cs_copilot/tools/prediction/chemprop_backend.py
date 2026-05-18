@@ -41,6 +41,7 @@ from .backend import (
     PredictionModelRecord,
     PredictionTaskSpec,
 )
+from .backend_capabilities import enrich_backend_environment
 from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
 
 logger = logging.getLogger(__name__)
@@ -98,12 +99,15 @@ class ChempropBackend(PredictionBackend):
     def describe_environment(self) -> Dict[str, Any]:
         version = self._package_version()
 
-        return {
-            "backend_name": self.backend_name,
-            "available": self.is_available(),
-            "cli_path": self._find_cli_path(),
-            "package_version": version,
-        }
+        return enrich_backend_environment(
+            self.backend_name,
+            {
+                "backend_name": self.backend_name,
+                "available": self.is_available(),
+                "cli_path": self._find_cli_path(),
+                "package_version": version,
+            },
+        )
 
     def validate_model_path(self, model_path: str) -> Path:
         path = Path(model_path).expanduser()

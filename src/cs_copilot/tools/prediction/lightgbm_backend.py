@@ -29,6 +29,7 @@ from .backend import (
     PredictionModelRecord,
     PredictionTaskSpec,
 )
+from .backend_capabilities import enrich_backend_environment
 from .qsar_training_policy import describe_compute_environment, project_now
 from .tabular_splitters import build_tabular_split_payload
 
@@ -84,23 +85,20 @@ class LightGBMBackend(PredictionBackend):
 
     def describe_environment(self) -> Dict[str, Any]:
         compute_env = describe_compute_environment()
-        return {
-            "backend_name": self.backend_name,
-            "available": self.is_available(),
-            "package_version": self._package_version(),
-            "cpu_available": True,
-            "gpu_detected": bool(compute_env.get("gpu_available")),
-            "gpu_count": compute_env.get("gpu_count"),
-            "gpu_name": compute_env.get("gpu_name"),
-            "supports_gpu_when_available": True,
-            "gpu_runtime_blocked_reason": self._gpu_runtime_blocked_reason,
-            "capabilities": [
-                "regression",
-                "single_target",
-                "tabular_numeric_features",
-                "categorical_features",
-            ],
-        }
+        return enrich_backend_environment(
+            self.backend_name,
+            {
+                "backend_name": self.backend_name,
+                "available": self.is_available(),
+                "package_version": self._package_version(),
+                "cpu_available": True,
+                "gpu_detected": bool(compute_env.get("gpu_available")),
+                "gpu_count": compute_env.get("gpu_count"),
+                "gpu_name": compute_env.get("gpu_name"),
+                "supports_gpu_when_available": True,
+                "gpu_runtime_blocked_reason": self._gpu_runtime_blocked_reason,
+            },
+        )
 
     def validate_model_path(self, model_path: str) -> Path:
         path = Path(model_path).expanduser()

@@ -13,7 +13,9 @@ from .backend_capabilities import (
     BACKEND_CAPABILITIES,
     BackendCapabilities,
     backend_requires_feature_preparation,
+    backend_supports_component_orchestration,
     describe_backend_capabilities,
+    enrich_backend_environment,
     get_backend_capabilities,
 )
 from .catalog import CatalogRecommendation, PredictionModelCatalog
@@ -40,6 +42,8 @@ __all__ = [
     "get_backend_capabilities",
     "describe_backend_capabilities",
     "backend_requires_feature_preparation",
+    "backend_supports_component_orchestration",
+    "enrich_backend_environment",
     "PredictionModelCatalog",
     "CatalogRecommendation",
     "BenchmarkToolkit",

@@ -32,6 +32,7 @@ from .backend import (
     PredictionModelRecord,
     PredictionTaskSpec,
 )
+from .backend_capabilities import enrich_backend_environment
 from .qsar_training_policy import project_now
 from .tabular_splitters import build_tabular_split_payload
 
@@ -99,15 +100,18 @@ class TabICLBackend(PredictionBackend):
 
     def describe_environment(self) -> Dict[str, Any]:
         checkpoint_path = DEFAULT_TABICL_CHECKPOINT_DIR / DEFAULT_TABICL_REGRESSOR_CHECKPOINT
-        return {
-            "backend_name": self.backend_name,
-            "available": self.is_available(),
-            "package_version": self._package_version(),
-            "checkpoint_dir": str(DEFAULT_TABICL_CHECKPOINT_DIR),
-            "default_checkpoint_version": DEFAULT_TABICL_REGRESSOR_CHECKPOINT,
-            "default_checkpoint_path": str(checkpoint_path),
-            "default_checkpoint_present": checkpoint_path.exists(),
-        }
+        return enrich_backend_environment(
+            self.backend_name,
+            {
+                "backend_name": self.backend_name,
+                "available": self.is_available(),
+                "package_version": self._package_version(),
+                "checkpoint_dir": str(DEFAULT_TABICL_CHECKPOINT_DIR),
+                "default_checkpoint_version": DEFAULT_TABICL_REGRESSOR_CHECKPOINT,
+                "default_checkpoint_path": str(checkpoint_path),
+                "default_checkpoint_present": checkpoint_path.exists(),
+            },
+        )
 
     def validate_model_path(self, model_path: str) -> Path:
         path = Path(model_path).expanduser()

@@ -13,6 +13,7 @@ from cs_copilot.tools.prediction.chemprop_backend import ChempropBackend
 from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
 from cs_copilot.tools.prediction.backend_capabilities import (
     backend_requires_feature_preparation,
+    backend_supports_component_orchestration,
     describe_backend_capabilities,
     get_backend_capabilities,
 )
@@ -28,7 +29,10 @@ def test_backend_capabilities_registry_core_contracts():
     assert backend_requires_feature_preparation("lightgbm") is True
     assert tabicl.requires_feature_preparation is True
     assert ensemble.supports_component_orchestration is True
+    assert backend_supports_component_orchestration("ensemble") is True
     assert ensemble.supports_uncertainty == "component_disagreement_std"
+    assert tabicl.catalog_model_filename == "best.pkl"
+    assert "tabicl_training_summary.json" in tabicl.training_summary_filenames
 
 
 def test_backend_capabilities_unknown_backend_is_clear():
@@ -68,6 +72,7 @@ def test_chemprop_backend_describe_environment_shape():
     assert "available" in env
     assert "cli_path" in env
     assert "package_version" in env
+    assert env["capabilities"]["backend_name"] == "chemprop"
 
 
 def test_chemprop_backend_validate_model_path_rejects_missing(tmp_path):
