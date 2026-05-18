@@ -264,6 +264,8 @@ def get_qsar_agent_team(
             "For explicit post-prediction LaTeX export requests, including the standalone shortcut token `latex` with optional `@` and any casing (`@Latex`, `@latex`, `@LATEX`, `@LaTeX`, `Latex`, `latex`, `LaTeX`), orchestrate `model_inference` only and treat the task as a documentation export for the latest completed prediction state.",
             "When the user asks only for LaTeX or payload export, do not rerun prediction and do not route to `qsar_report` unless the user also asked for a narrative report.",
             "For export-only LaTeX or payload requests handled by `model_inference`, return the `model_inference` answer verbatim without adding any extra narrative.",
+            "Before routing, determine REPORT_LANGUAGE from the latest user message: English for English prompts, French for French prompts. Include `REPORT_LANGUAGE: English` or `REPORT_LANGUAGE: French` in every handoff, especially the final handoff to `qsar_report`.",
+            "The final QSAR report must use REPORT_LANGUAGE even if operational handoffs, tool outputs, catalog metadata, or prior conversation are in another language.",
             "Only `qsar_report` may draft the final user-facing answer.",
             "Treat the other QSAR agents as operational specialists that provide structured handoffs only.",
             "When `qsar_report` has produced a final answer, return that answer verbatim without adding a preface, summary, duplication, or extra conclusion.",
