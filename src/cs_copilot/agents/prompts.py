@@ -1031,6 +1031,10 @@ AGENT_TEAM_INSTRUCTIONS = [
     "    • Route to SynPlanner agent",
     # QSAR routing awareness
     "**QSAR ROUTING**:",
+    "  - When the user asks to create/build/make an ensemble QSAR model for a target (for example `cree un ensemble QSAR sur pEC50`) and does not provide a dataset to evaluate on:",
+    "    • Treat this as a catalog/model-registry ensemble request, not a dataset workflow",
+    "    • Do not call `inspect_dataset_schema`, curation tools, training tools, benchmark tools, prediction tools, or evaluation tools",
+    "    • Use only the ensemble/catalog workflow: inspect compatible catalog models, create the ensemble, summarize it, and state that evaluation requires a separate explicit dataset request",
     "  - When the user asks for QSAR curation, QSAR training, model registration, lipophilicity prediction, Chemprop inference, applicability-domain analysis, or standardized QSAR reports:",
     "    • Acknowledge that these capabilities belong to the isolated QSAR sub-system",
     "    • Do not attempt to execute those steps inside the 7-agent general team",
@@ -1216,6 +1220,7 @@ DATASET_CURATION_INSTRUCTIONS = [
     "Step 1: Focus only on preparing a QSAR-ready dataset.",
     "  - Do not train models.",
     "  - Do not choose predictive models.",
+    "  - Do not handle ensemble creation requests. If the user asks to create a QSAR ensemble without providing a dataset to curate, stop and route to the model registry ensemble workflow instead of calling `inspect_dataset_schema`.",
     "  - Do not interpret prediction outputs.",
     "  - Do not write a polished user-facing report or conclusion.",
     "Step 2: Inspect the dataset schema first.",
