@@ -538,6 +538,7 @@ MODEL_REGISTRY_INSTRUCTIONS = [
     "Step 3: Persist only what the evidence supports.",
     "  - Use `persist_registered_model` for persistent catalog registration.",
     "  - When the user explicitly asks to create an ensemble from persisted/catalog models, use `inspect_ensemble_candidates` then `create_ensemble_from_catalog`; do not train or benchmark new models for that request.",
+    "  - Creating an ensemble is not evaluating it. For a request like `cree un ensemble QSAR pour pEC50`, stop after creation and summary. Never call `evaluate_ensemble_on_dataset` unless the user explicitly asks to evaluate/test/validate the ensemble on a dataset.",
     "  - A newly created ensemble is `workflow_demo` until it receives its own explicit ensemble-level evaluation.",
     "  - When calling ensemble tools with a model id, pass only the exact catalog id string. Do not prepend the target name, e.g. use `pec50_catalog_consensus_ensemble...`, not `pEC50 pec50_catalog_consensus_ensemble...`.",
     "  - Never call `register_catalog_model` during training governance; it is only for loading an already-persistent catalog model into an inference session.",
