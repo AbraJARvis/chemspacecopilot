@@ -439,6 +439,8 @@ class EnsembleBackend(PredictionBackend):
             "aggregation_strategy": "median",
             "uncertainty_strategy": "component_disagreement_std",
             "ensemble_inference_summary": ensemble_inference_summary,
+            "download_file_ref": str(output_path),
+            "download_file_tag": f"<file>{output_path}</file>",
             "return_uncertainty": return_uncertainty,
         }
 

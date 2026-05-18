@@ -1782,6 +1782,7 @@ class ChempropToolkit(Toolkit):
         prediction_state["prediction_history"].append(history_entry)
         result["preds_path"] = str(output_path)
         result["download_file_ref"] = str(output_path)
+        result["download_file_tag"] = f"<file>{output_path}</file>"
         result["preview_columns"] = preview_columns
         result["preview"] = preview
         result["num_rows"] = num_rows
