@@ -388,7 +388,26 @@ class DatasetCurationToolkit(Toolkit):
 
     def inspect_dataset_schema(self, dataset_path: str) -> Dict[str, Any]:
         """Inspect columns, size, and a small preview for a dataset."""
-        df = _load_dataset(dataset_path)
+        try:
+            df = _load_dataset(dataset_path)
+        except FileNotFoundError as exc:
+            requested_name = Path(str(dataset_path)).name.lower()
+            target_like_names = {
+                "pec50.csv",
+                "pic50.csv",
+                "ec50.csv",
+                "ic50.csv",
+                "pki.csv",
+                "ki.csv",
+            }
+            if requested_name in target_like_names:
+                raise FileNotFoundError(
+                    f"Dataset path `{dataset_path}` does not exist. `{Path(str(dataset_path)).stem}` looks like a "
+                    "target name, not an uploaded dataset file. For a request such as `cree un ensemble QSAR sur "
+                    "pEC50`, do not inspect a dataset schema; route to the model-registry ensemble workflow "
+                    "(`inspect_ensemble_candidates` then `create_ensemble_from_catalog`)."
+                ) from exc
+            raise
         return {
             "dataset_path": dataset_path,
             "rows": int(len(df)),
