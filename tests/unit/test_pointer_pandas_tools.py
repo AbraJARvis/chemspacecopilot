@@ -303,3 +303,18 @@ class TestPointerPandasTools:
         assert isinstance(result, dict)
         assert result["IC50"] == 2
         assert result["Ki"] == 1
+
+    def test_agg_accepts_llm_agg_dict_alias(self, tools, sample_df):
+        """Test agg_dict alias emitted by LLM tool calls."""
+        tools.dataframes["test_df"] = sample_df
+
+        result = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="agg",
+            operation_parameters={"agg_dict": {"standard_value": ["min", "max", "mean"]}},
+        )
+
+        assert "dataframe_name" in result
+        result_df = tools.dataframes[result["dataframe_name"]]
+        assert result_df.loc["min", "standard_value"] == 100
+        assert result_df.loc["max", "standard_value"] == 300

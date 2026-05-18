@@ -833,6 +833,10 @@ class PointerPandasTools(PandasTools):
                         func = params.pop("operation_parameters")
                     elif "functions" in params:
                         func = params.pop("functions")
+                    elif "agg_dict" in params:
+                        func = params.pop("agg_dict")
+                    elif "aggregation_dict" in params:
+                        func = params.pop("aggregation_dict")
                     else:
                         raise ValueError(
                             f"'{operation}' requires 'func' parameter with aggregation functions. "
