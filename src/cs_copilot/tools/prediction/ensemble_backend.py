@@ -154,6 +154,7 @@ class EnsembleBackend(PredictionBackend):
         work_dir: Path,
         slug: str,
         feature_cache: Dict[str, str],
+        prefer_rdkit_all: bool,
     ) -> str:
         if backend_name not in {"lightgbm", "tabicl"}:
             return source_csv
@@ -195,6 +196,8 @@ class EnsembleBackend(PredictionBackend):
         if needs_rdkit:
             descriptor_set = "all" if "all" in representation else "basic"
             if descriptor_set == "basic" and len([c for c in expected_columns if c.startswith("desc_")]) > 10:
+                descriptor_set = "all"
+            if descriptor_set == "basic" and prefer_rdkit_all:
                 descriptor_set = "all"
             cache_key = f"rdkit_{descriptor_set}"
             if cache_key not in feature_cache:
@@ -261,6 +264,17 @@ class EnsembleBackend(PredictionBackend):
         component_paths: Dict[str, str] = {}
         component_input_paths: Dict[str, str] = {}
         feature_cache: Dict[str, str] = {}
+        prefer_rdkit_all = False
+        for component in components:
+            backend_name = str(component.get("backend_name") or "")
+            if backend_name not in {"lightgbm", "tabicl"}:
+                continue
+            record = self._component_record(component, model_record)
+            representation = _component_representation(component).strip().lower()
+            expected_columns = _expected_feature_columns(record)
+            if "rdkit_all" in representation or len([c for c in expected_columns if c.startswith("desc_")]) > 10:
+                prefer_rdkit_all = True
+                break
         failures: list[str] = []
 
         for component in components:
@@ -282,6 +296,7 @@ class EnsembleBackend(PredictionBackend):
                     work_dir=work_dir,
                     slug=slug,
                     feature_cache=feature_cache,
+                    prefer_rdkit_all=prefer_rdkit_all,
                 )
                 backend.predict_from_csv(
                     input_csv=prepared_input_csv,
