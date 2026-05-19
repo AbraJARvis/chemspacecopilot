@@ -12,6 +12,8 @@ from cs_copilot.tools.prediction.backend import (
 )
 from cs_copilot.tools.prediction.chemprop_backend import ChempropBackend
 from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
+from cs_copilot.tools.prediction.prediction_inference_toolkit import PredictionInferenceToolkit
+from cs_copilot.tools.prediction.prediction_registry_toolkit import PredictionRegistryToolkit
 from cs_copilot.tools.prediction.backend_capabilities import (
     backend_requires_feature_preparation,
     backend_supports_component_orchestration,
@@ -221,6 +223,19 @@ def test_describe_backends_includes_official_capabilities(monkeypatch):
     assert descriptions["chemprop"]["capabilities"]["backend_name"] == "chemprop"
     assert descriptions["lightgbm"]["capabilities"]["requires_feature_preparation"] is True
     assert descriptions["ensemble"]["capabilities"]["supports_component_orchestration"] is True
+
+
+def test_chemprop_toolkit_uses_backend_neutral_registry_and_inference_facades(monkeypatch):
+    import cs_copilot.tools.prediction.chemprop_toolkit as toolkit_module
+
+    catalog = SimpleNamespace(refresh_from_internal_store=lambda persist=True: None)
+    monkeypatch.setattr(toolkit_module.PredictionModelCatalog, "load", lambda: catalog)
+
+    toolkit = ChempropToolkit(include_prediction_summary_export=False)
+
+    assert isinstance(toolkit.registry_toolkit, PredictionRegistryToolkit)
+    assert isinstance(toolkit.inference_toolkit, PredictionInferenceToolkit)
+    assert toolkit.describe_backends() == toolkit.registry_toolkit.describe_backends()
 
 
 def test_chemprop_backend_describe_environment_shape():

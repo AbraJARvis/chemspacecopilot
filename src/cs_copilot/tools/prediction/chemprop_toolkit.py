@@ -33,6 +33,8 @@ from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
 from .chemprop_backend import ChempropBackend
 from .ensemble_backend import EnsembleBackend
 from .lightgbm_backend import LightGBMBackend
+from .prediction_inference_toolkit import PredictionInferenceToolkit
+from .prediction_registry_toolkit import PredictionRegistryToolkit
 from .qsar_training_policy import (
     QSAR_HARDEST_SPLIT_R2_MIN,
     QSAR_RANDOM_STABILITY_R2_STD_MAX,
@@ -63,12 +65,6 @@ from .training_orchestration import (
     normalize_json_list_argument,
     write_training_summary,
 )
-
-
-def _prediction_output_path(model_id: str, preds_path: Optional[str] = None) -> Path:
-    if preds_path:
-        return Path(preds_path).expanduser()
-    return (Path(".files") / "prediction_outputs" / f"{model_id}_predictions.csv").resolve()
 
 
 def _strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -287,6 +283,17 @@ class ChempropToolkit(Toolkit):
         self.backend = primary_backend
         self.catalog = PredictionModelCatalog.load()
         self.catalog.refresh_from_internal_store(persist=True)
+        self.registry_toolkit = PredictionRegistryToolkit(
+            backends=self.backends,
+            catalog=self.catalog,
+            default_backend_name=primary_backend.backend_name,
+            register_tools=False,
+        )
+        self.inference_toolkit = PredictionInferenceToolkit(
+            backends=self.backends,
+            registry_toolkit=self.registry_toolkit,
+            register_tools=False,
+        )
         self.register(self.describe_backend)
         self.register(self.describe_backends)
         self.register(self.describe_catalog)
@@ -1101,33 +1108,17 @@ class ChempropToolkit(Toolkit):
 
     def describe_backends(self) -> Dict[str, Any]:
         """Describe all configured prediction backends."""
-        return {
-            name: backend.describe_environment()
-            for name, backend in self.backends.items()
-        }
+        return self.registry_toolkit.describe_backends()
 
     def _get_backend(self, backend_name: str):
-        backend = self.backends.get(backend_name)
-        if backend is None:
-            raise ValueError(f"Unsupported prediction backend: {backend_name}")
-        return backend
+        return self.registry_toolkit.get_backend(backend_name)
 
     def describe_catalog(self) -> Dict[str, Any]:
         """Describe the persistent model catalog configured for prediction."""
-        self.catalog.refresh_from_internal_store(persist=True)
-        return {
-            "catalog_path": str(self.catalog.source_path),
-            "num_models": len(self.catalog.list_models()),
-            "model_ids": [record.model_id for record in self.catalog.list_models()],
-        }
+        return self.registry_toolkit.describe_catalog()
 
     def _annotate_record(self, record: PredictionModelRecord) -> Dict[str, Any]:
-        payload = record.as_dict()
-        payload["backend_environment"] = self._get_backend(
-            record.backend_name
-        ).describe_environment()
-        payload["model_path_exists"] = Path(record.model_path).expanduser().exists()
-        return payload
+        return self.registry_toolkit.annotate_record(record)
 
     def list_catalog_models(
         self,
@@ -1135,22 +1126,14 @@ class ChempropToolkit(Toolkit):
         include_unavailable_paths: bool = False,
     ) -> List[Dict[str, Any]]:
         """List models from the persistent catalog with runtime annotations."""
-        self.catalog.refresh_from_internal_store(persist=True)
-        available_backends = [
-            name for name, backend in self.backends.items() if backend.is_available()
-        ]
-        candidates = self.catalog.search(
+        return self.registry_toolkit.list_catalog_models(
             allowed_statuses=allowed_statuses,
-            backend_available=bool(available_backends),
-            available_backend_names=available_backends,
             include_unavailable_paths=include_unavailable_paths,
         )
-        return [candidate.as_dict() for candidate in candidates]
 
     def summarize_catalog_model(self, model_id: str) -> Dict[str, Any]:
         """Return the catalog metadata for one model, enriched with runtime checks."""
-        self.catalog.refresh_from_internal_store(persist=True)
-        return self._annotate_record(self.catalog.get_model(model_id))
+        return self.registry_toolkit.summarize_catalog_model(model_id)
 
     def recommend_catalog_model(
         self,
@@ -1164,76 +1147,20 @@ class ChempropToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Recommend the best catalog model for a requested task."""
-        self.catalog.refresh_from_internal_store(persist=True)
-        recommendation = self.catalog.recommend(
+        return self.registry_toolkit.recommend_catalog_model(
             task_type=task_type,
             target_hint=target_hint,
             domain_hint=domain_hint,
             require_uncertainty=require_uncertainty,
             allowed_statuses=allowed_statuses,
             preferred_backend=preferred_backend,
-            backend_available=any(backend.is_available() for backend in self.backends.values()),
-            available_backend_names=[
-                name for name, backend in self.backends.items() if backend.is_available()
-            ],
             include_unavailable_paths=include_unavailable_paths,
+            agent=agent,
         )
-
-        if agent is not None:
-            prediction_state = get_prediction_state(agent)
-            prediction_state["catalog_recommendations"] = recommendation
-
-        return recommendation
 
     def register_catalog_model(self, model_id: str, agent: Optional[Agent] = None) -> Dict[str, Any]:
         """Register a model from the persistent catalog into the current session."""
-        if agent is None:
-            raise ValueError("Agent is required to register a catalog model")
-
-        self.catalog.refresh_from_internal_store(persist=True)
-        try:
-            record = self.catalog.get_model(model_id)
-        except ValueError as exc:
-            available_ids = [record.model_id for record in self.catalog.list_models()]
-            return {
-                "registered": False,
-                "error": str(exc),
-                "model_id": model_id,
-                "available_model_ids": available_ids,
-                "usage_hint": (
-                    "register_catalog_model only accepts an existing persistent catalog model_id. "
-                    "For a newly trained session model, call persist_registered_model and use its returned "
-                    "canonical model_id instead of inventing a display name."
-                ),
-            }
-        return self.register_model(
-            model_id=record.model_id,
-            model_path=record.model_path,
-            backend_name=record.backend_name,
-            task_type=record.task.task_type,
-            smiles_columns=record.task.smiles_columns,
-            target_columns=record.task.target_columns,
-            reaction_columns=record.task.reaction_columns,
-            uncertainty_method=record.task.uncertainty_method,
-            calibration_method=record.task.calibration_method,
-            description=record.description,
-            tags=record.tags,
-            version=record.version,
-            status=record.status,
-            owner=record.owner,
-            source=record.source,
-            domain_summary=record.domain_summary,
-            strengths=record.strengths,
-            limitations=record.limitations,
-            recommended_for=record.recommended_for,
-            not_recommended_for=record.not_recommended_for,
-            known_metrics=record.known_metrics,
-            training_data_summary=record.training_data_summary,
-            inference_profile=record.inference_profile,
-            selection_hints=record.selection_hints,
-            applicability_domain=record.applicability_domain,
-            agent=agent,
-        )
+        return self.registry_toolkit.register_catalog_model(model_id=model_id, agent=agent)
 
     def register_model(
         self,
@@ -1264,48 +1191,35 @@ class ChempropToolkit(Toolkit):
         applicability_domain: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
-        """Register a Chemprop model in session state for later use."""
-        if agent is None:
-            raise ValueError("Agent is required to register a model")
-
-        backend_name = backend_name or self.backend.backend_name
-        backend = self._get_backend(backend_name)
-        validated_path = backend.validate_model_path(model_path)
-        task = PredictionTaskSpec(
+        """Register a prediction model in session state for later use."""
+        return self.registry_toolkit.register_model(
+            model_id=model_id,
+            model_path=model_path,
             task_type=task_type,
-            smiles_columns=smiles_columns or ["smiles"],
-            target_columns=target_columns or [],
-            reaction_columns=reaction_columns or [],
+            backend_name=backend_name,
+            smiles_columns=smiles_columns,
+            target_columns=target_columns,
+            reaction_columns=reaction_columns,
             uncertainty_method=uncertainty_method,
             calibration_method=calibration_method,
-        )
-        record = PredictionModelRecord(
-            model_id=model_id,
-            backend_name=backend.backend_name,
-            model_path=str(validated_path),
-            metadata_path=None,
-            task=task,
             description=description,
-            tags=tags or {},
+            tags=tags,
             version=version,
             status=status,
             owner=owner,
             source=source,
             domain_summary=domain_summary,
-            strengths=strengths or [],
-            limitations=limitations or [],
-            recommended_for=recommended_for or [],
-            not_recommended_for=not_recommended_for or [],
-            known_metrics=known_metrics or {},
-            training_data_summary=training_data_summary or {},
-            inference_profile=inference_profile or {},
-            selection_hints=selection_hints or {},
-            applicability_domain=applicability_domain or {},
+            strengths=strengths,
+            limitations=limitations,
+            recommended_for=recommended_for,
+            not_recommended_for=not_recommended_for,
+            known_metrics=known_metrics,
+            training_data_summary=training_data_summary,
+            inference_profile=inference_profile,
+            selection_hints=selection_hints,
+            applicability_domain=applicability_domain,
+            agent=agent,
         )
-
-        prediction_state = get_prediction_state(agent)
-        prediction_state["registered"][model_id] = record.as_dict()
-        return record.as_dict()
 
     def persist_registered_model(
         self,
@@ -1526,6 +1440,7 @@ class ChempropToolkit(Toolkit):
 
         self.catalog.upsert_model(persisted_record)
         self.catalog = PredictionModelCatalog.load(str(self.catalog.source_path))
+        self.registry_toolkit.catalog = self.catalog
         self._sync_internal_metadata(
             metadata_path=resolved_metadata_path,
             record=persisted_record,
@@ -1551,27 +1466,14 @@ class ChempropToolkit(Toolkit):
 
     def list_registered_models(self, agent: Optional[Agent] = None) -> List[Dict[str, Any]]:
         """List models registered in the current session."""
-        if agent is None:
-            return []
-        prediction_state = get_prediction_state(agent)
-        return list(prediction_state["registered"].values())
+        return self.registry_toolkit.list_registered_models(agent=agent)
 
     def summarize_model(self, model_id: str, agent: Optional[Agent] = None) -> Dict[str, Any]:
         """Return the stored summary for a registered model."""
-        if agent is None:
-            raise ValueError("Agent is required to summarize a model")
-        prediction_state = get_prediction_state(agent)
-        record = prediction_state["registered"].get(model_id)
-        if not record:
-            raise ValueError(f"Unknown model_id: {model_id}")
-        return self._annotate_record(PredictionModelRecord.from_dict(record))
+        return self.registry_toolkit.summarize_model(model_id=model_id, agent=agent)
 
     def _resolve_record(self, model_id: str, agent: Agent) -> PredictionModelRecord:
-        prediction_state = get_prediction_state(agent)
-        payload = prediction_state["registered"].get(model_id)
-        if payload is None:
-            raise ValueError(f"Unknown model_id: {model_id}")
-        return PredictionModelRecord.from_dict(payload)
+        return self.registry_toolkit.resolve_record(model_id, agent)
 
     def predict_from_csv(
         self,
@@ -1583,103 +1485,14 @@ class ChempropToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Run prediction from a CSV file and persist the result path in session state."""
-        if agent is None:
-            raise ValueError("Agent is required for prediction")
-
-        record = self._resolve_record(model_id, agent)
-        output_path = _prediction_output_path(model_id, preds_path)
-        backend = self._get_backend(record.backend_name)
-        local_input = Path(input_csv).expanduser()
-        if local_input.exists():
-            source_df = pd.read_csv(local_input)
-        else:
-            with S3.open(input_csv, "r") as fh:
-                source_df = pd.read_csv(fh)
-
-        df = source_df.copy()
-
-        smiles_found = None
-        smiles_candidates = [
-            smiles_column,
-            "smiles",
-            "SMILES",
-            "canonical_smiles",
-            "Smiles",
-            "smi",
-        ]
-        for candidate in smiles_candidates:
-            if candidate and candidate in df.columns:
-                smiles_found = candidate
-                break
-
-        if smiles_found is None:
-            raise ValueError(
-                f"No SMILES column found for prediction. Tried {smiles_candidates}. "
-                f"Available columns: {list(df.columns)}"
-            )
-
-        df = standardize_smiles_column(df, smiles_found)
-        if smiles_found != "smiles":
-            df = df.rename(columns={smiles_found: "smiles"})
-        local_input = (Path(".files") / "prediction_inputs" / f"{model_id}_input.csv").resolve()
-        local_input.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(local_input, index=False)
-
-        result = backend.predict_from_csv(
-            input_csv=str(local_input),
-            model_record=record,
-            preds_path=str(output_path),
+        return self.inference_toolkit.predict_from_csv(
+            model_id=model_id,
+            input_csv=input_csv,
+            smiles_column=smiles_column,
+            preds_path=preds_path,
             return_uncertainty=return_uncertainty,
+            agent=agent,
         )
-
-        predictions_only_df = pd.read_csv(output_path)
-        prediction_columns = [
-            column for column in predictions_only_df.columns if column not in source_df.columns
-        ]
-        if prediction_columns:
-            enriched_output_df = pd.concat(
-                [source_df.reset_index(drop=True), predictions_only_df[prediction_columns].reset_index(drop=True)],
-                axis=1,
-            )
-            enriched_output_df.to_csv(output_path, index=False)
-
-        preview_df = pd.read_csv(output_path)
-        preview_columns = list(preview_df.columns)
-        preview = preview_df.head(5).to_dict(orient="records")
-        num_rows = int(len(preview_df))
-
-        prediction_state = get_prediction_state(agent)
-        prediction_state["last_prediction"] = {
-            "model_id": model_id,
-            "input_csv": str(local_input),
-            "preds_path": str(output_path),
-            "return_uncertainty": return_uncertainty,
-            "applicability_domain": result.get("applicability_domain") or {},
-            "applicability_domain_columns": result.get("applicability_domain_columns") or [],
-            "ensemble_inference_summary": result.get("ensemble_inference_summary") or {},
-        }
-        history_entry = {
-            "model_id": model_id,
-            "backend_name": record.backend_name,
-            "task_type": record.task.task_type,
-            "input_csv": str(local_input),
-            "preds_path": str(output_path),
-            "download_file_ref": str(output_path),
-            "preview_columns": preview_columns,
-            "preview": preview,
-            "num_rows": num_rows,
-            "applicability_domain": result.get("applicability_domain") or {},
-            "applicability_domain_columns": result.get("applicability_domain_columns") or [],
-            "ensemble_inference_summary": result.get("ensemble_inference_summary") or {},
-        }
-        prediction_state["prediction_history"].append(history_entry)
-        result["preds_path"] = str(output_path)
-        result["download_file_ref"] = str(output_path)
-        result["download_file_tag"] = f"<file>{output_path}</file>"
-        result["preview_columns"] = preview_columns
-        result["preview"] = preview
-        result["num_rows"] = num_rows
-        return result
 
     def predict_from_smiles(
         self,
@@ -1690,28 +1503,13 @@ class ChempropToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Run prediction from an in-memory list of SMILES by materializing a temporary CSV."""
-        if agent is None:
-            raise ValueError("Agent is required for prediction")
-
-        if not smiles:
-            raise ValueError("At least one SMILES string is required")
-
-        input_path = Path(".files") / "prediction_inputs" / f"{model_id}_smiles_input.csv"
-        input_path.parent.mkdir(parents=True, exist_ok=True)
-        df = pd.DataFrame({"smiles": smiles})
-        df = standardize_smiles_column(df, "smiles")
-        df.to_csv(input_path, index=False)
-
-        result = self.predict_from_csv(
+        return self.inference_toolkit.predict_from_smiles(
             model_id=model_id,
-            input_csv=str(input_path),
-            smiles_column="smiles",
+            smiles=smiles,
             preds_path=preds_path,
             return_uncertainty=return_uncertainty,
             agent=agent,
         )
-        result["num_smiles"] = len(smiles)
-        return result
 
     def export_prediction_summary(
         self,
@@ -1719,67 +1517,10 @@ class ChempropToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Export a consolidated CSV summary from prediction history."""
-        if agent is None:
-            raise ValueError("Agent is required to export a prediction summary")
-
-        prediction_state = get_prediction_state(agent)
-        history = prediction_state.get("prediction_history") or []
-        if not history:
-            raise ValueError("No prediction history is available for summary export")
-
-        summary_path = (
-            Path(summary_csv).expanduser()
-            if summary_csv
-            else (Path(".files") / "prediction_outputs" / "prediction_summary.csv").resolve()
+        return self.inference_toolkit.export_prediction_summary(
+            summary_csv=summary_csv,
+            agent=agent,
         )
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
-
-        frames: List[pd.DataFrame] = []
-        for item in history:
-            preds_path = item.get("preds_path")
-            model_id = item.get("model_id")
-            task_type = item.get("task_type")
-            if not preds_path or not Path(preds_path).exists():
-                continue
-
-            df = pd.read_csv(preds_path).copy()
-            if df.empty:
-                continue
-
-            value_columns = [col for col in df.columns if col.lower() != "smiles"]
-            if not value_columns:
-                continue
-
-            melted = df.melt(
-                id_vars=["smiles"] if "smiles" in df.columns else None,
-                value_vars=value_columns,
-                var_name="prediction_column",
-                value_name="predicted_value",
-            )
-            melted.insert(0, "model_id", model_id)
-            melted.insert(1, "task_type", task_type)
-            frames.append(melted)
-
-        if not frames:
-            raise ValueError("No readable prediction files were found for summary export")
-
-        summary_df = pd.concat(frames, ignore_index=True)
-        summary_df.to_csv(summary_path, index=False)
-
-        prediction_outputs = agent.session_state.setdefault("prediction_outputs", {})
-        prediction_outputs["latest_summary"] = str(summary_path)
-
-        preview_columns = list(summary_df.columns)
-        preview = summary_df.head(10).to_dict(orient="records")
-
-        return {
-            "summary_csv": str(summary_path),
-            "download_file_ref": str(summary_path),
-            "num_rows": int(len(summary_df)),
-            "num_files": len(frames),
-            "preview_columns": preview_columns,
-            "preview": preview,
-        }
 
     def _compute_training_metrics(
         self,
