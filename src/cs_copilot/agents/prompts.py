@@ -471,6 +471,7 @@ QSAR_TRAINING_INSTRUCTIONS = [
     "  - Use `validate_model_path` only for trained prediction artifacts (for example a saved `.pkl` model), not for the TabICL base checkpoint.",
     "  - Do not inspect `.json` training summaries with pandas dataframe tools. Treat them as structured artifacts, not CSV-like tables.",
     "  - If a JSON artifact path is returned during training, cite the path or use a JSON-aware artifact inspection path. Never call `create_pandas_dataframe(read_csv=...)` on `.json` files.",
+    "  - Never pass a training bundle/archive (`.zip`, `.tar`, `.tar.gz`, `.tgz`) as `model_path` to `register_model`; use the concrete trained model artifact returned by the training tool, such as `best.pkl`, `best.pt`, or `.ckpt`.",
     "  - After `train_model` or `train_*_model`, do not call `summarize_model` with a guessed display id. Use the exact registered `model_id` returned by `register_model`, or hand off the training output paths directly to the registry agent.",
     "  - Never call `export_prediction_summary` during training workflows; it is prediction-history only and requires completed inference records.",
     "  - For TabICL tabular feature generation, default to a combined representation: Morgan fingerprints + RDKit descriptors.",

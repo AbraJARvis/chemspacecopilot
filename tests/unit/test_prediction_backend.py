@@ -272,6 +272,57 @@ def test_chemprop_toolkit_persist_registered_model_delegates_to_registry(monkeyp
     assert captured["agent"] is agent
 
 
+def test_prediction_registry_rejects_archive_model_paths_without_backend_validation():
+    catalog = SimpleNamespace(refresh_from_internal_store=lambda persist=True: None)
+
+    class FakeBackend:
+        backend_name = "lightgbm"
+        MODEL_EXTENSIONS = (".pkl",)
+
+        def validate_model_path(self, model_path):
+            raise AssertionError("archive paths should be rejected before backend validation")
+
+    toolkit = PredictionRegistryToolkit(
+        backends={"lightgbm": FakeBackend()},
+        catalog=catalog,
+        default_backend_name="lightgbm",
+        register_tools=False,
+    )
+    agent = SimpleNamespace(session_state={})
+
+    result = toolkit.register_model(
+        model_id="bad_bundle",
+        model_path="/tmp/training_bundle.zip",
+        backend_name="lightgbm",
+        task_type="regression",
+        target_columns=["pEC50"],
+        agent=agent,
+    )
+
+    assert result["registered"] is False
+    assert result["expected_model_extensions"] == [".pkl"]
+    assert "bundle/archive" in result["usage_hint"]
+    assert get_prediction_state(agent)["registered"] == {}
+
+
+def test_prediction_registry_summarize_model_unknown_id_returns_guidance():
+    catalog = SimpleNamespace(refresh_from_internal_store=lambda persist=True: None)
+    toolkit = PredictionRegistryToolkit(
+        backends={},
+        catalog=catalog,
+        default_backend_name="chemprop",
+        register_tools=False,
+    )
+    agent = SimpleNamespace(session_state={})
+
+    result = toolkit.summarize_model("missing_model", agent=agent)
+
+    assert result["found"] is False
+    assert result["model_id"] == "missing_model"
+    assert result["registered_model_ids"] == []
+    assert "summarize_catalog_model" in result["usage_hint"]
+
+
 def test_chemprop_backend_describe_environment_shape():
     backend = ChempropBackend()
 

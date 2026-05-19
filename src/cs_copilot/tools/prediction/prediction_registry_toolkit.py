@@ -29,6 +29,8 @@ from .session_state import (
     latest_curation_artifacts,
 )
 
+ARCHIVE_MODEL_PATH_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz")
+
 
 def _relative_posix(path: Path, start: Path) -> str:
     return path.relative_to(start).as_posix()
@@ -211,6 +213,11 @@ def _find_training_summary_from_model_run(run_dir: Optional[Path]) -> Optional[P
             ]
         )
     return _find_first_existing_path(candidates)
+
+
+def _is_archive_model_path(path: str) -> bool:
+    normalized = str(path or "").lower()
+    return any(normalized.endswith(suffix) for suffix in ARCHIVE_MODEL_PATH_SUFFIXES)
 
 
 class PredictionRegistryToolkit(Toolkit):
@@ -413,6 +420,21 @@ class PredictionRegistryToolkit(Toolkit):
 
         resolved_backend_name = backend_name or self.default_backend_name
         backend = self.get_backend(resolved_backend_name)
+        if _is_archive_model_path(model_path):
+            expected_extensions = getattr(backend, "MODEL_EXTENSIONS", None)
+            return {
+                "registered": False,
+                "model_id": model_id,
+                "model_path": model_path,
+                "backend_name": backend.backend_name,
+                "error": "Archive paths cannot be registered as model artifacts.",
+                "expected_model_extensions": list(expected_extensions or []),
+                "usage_hint": (
+                    "Use the trained model artifact path returned by the training tool "
+                    "(for example `best.pkl` for LightGBM/TabICL or `best.pt`/`.ckpt` "
+                    "for Chemprop), not the downloadable training bundle/archive."
+                ),
+            }
         validated_path = backend.validate_model_path(model_path)
         task = PredictionTaskSpec(
             task_type=task_type,
@@ -1119,6 +1141,20 @@ class PredictionRegistryToolkit(Toolkit):
         """Return the stored summary for a registered model."""
         if agent is None:
             raise ValueError("Agent is required to summarize a model")
+        prediction_state = get_prediction_state(agent)
+        if model_id not in prediction_state["registered"]:
+            return {
+                "found": False,
+                "model_id": model_id,
+                "error": f"Unknown model_id: {model_id}",
+                "registered_model_ids": list(prediction_state["registered"].keys()),
+                "usage_hint": (
+                    "If registration just failed, retry `register_model` with the real backend "
+                    "model artifact path rather than a bundle/archive path. If the model was "
+                    "persisted to the catalog, use `summarize_catalog_model` with the returned "
+                    "canonical catalog model_id."
+                ),
+            }
         return self.annotate_record(self.resolve_record(model_id, agent))
 
     def resolve_record(self, model_id: str, agent: Agent) -> PredictionModelRecord:
