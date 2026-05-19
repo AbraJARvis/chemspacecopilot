@@ -399,6 +399,9 @@ def _find_latest_backend_inventory_start(full_content: str, *, after: int = -1) 
         r"(?im)^\s*(?:[#*_>\-\s]*)(?:[^\w\s]\s*)?Backends QSAR disponibles\b",
         r"(?im)^\s*(?:[#*_>\-\s]*)(?:[^\w\s]\s*)?Available QSAR backends\b",
         r"(?im)^\s*(?:[#*_>\-\s]*)(?:[^\w\s]\s*)?QSAR backends available\b",
+        r"(?im)^\s*Voici une description complète (?:de tous )?(?:des|de\s+\d+\s+)?backends QSAR disponibles\b",
+        r"(?im)^\s*Voici une description complete (?:de tous )?(?:des|de\s+\d+\s+)?backends QSAR disponibles\b",
+        r"(?im)^\s*Here (?:is|are) (?:a )?complete description of (?:all )?(?:the )?available QSAR backends\b",
     ]
     starts: list[int] = []
     for pattern in backend_inventory_patterns:
