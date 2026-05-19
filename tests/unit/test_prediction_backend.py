@@ -238,6 +238,40 @@ def test_chemprop_toolkit_uses_backend_neutral_registry_and_inference_facades(mo
     assert toolkit.describe_backends() == toolkit.registry_toolkit.describe_backends()
 
 
+def test_chemprop_toolkit_persist_registered_model_delegates_to_registry(monkeypatch):
+    import cs_copilot.tools.prediction.chemprop_toolkit as toolkit_module
+
+    catalog = SimpleNamespace(refresh_from_internal_store=lambda persist=True: None)
+    monkeypatch.setattr(toolkit_module.PredictionModelCatalog, "load", lambda: catalog)
+
+    toolkit = ChempropToolkit(include_prediction_summary_export=False)
+    captured = {}
+
+    def fake_persist_registered_model(**kwargs):
+        captured.update(kwargs)
+        return {"persisted": True, "model_id": kwargs["model_id"]}
+
+    monkeypatch.setattr(
+        toolkit.registry_toolkit,
+        "persist_registered_model",
+        fake_persist_registered_model,
+    )
+
+    agent = SimpleNamespace(session_state={})
+    result = toolkit.persist_registered_model(
+        model_id="session_model",
+        status="workflow_demo",
+        display_name="Session Model",
+        agent=agent,
+    )
+
+    assert result == {"persisted": True, "model_id": "session_model"}
+    assert captured["model_id"] == "session_model"
+    assert captured["status"] == "workflow_demo"
+    assert captured["display_name"] == "Session Model"
+    assert captured["agent"] is agent
+
+
 def test_chemprop_backend_describe_environment_shape():
     backend = ChempropBackend()
 
