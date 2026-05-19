@@ -393,6 +393,21 @@ def _find_polished_qsar_report_start(full_content: str, *, after: int = -1) -> i
     return min(starts) if starts else -1
 
 
+def _find_latest_backend_inventory_start(full_content: str, *, after: int = -1) -> int:
+    """Find the latest backend capability inventory inside a verbose team trace."""
+    backend_inventory_patterns = [
+        r"(?im)^\s*(?:[#*_>\-\s]*)(?:[^\w\s]\s*)?Backends QSAR disponibles\b",
+        r"(?im)^\s*(?:[#*_>\-\s]*)(?:[^\w\s]\s*)?Available QSAR backends\b",
+        r"(?im)^\s*(?:[#*_>\-\s]*)(?:[^\w\s]\s*)?QSAR backends available\b",
+    ]
+    starts: list[int] = []
+    for pattern in backend_inventory_patterns:
+        for match in re.finditer(pattern, full_content):
+            if match.start() > after:
+                starts.append(match.start())
+    return max(starts) if starts else -1
+
+
 def _extract_qsar_final_report(full_content: str) -> str:
     """Best-effort extraction of the final QSAR report from a verbose team trace."""
     if not full_content:
@@ -404,6 +419,14 @@ def _extract_qsar_final_report(full_content: str) -> str:
 
     handoff_matches = list(_QSAR_HANDOFF_LABEL_RE.finditer(full_content))
     last_handoff_start = handoff_matches[-1].start() if handoff_matches else -1
+
+    latest_backend_inventory = _find_latest_backend_inventory_start(
+        full_content,
+        after=last_handoff_start,
+    )
+    if latest_backend_inventory >= 0:
+        return full_content[latest_backend_inventory:].strip()
+
     polished_after_handoff = _find_polished_qsar_report_start(
         full_content,
         after=last_handoff_start,
@@ -419,6 +442,10 @@ def _extract_qsar_final_report(full_content: str) -> str:
             candidate = candidate[:handoff_tail.start()].strip()
         if candidate:
             return candidate
+
+    latest_backend_inventory = _find_latest_backend_inventory_start(full_content)
+    if latest_backend_inventory >= 0:
+        return full_content[latest_backend_inventory:].strip()
 
     report_markers = [
         "QSAR Dataset Curation Report",
