@@ -269,6 +269,28 @@ def test_tabular_feature_cache_reuses_and_cleans_intermediate_csvs(tmp_path):
     assert all(not path.exists() for path in cache_csvs)
 
 
+def test_benchmark_qsar_models_requires_explicit_benchmark_request(tmp_path):
+    train_csv = tmp_path / "dataset_curated.csv"
+    pd.DataFrame({"smiles": ["CCO", "CCC"], "Y": [1.0, 2.0]}).to_csv(train_csv, index=False)
+
+    toolkit = BenchmarkToolkit()
+    agent = _fake_agent()
+
+    result = toolkit.benchmark_qsar_models(
+        train_csv=str(train_csv),
+        task_type="regression",
+        target_columns=["Y"],
+        smiles_column="smiles",
+        output_dir=str(tmp_path / "benchmark_output"),
+        agent=agent,
+    )
+
+    assert result["benchmark_started"] is False
+    assert result["blocked"] is True
+    assert "benchmark_requested=True" in result["reason"]
+    assert not (tmp_path / "benchmark_output").exists()
+
+
 def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     catalog_path = tmp_path / "model_catalog.json"
     internal_root = tmp_path / "internal"
@@ -276,10 +298,12 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     pd.DataFrame({"smiles": ["CCO", "CCC"], "Y": [1.0, 2.0]}).to_csv(train_csv, index=False)
 
     monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+    import cs_copilot.tools.prediction.prediction_registry_toolkit as registry_module
+
+    monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
 
     import cs_copilot.tools.prediction.chemprop_toolkit as chemprop_module
 
-    monkeypatch.setattr(chemprop_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
     monkeypatch.setattr(
         chemprop_module.PredictionModelCatalog,
         "load",
@@ -467,6 +491,7 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
         smiles_column="smiles",
         benchmark_mode="benchmark_standard_qsar",
         output_dir=str(output_dir),
+        benchmark_requested=True,
         agent=agent,
     )
 

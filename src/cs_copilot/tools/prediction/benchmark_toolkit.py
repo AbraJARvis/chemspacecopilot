@@ -1012,11 +1012,27 @@ class BenchmarkToolkit(Toolkit):
         output_dir: str = ".files/benchmark_output",
         allow_heavy_compute: bool = False,
         training_profile: Optional[str] = None,
+        benchmark_requested: bool = False,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Run a multi-backend benchmark campaign for a QSAR-ready dataset."""
         if agent is None:
             raise ValueError("Agent is required when running a benchmark campaign")
+        if not benchmark_requested:
+            return {
+                "benchmark_started": False,
+                "blocked": True,
+                "reason": (
+                    "`benchmark_qsar_models` requires `benchmark_requested=True`. "
+                    "Use single-backend training tools for ordinary standard_qsar, robust_qsar, "
+                    "or Activity-Cliff-enriched training workflows."
+                ),
+                "next_step": (
+                    "If the user explicitly asked for a benchmark or candidate leaderboard, "
+                    "call this tool again with `benchmark_requested=True`; otherwise continue "
+                    "with model registration/persistence for the completed single training run."
+                ),
+            }
 
         target_columns = _coerce_list(target_columns) or []
         requested_backends = _coerce_list(backends)

@@ -490,6 +490,7 @@ QSAR_TRAINING_INSTRUCTIONS = [
     "  - Use `challenging_qsar` when the user explicitly asks for stronger trustworthiness checks or when you need to probe whether scaffold validation is still optimistic.",
     "  - Use `fast_local` only for quick iteration or when the user explicitly prioritizes speed over stronger QSAR validation.",
     "  - Call `benchmark_qsar_models` only when the user explicitly asks for a benchmark, comparative multi-backend evaluation, head-to-head backend comparison, or candidate-representation leaderboard.",
+    "  - When and only when the user explicitly requested such a benchmark, pass `benchmark_requested=True` to `benchmark_qsar_models`; otherwise the benchmark tool will refuse to start.",
     "  - When the user explicitly asks for a comparative multi-backend evaluation, use `benchmark_fast_local`, `benchmark_standard_qsar`, `benchmark_robust_qsar`, or `benchmark_challenging_qsar` instead of improvising a comparison by hand.",
     "  - In benchmark modes, every trained candidate model must be persisted and cataloged independently, exactly as if it had been trained alone.",
     "  - Preserve split artifacts, per-split test predictions, training summaries, and checkpoint paths.",
