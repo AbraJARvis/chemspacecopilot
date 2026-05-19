@@ -8,11 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import pandas as pd
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
@@ -22,10 +20,8 @@ from cs_copilot.tools.activity_cliffs import (
     split_activity_cliff_args,
 )
 
-from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionTaskSpec
 from .lightgbm_backend import LightGBMBackend
-from .qsar_plots import build_qsar_training_plots
 from .qsar_training_policy import (
     assess_protocol_results,
     describe_compute_environment,
@@ -44,12 +40,17 @@ from .session_state import (
     latest_curation_artifacts,
     write_active_training_marker,
 )
+from .training_orchestration import (
+    apply_training_profile,
+    build_applicability_domain_for_training,
+    build_training_plots_if_possible,
+    collect_training_bundle_files,
+    materialize_primary_protocol_artifacts,
+    normalize_json_list_argument,
+    write_training_summary,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def _strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
-    return df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed:")].copy()
 
 
 class LightGBMToolkit(Toolkit):
@@ -127,24 +128,16 @@ class LightGBMToolkit(Toolkit):
         self,
         extra_args: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        requested = dict(extra_args or {})
-        requested_profile = requested.pop("training_profile", None)
-        requested_validation_protocol = requested.pop("validation_protocol", None)
-        allow_heavy_compute = bool(requested.pop("allow_heavy_compute", False))
-
-        compute_env = self.describe_compute_environment()
-        resolved = self._resolve_training_profile(compute_env)
-        profile = requested_profile or resolved["profile"]
-
-        if not allow_heavy_compute and profile == "heavy_validation":
-            profile = resolved["profile"]
-
-        merged = {
-            **self._training_defaults_for_profile(profile),
-            **requested,
-        }
-
-        if not allow_heavy_compute:
+        def _limit(profile: str, merged: Dict[str, Any], allow_heavy_compute: bool) -> Dict[str, Any]:
+            if allow_heavy_compute:
+                if profile == "heavy_validation":
+                    merged["n_estimators"] = max(int(merged.get("n_estimators", 1000)), 1000)
+                    merged["early_stopping_rounds"] = max(
+                        int(merged.get("early_stopping_rounds", 50)),
+                        50,
+                    )
+                    merged["n_jobs"] = max(int(merged.get("n_jobs", 8)), 8)
+                return merged
             if profile == "local_light":
                 merged["n_estimators"] = min(int(merged.get("n_estimators", 300)), 300)
                 merged["early_stopping_rounds"] = min(
@@ -159,22 +152,15 @@ class LightGBMToolkit(Toolkit):
                     50,
                 )
                 merged["n_jobs"] = max(1, int(merged.get("n_jobs", 4)))
+            return merged
 
-        if profile == "heavy_validation":
-            merged["n_estimators"] = max(int(merged.get("n_estimators", 1000)), 1000)
-            merged["early_stopping_rounds"] = max(
-                int(merged.get("early_stopping_rounds", 50)),
-                50,
-            )
-            merged["n_jobs"] = max(int(merged.get("n_jobs", 8)), 8)
-
-        return {
-            "compute_environment": compute_env,
-            "training_profile": profile,
-            "profile_reason": resolved["reason"],
-            "validation_protocol": requested_validation_protocol,
-            "extra_args": merged,
-        }
+        return apply_training_profile(
+            extra_args,
+            defaults_for_profile=self._training_defaults_for_profile,
+            limit_profile_args=_limit,
+            compute_environment=self.describe_compute_environment(),
+            protected_profiles=("heavy_validation",),
+        )
 
     def _resolve_lightgbm_run_artifacts(self, output_dir: Path) -> Dict[str, Path]:
         model_dir = output_dir / "model_0"
@@ -191,40 +177,11 @@ class LightGBMToolkit(Toolkit):
         root_output_dir: Path,
         primary_run: Dict[str, Any],
     ) -> Dict[str, Optional[str]]:
-        root_model_dir = root_output_dir / "model_0"
-        root_model_dir.mkdir(parents=True, exist_ok=True)
-
-        file_map = {
-            primary_run.get("model_path"): root_model_dir / "best.pkl",
-            primary_run.get("test_predictions_path"): root_model_dir / "test_predictions.csv",
-            primary_run.get("config_path"): root_output_dir / "config.toml",
-            primary_run.get("splits_path"): root_output_dir / "splits.json",
-        }
-        copied: Dict[str, Optional[str]] = {
-            "best_model_path": None,
-            "test_predictions_path": None,
-            "config_path": None,
-            "splits_path": None,
-        }
-
-        for source_raw, target_path in file_map.items():
-            if not source_raw:
-                continue
-            source_path = Path(str(source_raw)).expanduser()
-            if not source_path.exists():
-                continue
-            if source_path.resolve() != target_path.resolve():
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source_path, target_path)
-            if target_path.name == "best.pkl":
-                copied["best_model_path"] = str(target_path)
-            elif target_path.name == "test_predictions.csv":
-                copied["test_predictions_path"] = str(target_path)
-            elif target_path.name == "config.toml":
-                copied["config_path"] = str(target_path)
-            elif target_path.name == "splits.json":
-                copied["splits_path"] = str(target_path)
-        return copied
+        return materialize_primary_protocol_artifacts(
+            root_output_dir=root_output_dir,
+            primary_run=primary_run,
+            model_filename="best.pkl",
+        )
 
     def _build_applicability_domain(
         self,
@@ -234,23 +191,11 @@ class LightGBMToolkit(Toolkit):
         primary_output_dir: Path,
         task: PredictionTaskSpec,
     ) -> Dict[str, Any]:
-        splits_path = Path(primary_run.get("splits_path") or primary_output_dir / "splits.json")
-        if not splits_path.exists():
-            return {}
-        split_payload = json.loads(splits_path.read_text())
-        if not split_payload or "train" not in split_payload[0]:
-            return {}
-
-        dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
-        train_indices = split_payload[0].get("train") or []
-        smiles_column = task.smiles_columns[0] if task.smiles_columns else "smiles"
-        ad_output_dir = primary_output_dir / "applicability_domain"
-        return build_applicability_domain_from_training_data(
-            dataset=dataset,
-            train_indices=train_indices,
-            smiles_column=smiles_column,
-            output_dir=str(ad_output_dir),
-            model_id=primary_output_dir.name,
+        return build_applicability_domain_for_training(
+            train_csv=train_csv,
+            primary_run=primary_run,
+            primary_output_dir=primary_output_dir,
+            task=task,
         )
 
     def _summarize_training_resources(
@@ -683,29 +628,11 @@ class LightGBMToolkit(Toolkit):
         *,
         argument_name: str,
     ) -> Optional[List[Any]]:
-        if value is None:
-            return None
-        if isinstance(value, str):
-            stripped = value.strip()
-            if not stripped:
-                return []
-            try:
-                parsed = json.loads(stripped)
-            except json.JSONDecodeError:
-                if "," in stripped:
-                    items = [item.strip() for item in stripped.split(",") if item.strip()]
-                    if argument_name == "split_sizes":
-                        return [float(item) for item in items]
-                    return items
-                return [stripped]
-            if not isinstance(parsed, list):
-                if isinstance(parsed, str):
-                    return [parsed]
-                raise ValueError(f"{argument_name} must be a list, scalar string, or JSON-encoded list.")
-            return parsed
-        if not isinstance(value, list):
-            raise ValueError(f"{argument_name} must be a list, scalar string, or JSON-encoded list.")
-        return value
+        return normalize_json_list_argument(
+            value,
+            argument_name=argument_name,
+            coerce_numbers=argument_name == "split_sizes",
+        )
 
     def train_lightgbm_model(
         self,
@@ -1039,38 +966,14 @@ class LightGBMToolkit(Toolkit):
         )
         plot_artifacts: Dict[str, str] = {}
         target_column = task.target_columns[0] if task.target_columns else None
-        if target_column and root_artifacts.get("splits_path") and root_artifacts.get("test_predictions_path"):
-            plots_output_dir = root_output_path / "artifacts" / "plots"
-            try:
-                plot_artifacts = build_qsar_training_plots(
-                    train_csv=train_csv,
-                    split_results=[
-                        {
-                            **item,
-                            "splits_path": (
-                                root_artifacts["splits_path"]
-                                if item is final_primary_run
-                                else item.get("splits_path")
-                            ),
-                            "test_predictions_path": (
-                                root_artifacts["test_predictions_path"]
-                                if item is final_primary_run
-                                else item.get("test_predictions_path")
-                            ),
-                        }
-                        for item in final_split_results
-                    ],
-                    primary_run={
-                        **final_primary_run,
-                        "splits_path": root_artifacts.get("splits_path") or final_primary_run.get("splits_path"),
-                        "test_predictions_path": root_artifacts.get("test_predictions_path")
-                        or final_primary_run.get("test_predictions_path"),
-                    },
-                    output_dir=str(plots_output_dir),
-                    target_column=target_column,
-                )
-            except Exception:
-                plot_artifacts = {}
+        plot_artifacts = build_training_plots_if_possible(
+            train_csv=train_csv,
+            split_results=final_split_results,
+            primary_run=final_primary_run,
+            root_artifacts=root_artifacts,
+            root_output_dir=root_output_path,
+            target_column=target_column,
+        )
 
         validation_assessment = assess_protocol_results(final_split_results)
         total_completed_at = project_now()
@@ -1130,61 +1033,29 @@ class LightGBMToolkit(Toolkit):
         result["canonical_summary_path"] = result["summary_path"]
 
         summary_path = Path(result["summary_path"])
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
-        summary_path.write_text(json.dumps(result, indent=2) + "\n")
+        write_training_summary(summary_path, result)
 
         bundle_path = (
             Path(".files")
             / "prediction_outputs"
             / f"{Path(resolved_output_dir).name}_training_bundle.zip"
         ).resolve()
-        bundle_files = [
-            Path(train_csv).expanduser(),
-            summary_path,
-        ]
-        for key in ("model_path", "config_path", "splits_path", "test_predictions_path"):
-            if result.get(key):
-                bundle_files.append(Path(str(result[key])).expanduser())
-        for split_result in [*final_split_results, *split_results]:
-            for key in ("model_path", "test_predictions_path", "splits_path"):
-                if split_result.get(key):
-                    bundle_files.append(Path(str(split_result[key])).expanduser())
-        for key in (
-            "reference_store_path",
-            "reference_manifest_path",
-            "applicability_domain_path",
-        ):
-            if ad_summary.get(key):
-                bundle_files.append(Path(str(ad_summary[key])).expanduser())
-        for artifact_path in plot_artifacts.values():
-            bundle_files.append(Path(str(artifact_path)).expanduser())
-        for artifact_path in (curation_artifacts.get("artifacts") or {}).values():
-            if artifact_path:
-                bundle_files.append(Path(str(artifact_path)).expanduser())
-        if activity_cliffs.get("annotated_training_csv"):
-            bundle_files.append(Path(str(activity_cliffs["annotated_training_csv"])).expanduser())
-        if activity_cliffs.get("summary_path"):
-            bundle_files.append(Path(str(activity_cliffs["summary_path"])).expanduser())
-        if activity_cliffs.get("clean_training_csv"):
-            bundle_files.append(Path(str(activity_cliffs["clean_training_csv"])).expanduser())
-        for variant in activity_cliffs.get("variants") or []:
-            if variant.get("filtered_training_csv"):
-                bundle_files.append(Path(str(variant["filtered_training_csv"])).expanduser())
-            training_result = variant.get("training_result") or {}
-            for split_result in training_result.get("split_results") or []:
-                for key in ("model_path", "test_predictions_path", "splits_path"):
-                    if split_result.get(key):
-                        bundle_files.append(Path(str(split_result[key])).expanduser())
-        for artifact_path in (activity_cliffs.get("plot_artifacts") or {}).values():
-            bundle_files.append(Path(str(artifact_path)).expanduser())
-        for artifact_path in (activity_cliffs.get("loop_comparison_plot_artifacts") or {}).values():
-            bundle_files.append(Path(str(artifact_path)).expanduser())
+        bundle_files = collect_training_bundle_files(
+            train_csv=train_csv,
+            summary_path=summary_path,
+            result=result,
+            split_results=[*final_split_results, *split_results],
+            ad_summary=ad_summary,
+            plot_artifacts=plot_artifacts,
+            curation_artifacts=curation_artifacts,
+            activity_cliffs=activity_cliffs,
+        )
 
         bundle = bundle_artifacts(bundle_path, bundle_files)
         result["bundle_file_ref"] = str(bundle)
         result["training_bundle"] = str(bundle)
         result["bundle_download_tag"] = f"<file>{bundle}</file>"
-        summary_path.write_text(json.dumps(result, indent=2) + "\n")
+        write_training_summary(summary_path, result)
 
         if prediction_state is not None:
             prediction_state["training_runs"].append(

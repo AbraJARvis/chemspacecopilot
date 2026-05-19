@@ -22,6 +22,7 @@ class BackendCapabilities:
     supports_applicability_domain: bool
     supports_uncertainty: str
     supports_component_orchestration: bool = False
+    supports_activity_cliff_feedback_loops: bool = False
     catalog_model_filename: str | None = None
     training_summary_filenames: Tuple[str, ...] = ("cs_copilot_training_summary.json",)
     test_prediction_relative_paths: Tuple[str, ...] = (
@@ -61,6 +62,7 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         ),
         supports_applicability_domain=True,
         supports_uncertainty="none",
+        supports_activity_cliff_feedback_loops=True,
         test_prediction_relative_paths=("test_predictions.csv",),
     ),
     "tabicl": BackendCapabilities(

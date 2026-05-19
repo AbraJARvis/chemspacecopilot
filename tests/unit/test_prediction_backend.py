@@ -25,6 +25,13 @@ from cs_copilot.tools.prediction.session_state import (
     latest_curation_artifacts,
     write_active_training_marker,
 )
+from cs_copilot.tools.prediction.training_orchestration import (
+    apply_training_profile,
+    collect_training_bundle_files,
+    materialize_primary_protocol_artifacts,
+    normalize_json_list_argument,
+    write_training_summary,
+)
 
 
 def test_backend_capabilities_registry_core_contracts():
@@ -39,6 +46,8 @@ def test_backend_capabilities_registry_core_contracts():
     assert ensemble.supports_component_orchestration is True
     assert backend_supports_component_orchestration("ensemble") is True
     assert ensemble.supports_uncertainty == "component_disagreement_std"
+    assert lightgbm.supports_activity_cliff_feedback_loops is True
+    assert chemprop.supports_activity_cliff_feedback_loops is False
     assert tabicl.catalog_model_filename == "best.pkl"
     assert "tabicl_training_summary.json" in tabicl.training_summary_filenames
 
@@ -119,6 +128,80 @@ def test_shared_bundle_artifacts_deduplicates_archive_names(tmp_path):
         names = zf.namelist()
     assert len(names) == 2
     assert len(set(names)) == 2
+
+
+def test_training_orchestration_normalizes_agent_list_arguments():
+    assert normalize_json_list_argument("pEC50", argument_name="target_columns") == ["pEC50"]
+    assert normalize_json_list_argument('["smiles"]', argument_name="smiles_columns") == ["smiles"]
+    assert normalize_json_list_argument("0.8,0.1,0.1", argument_name="split_sizes", coerce_numbers=True) == [
+        0.8,
+        0.1,
+        0.1,
+    ]
+
+
+def test_training_orchestration_applies_profile_with_backend_specific_limits():
+    compute_env = {
+        "cpu_count": 48,
+        "memory_gb_total": 31.0,
+        "gpu_available": True,
+        "execution_env": "apptainer_local",
+    }
+
+    def defaults(profile: str):
+        return {"n_estimators": 1000 if profile == "heavy_validation" else 300}
+
+    def limit(profile: str, args: dict, allow_heavy: bool):
+        if profile == "local_light":
+            args["n_estimators"] = min(int(args["n_estimators"]), 300)
+        return args
+
+    policy = apply_training_profile(
+        {"training_profile": "heavy_validation", "n_estimators": 9999},
+        defaults_for_profile=defaults,
+        limit_profile_args=limit,
+        compute_environment=compute_env,
+        protected_profiles=("heavy_validation",),
+    )
+
+    assert policy["training_profile"] == "heavy_validation"
+    assert policy["extra_args"]["n_estimators"] == 9999
+
+
+def test_training_orchestration_materializes_summary_and_bundle_inputs(tmp_path):
+    run_dir = tmp_path / "run"
+    model = run_dir / "model_0" / "best.pkl"
+    preds = run_dir / "model_0" / "test_predictions.csv"
+    config = run_dir / "config.toml"
+    splits = run_dir / "splits.json"
+    model.parent.mkdir(parents=True)
+    for path in (model, preds, config, splits):
+        path.write_text(path.name)
+
+    root = tmp_path / "root"
+    artifacts = materialize_primary_protocol_artifacts(
+        root_output_dir=root,
+        primary_run={
+            "model_path": str(model),
+            "test_predictions_path": str(preds),
+            "config_path": str(config),
+            "splits_path": str(splits),
+        },
+        model_filename="best.pkl",
+    )
+    summary = write_training_summary(root / "cs_copilot_training_summary.json", {"ok": True})
+    files = collect_training_bundle_files(
+        train_csv=str(config),
+        summary_path=summary,
+        result={"model_path": artifacts["best_model_path"]},
+        split_results=[],
+        ad_summary={},
+        plot_artifacts={},
+    )
+
+    assert Path(artifacts["best_model_path"]).exists()
+    assert json.loads(summary.read_text())["ok"] is True
+    assert Path(artifacts["best_model_path"]) in files
 
 
 def test_describe_backends_includes_official_capabilities(monkeypatch):

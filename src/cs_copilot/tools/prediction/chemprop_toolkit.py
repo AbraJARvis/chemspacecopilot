@@ -24,7 +24,6 @@ from cs_copilot.storage import S3
 from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
 from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, split_activity_cliff_args
 
-from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionModelRecord, PredictionTaskSpec
 from .backend_capabilities import get_backend_capabilities
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
@@ -45,7 +44,6 @@ from .qsar_training_policy import (
     seed_policy_reproducibility_metadata,
     summarize_training_durations,
 )
-from .qsar_plots import build_qsar_training_plots
 from .session_state import (
     bundle_artifacts,
     discover_curation_artifacts_near_dataset,
@@ -54,6 +52,14 @@ from .session_state import (
     write_active_training_marker,
 )
 from .tabicl_backend import TabICLBackend
+from .training_orchestration import (
+    apply_training_profile,
+    build_applicability_domain_for_training,
+    build_training_plots_if_possible,
+    collect_training_bundle_files,
+    normalize_json_list_argument,
+    write_training_summary,
+)
 
 
 def _prediction_output_path(model_id: str, preds_path: Optional[str] = None) -> Path:
@@ -426,25 +432,15 @@ class ChempropToolkit(Toolkit):
         self,
         extra_args: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        requested = dict(extra_args or {})
-        requested_profile = requested.pop("training_profile", None)
-        requested_validation_protocol = requested.pop("validation_protocol", None)
-        allow_heavy_compute = bool(requested.pop("allow_heavy_compute", False))
-
-        compute_env = self.describe_compute_environment()
-        resolved = self._resolve_training_profile(compute_env)
-        profile = requested_profile or resolved["profile"]
-
-        # Protect local machines unless heavy compute was explicitly authorized.
-        if not allow_heavy_compute and profile in {"heavy_validation", "benchmark"}:
-            profile = resolved["profile"]
-
-        merged = {
-            **self._training_defaults_for_profile(profile),
-            **requested,
-        }
-
-        if not allow_heavy_compute:
+        def _limit(profile: str, merged: Dict[str, Any], allow_heavy_compute: bool) -> Dict[str, Any]:
+            if allow_heavy_compute:
+                if profile == "heavy_validation":
+                    # On high-compute GPU runs, treat the profile values as floor values:
+                    # the agent may request a more aggressive configuration, but not a slower one.
+                    merged["epochs"] = max(int(merged.get("epochs", 100)), 100)
+                    merged["batch_size"] = max(int(merged.get("batch_size", 64)), 64)
+                    merged["num_workers"] = max(int(merged.get("num_workers", 16)), 16)
+                return merged
             if profile == "local_light":
                 merged["epochs"] = min(int(merged.get("epochs", 30)), 30)
                 merged["batch_size"] = min(int(merged.get("batch_size", 32)), 32)
@@ -457,21 +453,15 @@ class ChempropToolkit(Toolkit):
                 merged["ensemble_size"] = min(int(merged.get("ensemble_size", 1)), 1)
                 merged["num_replicates"] = min(int(merged.get("num_replicates", 1)), 1)
                 merged["num_workers"] = 0
+            return merged
 
-        if profile == "heavy_validation":
-            # On high-compute GPU runs, treat the profile values as floor values:
-            # the agent may request a more aggressive configuration, but not a slower one.
-            merged["epochs"] = max(int(merged.get("epochs", 100)), 100)
-            merged["batch_size"] = max(int(merged.get("batch_size", 64)), 64)
-            merged["num_workers"] = max(int(merged.get("num_workers", 16)), 16)
-
-        return {
-            "compute_environment": compute_env,
-            "training_profile": profile,
-            "profile_reason": resolved["reason"],
-            "validation_protocol": requested_validation_protocol,
-            "extra_args": merged,
-        }
+        return apply_training_profile(
+            extra_args,
+            defaults_for_profile=self._training_defaults_for_profile,
+            limit_profile_args=_limit,
+            compute_environment=self.describe_compute_environment(),
+            protected_profiles=("heavy_validation", "benchmark"),
+        )
 
     def _resolve_validation_protocol(
         self,
@@ -670,24 +660,12 @@ class ChempropToolkit(Toolkit):
         model_id_hint: str,
         task: PredictionTaskSpec,
     ) -> Dict[str, Any]:
-        splits_path = Path(primary_run.get("splits_path") or primary_output_dir / "splits.json")
-        if not splits_path.exists():
-            return {}
-
-        split_payload = json.loads(splits_path.read_text())
-        if not split_payload or "train" not in split_payload[0]:
-            return {}
-
-        dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
-        train_indices = split_payload[0].get("train") or []
-        smiles_column = task.smiles_columns[0] if task.smiles_columns else "smiles"
-        ad_output_dir = primary_output_dir / "applicability_domain"
-        return build_applicability_domain_from_training_data(
-            dataset=dataset,
-            train_indices=train_indices,
-            smiles_column=smiles_column,
-            output_dir=str(ad_output_dir),
-            model_id=model_id_hint,
+        return build_applicability_domain_for_training(
+            train_csv=train_csv,
+            primary_run=primary_run,
+            primary_output_dir=primary_output_dir,
+            task=task,
+            model_id_hint=model_id_hint,
         )
 
     def describe_backend(
@@ -1897,16 +1875,10 @@ class ChempropToolkit(Toolkit):
         with S3.open(input_csv, "r") as fh:
             df = pd.read_csv(fh)
 
-        if isinstance(target_columns, str):
-            try:
-                parsed = json.loads(target_columns)
-            except json.JSONDecodeError:
-                target_columns = [target_columns]
-            else:
-                if isinstance(parsed, list):
-                    target_columns = parsed
-                else:
-                    target_columns = [str(parsed)]
+        target_columns = normalize_json_list_argument(
+            target_columns,
+            argument_name="target_columns",
+        ) or []
 
         df = standardize_smiles_column(df, smiles_column)
         missing_targets = [column for column in target_columns if column not in df.columns]
@@ -1942,15 +1914,18 @@ class ChempropToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Launch Chemprop training and persist a lightweight training record."""
-        if isinstance(smiles_columns, str):
-            parsed = json.loads(smiles_columns)
-            smiles_columns = parsed if isinstance(parsed, list) else [str(parsed)]
-        if isinstance(target_columns, str):
-            parsed = json.loads(target_columns)
-            target_columns = parsed if isinstance(parsed, list) else [str(parsed)]
-        if isinstance(reaction_columns, str):
-            parsed = json.loads(reaction_columns)
-            reaction_columns = parsed if isinstance(parsed, list) else [str(parsed)]
+        smiles_columns = normalize_json_list_argument(
+            smiles_columns,
+            argument_name="smiles_columns",
+        )
+        target_columns = normalize_json_list_argument(
+            target_columns,
+            argument_name="target_columns",
+        )
+        reaction_columns = normalize_json_list_argument(
+            reaction_columns,
+            argument_name="reaction_columns",
+        )
 
         resolved_output_dir = str(Path(output_dir).expanduser().resolve())
         root_output_path = Path(resolved_output_dir)
@@ -2123,18 +2098,14 @@ class ChempropToolkit(Toolkit):
             )
             plot_artifacts: Dict[str, str] = {}
             target_column = task.target_columns[0] if task.target_columns else None
-            if target_column:
-                plots_output_dir = root_output_path / "artifacts" / "plots"
-                try:
-                    plot_artifacts = build_qsar_training_plots(
-                        train_csv=train_csv,
-                        split_results=split_results,
-                        primary_run=primary_run,
-                        output_dir=str(plots_output_dir),
-                        target_column=target_column,
-                    )
-                except Exception:
-                    plot_artifacts = {}
+            plot_artifacts = build_training_plots_if_possible(
+                train_csv=train_csv,
+                split_results=split_results,
+                primary_run=primary_run,
+                root_artifacts=root_artifacts,
+                root_output_dir=root_output_path,
+                target_column=target_column,
+            )
 
             result = dict(primary_run)
             result["output_dir"] = resolved_output_dir
@@ -2169,8 +2140,7 @@ class ChempropToolkit(Toolkit):
             result["trained_time"] = trained_at.strftime("%H:%M:%S")
 
             training_summary_path = Path(resolved_output_dir) / "cs_copilot_training_summary.json"
-            training_summary_path.parent.mkdir(parents=True, exist_ok=True)
-            training_summary_path.write_text(json.dumps(result, indent=2))
+            write_training_summary(training_summary_path, result)
 
             resolved_primary_artifacts = self._resolve_chemprop_run_artifacts(Path(resolved_output_dir))
             best_model_path = Path(
@@ -2196,43 +2166,20 @@ class ChempropToolkit(Toolkit):
                 / "prediction_outputs"
                 / f"{Path(resolved_output_dir).name}_training_bundle.zip"
             ).resolve()
-            bundle_files = [
-                Path(train_csv).expanduser(),
-                training_summary_path,
-                best_model_path,
-                config_path,
-                splits_path,
-            ]
-            for item in split_results:
-                if item.get("summary_path"):
-                    bundle_files.append(Path(item["summary_path"]).expanduser())
-                if item.get("test_predictions_path"):
-                    bundle_files.append(Path(item["test_predictions_path"]).expanduser())
-            for ad_key in (
-                "reference_store_path",
-                "reference_manifest_path",
-                "applicability_domain_path",
-            ):
-                if ad_summary.get(ad_key):
-                    bundle_files.append(Path(ad_summary[ad_key]).expanduser())
-            for plot_path in plot_artifacts.values():
-                bundle_files.append(Path(plot_path).expanduser())
-            if activity_cliffs.get("annotated_training_csv"):
-                bundle_files.append(Path(activity_cliffs["annotated_training_csv"]).expanduser())
-            if activity_cliffs.get("summary_path"):
-                bundle_files.append(Path(activity_cliffs["summary_path"]).expanduser())
-            for variant in activity_cliffs.get("variants") or []:
-                if variant.get("filtered_training_csv"):
-                    bundle_files.append(Path(variant["filtered_training_csv"]).expanduser())
-                training_result = variant.get("training_result") or {}
-                for split_result in training_result.get("split_results") or []:
-                    for artifact_key in ("model_path", "test_predictions_path", "splits_path"):
-                        if split_result.get(artifact_key):
-                            bundle_files.append(Path(split_result[artifact_key]).expanduser())
-            for plot_path in (activity_cliffs.get("plot_artifacts") or {}).values():
-                bundle_files.append(Path(plot_path).expanduser())
-            for plot_path in (activity_cliffs.get("loop_comparison_plot_artifacts") or {}).values():
-                bundle_files.append(Path(plot_path).expanduser())
+            bundle_files = collect_training_bundle_files(
+                train_csv=train_csv,
+                summary_path=training_summary_path,
+                result={
+                    **result,
+                    "best_model_path": str(best_model_path),
+                    "config_path": str(config_path),
+                    "splits_path": str(splits_path),
+                },
+                split_results=split_results,
+                ad_summary=ad_summary,
+                plot_artifacts=plot_artifacts,
+                activity_cliffs=activity_cliffs,
+            )
             bundle = bundle_artifacts(
                 bundle_path,
                 bundle_files,

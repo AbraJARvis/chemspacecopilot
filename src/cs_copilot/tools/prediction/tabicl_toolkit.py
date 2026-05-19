@@ -8,22 +8,18 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import pandas as pd
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
 from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, split_activity_cliff_args
 
-from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionExecutionError, PredictionTaskSpec
-from .qsar_plots import build_qsar_training_plots
 from .qsar_training_policy import (
     assess_protocol_results,
     describe_compute_environment,
@@ -39,6 +35,14 @@ from .session_state import (
     get_prediction_state,
     write_active_training_marker,
 )
+from .training_orchestration import (
+    apply_training_profile,
+    build_applicability_domain_for_training,
+    build_training_plots_if_possible,
+    materialize_primary_protocol_artifacts,
+    normalize_json_list_argument,
+    write_training_summary,
+)
 from .tabicl_backend import (
     DEFAULT_TABICL_CHECKPOINT_DIR,
     DEFAULT_TABICL_REGRESSOR_CHECKPOINT,
@@ -46,10 +50,6 @@ from .tabicl_backend import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
-    return df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed:")].copy()
 
 
 class TabICLToolkit(Toolkit):
@@ -126,24 +126,14 @@ class TabICLToolkit(Toolkit):
         self,
         extra_args: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        requested = dict(extra_args or {})
-        requested_profile = requested.pop("training_profile", None)
-        requested_validation_protocol = requested.pop("validation_protocol", None)
-        allow_heavy_compute = bool(requested.pop("allow_heavy_compute", False))
-
-        compute_env = self.describe_compute_environment()
-        resolved = self._resolve_training_profile(compute_env)
-        profile = requested_profile or resolved["profile"]
-
-        if not allow_heavy_compute and profile == "heavy_validation":
-            profile = resolved["profile"]
-
-        merged = {
-            **self._training_defaults_for_profile(profile),
-            **requested,
-        }
-
-        if not allow_heavy_compute:
+        def _limit(profile: str, merged: Dict[str, Any], allow_heavy_compute: bool) -> Dict[str, Any]:
+            if allow_heavy_compute:
+                if profile == "heavy_validation":
+                    merged["batch_size"] = max(int(merged.get("batch_size", 64)), 64)
+                    merged["n_estimators"] = max(int(merged.get("n_estimators", 8)), 8)
+                    merged["n_jobs"] = max(int(merged.get("n_jobs", 8)), 8)
+                    merged["kv_cache"] = bool(merged.get("kv_cache", False))
+                return merged
             if profile == "local_light":
                 merged["batch_size"] = min(int(merged.get("batch_size", 32)), 32)
                 merged["n_estimators"] = min(int(merged.get("n_estimators", 4)), 4)
@@ -153,20 +143,15 @@ class TabICLToolkit(Toolkit):
                 merged["batch_size"] = min(int(merged.get("batch_size", 64)), 64)
                 merged["n_estimators"] = min(int(merged.get("n_estimators", 4)), 4)
                 merged["n_jobs"] = max(1, int(merged.get("n_jobs", 1)))
+            return merged
 
-        if profile == "heavy_validation":
-            merged["batch_size"] = max(int(merged.get("batch_size", 64)), 64)
-            merged["n_estimators"] = max(int(merged.get("n_estimators", 8)), 8)
-            merged["n_jobs"] = max(int(merged.get("n_jobs", 8)), 8)
-            merged["kv_cache"] = bool(merged.get("kv_cache", False))
-
-        return {
-            "compute_environment": compute_env,
-            "training_profile": profile,
-            "profile_reason": resolved["reason"],
-            "validation_protocol": requested_validation_protocol,
-            "extra_args": merged,
-        }
+        return apply_training_profile(
+            extra_args,
+            defaults_for_profile=self._training_defaults_for_profile,
+            limit_profile_args=_limit,
+            compute_environment=self.describe_compute_environment(),
+            protected_profiles=("heavy_validation",),
+        )
 
     def _resolve_tabicl_run_artifacts(self, output_dir: Path) -> Dict[str, Path]:
         model_dir = output_dir / "model_0"
@@ -183,40 +168,11 @@ class TabICLToolkit(Toolkit):
         root_output_dir: Path,
         primary_run: Dict[str, Any],
     ) -> Dict[str, Optional[str]]:
-        root_model_dir = root_output_dir / "model_0"
-        root_model_dir.mkdir(parents=True, exist_ok=True)
-
-        file_map = {
-            primary_run.get("model_path"): root_model_dir / "best.pkl",
-            primary_run.get("test_predictions_path"): root_model_dir / "test_predictions.csv",
-            primary_run.get("config_path"): root_output_dir / "config.toml",
-            primary_run.get("splits_path"): root_output_dir / "splits.json",
-        }
-        copied: Dict[str, Optional[str]] = {
-            "best_model_path": None,
-            "test_predictions_path": None,
-            "config_path": None,
-            "splits_path": None,
-        }
-
-        for source_raw, target_path in file_map.items():
-            if not source_raw:
-                continue
-            source_path = Path(str(source_raw)).expanduser()
-            if not source_path.exists():
-                continue
-            if source_path.resolve() != target_path.resolve():
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source_path, target_path)
-            if target_path.name == "best.pkl":
-                copied["best_model_path"] = str(target_path)
-            elif target_path.name == "test_predictions.csv":
-                copied["test_predictions_path"] = str(target_path)
-            elif target_path.name == "config.toml":
-                copied["config_path"] = str(target_path)
-            elif target_path.name == "splits.json":
-                copied["splits_path"] = str(target_path)
-        return copied
+        return materialize_primary_protocol_artifacts(
+            root_output_dir=root_output_dir,
+            primary_run=primary_run,
+            model_filename="best.pkl",
+        )
 
     def _build_applicability_domain(
         self,
@@ -226,23 +182,11 @@ class TabICLToolkit(Toolkit):
         primary_output_dir: Path,
         task: PredictionTaskSpec,
     ) -> Dict[str, Any]:
-        splits_path = Path(primary_run.get("splits_path") or primary_output_dir / "splits.json")
-        if not splits_path.exists():
-            return {}
-        split_payload = json.loads(splits_path.read_text())
-        if not split_payload or "train" not in split_payload[0]:
-            return {}
-
-        dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
-        train_indices = split_payload[0].get("train") or []
-        smiles_column = task.smiles_columns[0] if task.smiles_columns else "smiles"
-        ad_output_dir = primary_output_dir / "applicability_domain"
-        return build_applicability_domain_from_training_data(
-            dataset=dataset,
-            train_indices=train_indices,
-            smiles_column=smiles_column,
-            output_dir=str(ad_output_dir),
-            model_id=primary_output_dir.name,
+        return build_applicability_domain_for_training(
+            train_csv=train_csv,
+            primary_run=primary_run,
+            primary_output_dir=primary_output_dir,
+            task=task,
         )
 
     def _summarize_training_resources(
@@ -332,14 +276,11 @@ class TabICLToolkit(Toolkit):
         *,
         argument_name: str,
     ) -> Optional[List[Any]]:
-        if value is None:
-            return None
-        if isinstance(value, str):
-            parsed = json.loads(value)
-            if not isinstance(parsed, list):
-                raise ValueError(f"{argument_name} must be a list or a JSON-encoded list.")
-            return parsed
-        return list(value)
+        return normalize_json_list_argument(
+            value,
+            argument_name=argument_name,
+            coerce_numbers=argument_name == "split_sizes",
+        )
 
     def _build_active_run_record(
         self,
@@ -562,38 +503,14 @@ class TabICLToolkit(Toolkit):
         )
         plot_artifacts: Dict[str, str] = {}
         target_column = task.target_columns[0] if task.target_columns else None
-        if target_column and root_artifacts.get("splits_path") and root_artifacts.get("test_predictions_path"):
-            plots_output_dir = root_output_path / "artifacts" / "plots"
-            try:
-                plot_artifacts = build_qsar_training_plots(
-                    train_csv=train_csv,
-                    split_results=[
-                        {
-                            **item,
-                            "splits_path": (
-                                root_artifacts["splits_path"]
-                                if item is primary_run
-                                else item.get("splits_path")
-                            ),
-                            "test_predictions_path": (
-                                root_artifacts["test_predictions_path"]
-                                if item is primary_run
-                                else item.get("test_predictions_path")
-                            ),
-                        }
-                        for item in split_results
-                    ],
-                    primary_run={
-                        **primary_run,
-                        "splits_path": root_artifacts.get("splits_path") or primary_run.get("splits_path"),
-                        "test_predictions_path": root_artifacts.get("test_predictions_path")
-                        or primary_run.get("test_predictions_path"),
-                    },
-                    output_dir=str(plots_output_dir),
-                    target_column=target_column,
-                )
-            except Exception:
-                plot_artifacts = {}
+        plot_artifacts = build_training_plots_if_possible(
+            train_csv=train_csv,
+            split_results=split_results,
+            primary_run=primary_run,
+            root_artifacts=root_artifacts,
+            root_output_dir=root_output_path,
+            target_column=target_column,
+        )
 
         validation_assessment = assess_protocol_results(split_results)
         total_completed_at = project_now()
@@ -639,8 +556,7 @@ class TabICLToolkit(Toolkit):
         result["canonical_summary_path"] = result["summary_path"]
 
         summary_path = Path(result["summary_path"])
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
-        summary_path.write_text(json.dumps(result, indent=2) + "\n")
+        write_training_summary(summary_path, result)
 
         self._sync_training_run_state_from_result(
             prediction_state=prediction_state,
