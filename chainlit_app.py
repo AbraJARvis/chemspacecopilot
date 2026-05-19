@@ -780,6 +780,16 @@ async def _file_bubble_streaming(file_ref: str) -> cl.Message:
         attached_refs = cl.user_session.get("attached_file_refs") or set()
         attached_refs.add(normalized_ref)
         cl.user_session.set("attached_file_refs", attached_refs)
+    except FileNotFoundError as e:
+        logger.warning(
+            "Downloadable file tag points to a missing file: %s (%s)",
+            normalized_ref,
+            e,
+        )
+        await cl.Message(
+            content=f"Could not prepare downloadable file: `{normalized_ref}`",
+            author="assistant",
+        ).send()
     except Exception as e:
         logger.error(
             "Failed to create downloadable file for %s: %s: %s",

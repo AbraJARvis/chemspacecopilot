@@ -133,10 +133,11 @@ def test_train_tabicl_model_syncs_training_runs_from_worker_result(tmp_path, mon
             ],
         },
     )
-    monkeypatch.setattr(
-        toolkit,
-        "_run_training_worker",
-        lambda **kwargs: {
+    captured_job_payload = {}
+
+    def fake_run_training_worker(**kwargs):
+        captured_job_payload.update(json.loads(Path(kwargs["job_path"]).read_text()))
+        return {
             "model_path": str(output_dir / "model_0" / "best.pkl"),
             "summary_path": str(output_dir / "cs_copilot_training_summary.json"),
             "split_results": [
@@ -155,7 +156,12 @@ def test_train_tabicl_model_syncs_training_runs_from_worker_result(tmp_path, mon
                     "seed": 42,
                 },
             ],
-        },
+        }
+
+    monkeypatch.setattr(
+        toolkit,
+        "_run_training_worker",
+        fake_run_training_worker,
     )
 
     result = toolkit.train_tabicl_model(
@@ -171,5 +177,6 @@ def test_train_tabicl_model_syncs_training_runs_from_worker_result(tmp_path, mon
     training_runs = agent.session_state["prediction_models"]["training_runs"]
     assert len(training_runs) == 1
     assert training_runs[0]["validation_protocol"] == "standard_qsar"
+    assert captured_job_payload["extra_args"]["validation_protocol"] == "standard_qsar"
     assert training_runs[0]["split_runs"][0]["label"] == "random"
     assert training_runs[0]["seed_policy"]["model_seed"] == 42

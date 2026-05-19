@@ -48,6 +48,9 @@ def test_backend_capabilities_registry_core_contracts():
     assert ensemble.supports_uncertainty == "component_disagreement_std"
     assert lightgbm.supports_activity_cliff_feedback_loops is True
     assert chemprop.supports_activity_cliff_feedback_loops is False
+    assert chemprop.gpu_support == "runtime_dependent"
+    assert lightgbm.gpu_support == "supported_when_available"
+    assert ensemble.gpu_support == "not_applicable"
     assert tabicl.catalog_model_filename == "best.pkl"
     assert "tabicl_training_summary.json" in tabicl.training_summary_filenames
 
@@ -63,6 +66,7 @@ def test_describe_backend_capabilities_is_serializable():
     json.dumps(payload)
     assert payload["chemprop"]["backend_name"] == "chemprop"
     assert "morgan_rdkit_all" in payload["lightgbm"]["supported_representations"]
+    assert payload["lightgbm"]["gpu_support"] == "supported_when_available"
 
 
 def test_shared_prediction_state_helpers_initialize_backend_neutral_state(tmp_path):

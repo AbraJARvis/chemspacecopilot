@@ -779,6 +779,7 @@ class TabICLToolkit(Toolkit):
                 **{
                     key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"
                 },
+                "validation_protocol": protocol_policy["protocol"],
                 "seed_policy": protocol_policy["seed_policy"],
             },
         }

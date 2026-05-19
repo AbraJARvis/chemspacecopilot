@@ -23,6 +23,7 @@ class BackendCapabilities:
     supports_uncertainty: str
     supports_component_orchestration: bool = False
     supports_activity_cliff_feedback_loops: bool = False
+    gpu_support: str = "not_declared"
     catalog_model_filename: str | None = None
     training_summary_filenames: Tuple[str, ...] = ("cs_copilot_training_summary.json",)
     test_prediction_relative_paths: Tuple[str, ...] = (
@@ -46,6 +47,7 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         supported_representations=("molecular_graph",),
         supports_applicability_domain=True,
         supports_uncertainty="none",
+        gpu_support="runtime_dependent",
     ),
     "lightgbm": BackendCapabilities(
         backend_name="lightgbm",
@@ -63,6 +65,7 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         supports_applicability_domain=True,
         supports_uncertainty="none",
         supports_activity_cliff_feedback_loops=True,
+        gpu_support="supported_when_available",
         test_prediction_relative_paths=("test_predictions.csv",),
     ),
     "tabicl": BackendCapabilities(
@@ -80,6 +83,7 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         ),
         supports_applicability_domain=True,
         supports_uncertainty="none",
+        gpu_support="runtime_dependent",
         catalog_model_filename="best.pkl",
         training_summary_filenames=(
             "cs_copilot_training_summary.json",
@@ -98,6 +102,7 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         supports_applicability_domain=False,
         supports_uncertainty="component_disagreement_std",
         supports_component_orchestration=True,
+        gpu_support="not_applicable",
     ),
 }
 

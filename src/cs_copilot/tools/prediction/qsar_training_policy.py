@@ -351,7 +351,7 @@ def resolve_training_profile(compute_env: Dict[str, Any]) -> Dict[str, Any]:
     if gpu_available:
         return {
             "profile": "heavy_validation",
-            "reason": "GPU detected; heavier validation settings are acceptable.",
+            "reason": "GPU detected; heavier compute settings are acceptable.",
         }
 
     return {
@@ -372,8 +372,6 @@ def resolve_validation_protocol(
     if not protocol:
         if training_profile == "local_light":
             protocol = "fast_local"
-        elif training_profile == "heavy_validation":
-            protocol = "robust_qsar"
         else:
             protocol = "standard_qsar"
 

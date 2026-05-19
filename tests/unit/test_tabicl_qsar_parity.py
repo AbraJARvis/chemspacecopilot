@@ -38,7 +38,7 @@ def _sample_tabular_df() -> pd.DataFrame:
     )
 
 
-def test_tabicl_protocol_defaults_follow_training_profile():
+def test_protocol_defaults_keep_compute_profile_separate_from_validation_scope():
     assert resolve_validation_protocol(
         requested_protocol=None,
         training_profile="local_light",
@@ -50,7 +50,7 @@ def test_tabicl_protocol_defaults_follow_training_profile():
     assert resolve_validation_protocol(
         requested_protocol=None,
         training_profile="heavy_validation",
-    )["protocol"] == "robust_qsar"
+    )["protocol"] == "standard_qsar"
 
 
 def test_robust_qsar_protocol_matches_chemprop_contract():

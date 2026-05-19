@@ -21,7 +21,10 @@ from agno.tools.toolkit import Toolkit
 from scipy.stats import kendalltau, spearmanr
 
 from cs_copilot.storage import S3
-from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
+from cs_copilot.tools.chemistry.standardize import (
+    resolve_smiles_column_name,
+    standardize_smiles_column,
+)
 from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, split_activity_cliff_args
 
 from .backend import PredictionModelRecord, PredictionTaskSpec
@@ -1880,7 +1883,11 @@ class ChempropToolkit(Toolkit):
             argument_name="target_columns",
         ) or []
 
-        df = standardize_smiles_column(df, smiles_column)
+        resolved_smiles_column = resolve_smiles_column_name(df, smiles_column)
+        df = standardize_smiles_column(df, resolved_smiles_column)
+        if resolved_smiles_column != "smiles":
+            df["smiles"] = df[resolved_smiles_column]
+            df = df.drop(columns=[resolved_smiles_column])
         missing_targets = [column for column in target_columns if column not in df.columns]
         if missing_targets:
             raise ValueError(f"Missing target columns: {missing_targets}")
@@ -1894,6 +1901,8 @@ class ChempropToolkit(Toolkit):
             "output_csv": destination,
             "rows": int(len(standardized)),
             "columns": list(standardized.columns),
+            "smiles_column": "smiles",
+            "source_smiles_column": resolved_smiles_column,
         }
 
     def train_model(

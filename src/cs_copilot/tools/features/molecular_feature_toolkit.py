@@ -16,7 +16,10 @@ from rdkit.Chem import Descriptors
 
 from cs_copilot.storage import S3
 from cs_copilot.tools.chemistry.base_chemistry import calc_morgan_bit_fp
-from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
+from cs_copilot.tools.chemistry.standardize import (
+    resolve_smiles_column_name,
+    standardize_smiles_column,
+)
 
 
 def _resolve_output_csv(output_csv: Optional[str], input_csv: str, suffix: str) -> str:
@@ -95,6 +98,33 @@ def _build_base_output_dataframe(
             raise ValueError(f"Required output columns are missing: {missing_required}")
         return working[required].copy()
     return pd.DataFrame(index=working.index)
+
+
+def _normalize_input_columns_to_keep(
+    input_columns_to_keep: Optional[List[str]],
+    *,
+    requested_smiles_column: str,
+    resolved_smiles_column: str,
+) -> Optional[List[str]]:
+    if input_columns_to_keep is None:
+        return None
+
+    normalized: List[str] = []
+    smiles_aliases = {
+        str(requested_smiles_column),
+        str(resolved_smiles_column),
+        "smiles",
+        "SMILES",
+    }
+    for column in input_columns_to_keep:
+        replacement = (
+            "smiles"
+            if str(column) in smiles_aliases or str(column).lower() == "smiles"
+            else column
+        )
+        if replacement not in normalized:
+            normalized.append(replacement)
+    return normalized
 
 
 def _coerce_join_on(join_on: Optional[List[str]]) -> List[str]:
@@ -183,14 +213,16 @@ class MolecularFeatureToolkit(Toolkit):
         with S3.open(input_csv, "r") as fh:
             df = pd.read_csv(fh)
 
-        if smiles_column not in df.columns:
-            raise ValueError(
-                f"SMILES column '{smiles_column}' not found. Available columns: {list(df.columns)}"
-            )
-
-        working = standardize_smiles_column(df.copy(), smiles_column)
-        if smiles_column != "smiles":
-            working = working.rename(columns={smiles_column: "smiles"})
+        resolved_smiles_column = resolve_smiles_column_name(df, smiles_column)
+        working = standardize_smiles_column(df.copy(), resolved_smiles_column)
+        if resolved_smiles_column != "smiles":
+            working["smiles"] = working[resolved_smiles_column]
+            working = working.drop(columns=[resolved_smiles_column])
+        normalized_columns_to_keep = _normalize_input_columns_to_keep(
+            input_columns_to_keep,
+            requested_smiles_column=smiles_column,
+            resolved_smiles_column=resolved_smiles_column,
+        )
 
         invalid_mask = working["smiles"].isna()
         if invalid_mask.any():
@@ -214,7 +246,7 @@ class MolecularFeatureToolkit(Toolkit):
         base_df = _build_base_output_dataframe(
             working,
             include_input_columns=include_input_columns,
-            input_columns_to_keep=input_columns_to_keep,
+            input_columns_to_keep=normalized_columns_to_keep,
             required_columns=["smiles"],
         )
 
@@ -230,6 +262,7 @@ class MolecularFeatureToolkit(Toolkit):
             "rows_in": int(len(df)),
             "rows_out": int(len(output_df)),
             "smiles_column": "smiles",
+            "source_smiles_column": resolved_smiles_column,
             "radius": radius,
             "n_bits": n_bits,
             "num_features": len(feature_columns),
@@ -259,14 +292,16 @@ class MolecularFeatureToolkit(Toolkit):
         with S3.open(input_csv, "r") as fh:
             df = pd.read_csv(fh)
 
-        if smiles_column not in df.columns:
-            raise ValueError(
-                f"SMILES column '{smiles_column}' not found. Available columns: {list(df.columns)}"
-            )
-
-        working = standardize_smiles_column(df.copy(), smiles_column)
-        if smiles_column != "smiles":
-            working = working.rename(columns={smiles_column: "smiles"})
+        resolved_smiles_column = resolve_smiles_column_name(df, smiles_column)
+        working = standardize_smiles_column(df.copy(), resolved_smiles_column)
+        if resolved_smiles_column != "smiles":
+            working["smiles"] = working[resolved_smiles_column]
+            working = working.drop(columns=[resolved_smiles_column])
+        normalized_columns_to_keep = _normalize_input_columns_to_keep(
+            input_columns_to_keep,
+            requested_smiles_column=smiles_column,
+            resolved_smiles_column=resolved_smiles_column,
+        )
 
         invalid_mask = working["smiles"].isna()
         if invalid_mask.any():
@@ -296,7 +331,7 @@ class MolecularFeatureToolkit(Toolkit):
         base_df = _build_base_output_dataframe(
             working,
             include_input_columns=include_input_columns,
-            input_columns_to_keep=input_columns_to_keep,
+            input_columns_to_keep=normalized_columns_to_keep,
             required_columns=["smiles"],
         )
         output_df = pd.concat(
@@ -313,6 +348,7 @@ class MolecularFeatureToolkit(Toolkit):
             "rows_in": int(len(df)),
             "rows_out": int(len(output_df)),
             "smiles_column": "smiles",
+            "source_smiles_column": resolved_smiles_column,
             "descriptor_set": descriptor_set,
             "num_descriptors": len(descriptor_columns),
             "descriptor_names": descriptor_names,
