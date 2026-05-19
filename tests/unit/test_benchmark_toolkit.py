@@ -291,6 +291,30 @@ def test_benchmark_qsar_models_requires_explicit_benchmark_request(tmp_path):
     assert not (tmp_path / "benchmark_output").exists()
 
 
+def test_benchmark_qsar_models_rejects_plain_validation_protocol_mode(tmp_path):
+    train_csv = tmp_path / "dataset_curated.csv"
+    pd.DataFrame({"smiles": ["CCO", "CCC"], "Y": [1.0, 2.0]}).to_csv(train_csv, index=False)
+
+    toolkit = BenchmarkToolkit()
+    agent = _fake_agent()
+
+    result = toolkit.benchmark_qsar_models(
+        train_csv=str(train_csv),
+        task_type="regression",
+        target_columns=["Y"],
+        smiles_column="smiles",
+        benchmark_mode="standard_qsar",
+        benchmark_requested=True,
+        output_dir=str(tmp_path / "benchmark_output"),
+        agent=agent,
+    )
+
+    assert result["benchmark_started"] is False
+    assert result["blocked"] is True
+    assert "plain validation protocol" in result["reason"]
+    assert not (tmp_path / "benchmark_output").exists()
+
+
 def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     catalog_path = tmp_path / "model_catalog.json"
     internal_root = tmp_path / "internal"

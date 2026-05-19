@@ -1033,6 +1033,21 @@ class BenchmarkToolkit(Toolkit):
                     "with model registration/persistence for the completed single training run."
                 ),
             }
+        if not str(benchmark_mode or "").startswith("benchmark_"):
+            return {
+                "benchmark_started": False,
+                "blocked": True,
+                "reason": (
+                    "`benchmark_qsar_models` only accepts explicit benchmark modes such as "
+                    "`benchmark_standard_qsar`. A plain validation protocol like "
+                    f"`{benchmark_mode}` indicates ordinary single-model training, not a benchmark."
+                ),
+                "next_step": (
+                    "Continue with model registration/persistence for the completed single training "
+                    "run, or call this tool with a `benchmark_*` mode only if the user explicitly "
+                    "asked for a benchmark."
+                ),
+            }
 
         target_columns = _coerce_list(target_columns) or []
         requested_backends = _coerce_list(backends)
