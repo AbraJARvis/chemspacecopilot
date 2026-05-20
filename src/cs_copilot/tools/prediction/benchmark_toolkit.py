@@ -15,9 +15,8 @@ import pandas as pd
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
-from .chemprop_toolkit import ChempropToolkit
-from .lightgbm_toolkit import LightGBMToolkit
-from .prediction_registry_toolkit import PredictionRegistryToolkit
+from .model_registry_toolkit import ModelRegistryToolkit
+from .qsar_training_toolkit import QSARTrainingToolkit
 from .qsar_training_policy import (
     describe_compute_environment,
     resolve_seed_policy,
@@ -26,8 +25,6 @@ from .qsar_training_policy import (
     seed_policy_reporting_text,
     seed_policy_reproducibility_metadata,
 )
-from .tabicl_toolkit import TabICLToolkit
-from ..features.molecular_feature_toolkit import MolecularFeatureToolkit
 
 logger = logging.getLogger(__name__)
 
@@ -89,18 +86,6 @@ def _benchmark_target_token(target_columns: List[str]) -> str:
     if not target_columns:
         return "target"
     return safe_slug(str(target_columns[0])) or "target"
-
-
-def _path_size_bytes(path: Optional[str]) -> Optional[int]:
-    if not path:
-        return None
-    try:
-        resolved = Path(path).expanduser()
-        if not resolved.exists() or not resolved.is_file():
-            return None
-        return int(resolved.stat().st_size)
-    except Exception:
-        return None
 
 
 class BenchmarkToolkit(Toolkit):
@@ -175,146 +160,22 @@ class BenchmarkToolkit(Toolkit):
     def __init__(
         self,
         *,
-        chemprop_toolkit: Optional[ChempropToolkit] = None,
-        lightgbm_toolkit: Optional[LightGBMToolkit] = None,
-        tabicl_toolkit: Optional[TabICLToolkit] = None,
-        molecular_feature_toolkit: Optional[MolecularFeatureToolkit] = None,
-        registry_toolkit: Optional[PredictionRegistryToolkit] = None,
+        training_toolkit: Optional[QSARTrainingToolkit] = None,
+        registry_toolkit: Optional[ModelRegistryToolkit] = None,
     ):
         super().__init__("benchmark_prediction")
-        self.chemprop_toolkit = chemprop_toolkit or ChempropToolkit()
-        self.lightgbm_toolkit = lightgbm_toolkit or LightGBMToolkit()
-        self.tabicl_toolkit = tabicl_toolkit or TabICLToolkit()
-        self.molecular_feature_toolkit = molecular_feature_toolkit or MolecularFeatureToolkit()
+        self.training_toolkit = training_toolkit or QSARTrainingToolkit()
         self.registry_toolkit = registry_toolkit
         self.register(self.benchmark_qsar_models)
 
-    def _get_registry_toolkit(self) -> PredictionRegistryToolkit:
+    def _get_registry_toolkit(self) -> ModelRegistryToolkit:
         if self.registry_toolkit is None:
-            self.registry_toolkit = PredictionRegistryToolkit(
-                backends={
-                    self.chemprop_toolkit.backend.backend_name: self.chemprop_toolkit.backend,
-                    self.lightgbm_toolkit.backend.backend_name: self.lightgbm_toolkit.backend,
-                    self.tabicl_toolkit.backend.backend_name: self.tabicl_toolkit.backend,
-                },
-                default_backend_name=self.chemprop_toolkit.backend.backend_name,
+            self.registry_toolkit = ModelRegistryToolkit(
+                backends=self.training_toolkit.backend_mapping(),
+                default_backend_name="chemprop",
                 register_tools=False,
             )
         return self.registry_toolkit
-
-    def _init_feature_cache(
-        self,
-        *,
-        campaign_root: Path,
-        train_csv: str,
-        smiles_column: str,
-    ) -> Dict[str, Any]:
-        cache_dir = campaign_root / "_feature_cache"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        rows_in: Optional[int] = None
-        try:
-            rows_in = int(len(pd.read_csv(Path(train_csv).expanduser(), usecols=[smiles_column])))
-        except Exception:
-            rows_in = None
-        return {
-            "enabled": True,
-            "path": str(cache_dir),
-            "manifest_path": str(cache_dir / "feature_cache_manifest.json"),
-            "retention_policy": "manifest_only",
-            "source_csv": train_csv,
-            "smiles_column": smiles_column,
-            "rows_in": rows_in,
-            "entries": {},
-            "hits": 0,
-            "misses": 0,
-            "generated_entries": 0,
-            "deleted_entries": 0,
-            "warnings": [],
-        }
-
-    def _feature_cache_summary(self, feature_cache: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        if not feature_cache:
-            return {"enabled": False}
-        entries = {}
-        for key, entry in (feature_cache.get("entries") or {}).items():
-            entries[key] = {
-                field: value
-                for field, value in dict(entry).items()
-                if field not in {"result"}
-            }
-        return {
-            "enabled": True,
-            "path": feature_cache.get("path"),
-            "manifest_path": feature_cache.get("manifest_path"),
-            "retention_policy": feature_cache.get("retention_policy", "manifest_only"),
-            "source_csv": feature_cache.get("source_csv"),
-            "smiles_column": feature_cache.get("smiles_column"),
-            "rows_in": feature_cache.get("rows_in"),
-            "hits": int(feature_cache.get("hits") or 0),
-            "misses": int(feature_cache.get("misses") or 0),
-            "generated_entries": int(feature_cache.get("generated_entries") or 0),
-            "deleted_entries": int(feature_cache.get("deleted_entries") or 0),
-            "warnings": list(feature_cache.get("warnings") or []),
-            "entries": entries,
-        }
-
-    def _write_feature_cache_manifest(self, feature_cache: Dict[str, Any]) -> None:
-        manifest_path = Path(str(feature_cache["manifest_path"]))
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(json.dumps(self._feature_cache_summary(feature_cache), indent=2) + "\n")
-
-    def _delete_feature_cache_csvs(self, feature_cache: Dict[str, Any]) -> Dict[str, Any]:
-        for entry in (feature_cache.get("entries") or {}).values():
-            output_csv = entry.get("output_csv")
-            if not output_csv:
-                continue
-            path = Path(str(output_csv)).expanduser()
-            if not path.exists() or path.name == "feature_cache_manifest.json":
-                continue
-            entry["size_bytes_before_delete"] = entry.get("size_bytes") or _path_size_bytes(str(path))
-            try:
-                path.unlink()
-                entry["deleted_after_success"] = True
-                feature_cache["deleted_entries"] = int(feature_cache.get("deleted_entries") or 0) + 1
-            except Exception as exc:
-                entry["deleted_after_success"] = False
-                feature_cache.setdefault("warnings", []).append(
-                    f"Could not delete feature cache file {path}: {exc}"
-                )
-        self._write_feature_cache_manifest(feature_cache)
-        return self._feature_cache_summary(feature_cache)
-
-    def _feature_cache_entry(
-        self,
-        *,
-        feature_cache: Dict[str, Any],
-        cache_key: str,
-        output_name: str,
-        generator,
-    ) -> Dict[str, Any]:
-        entries = feature_cache.setdefault("entries", {})
-        existing = entries.get(cache_key)
-        if existing and existing.get("output_csv") and Path(str(existing["output_csv"])).expanduser().exists():
-            feature_cache["hits"] = int(feature_cache.get("hits") or 0) + 1
-            existing["hits"] = int(existing.get("hits") or 0) + 1
-            return existing
-
-        feature_cache["misses"] = int(feature_cache.get("misses") or 0) + 1
-        output_csv = str(Path(str(feature_cache["path"])) / output_name)
-        result = generator(output_csv)
-        entry = {
-            "cache_key": cache_key,
-            "output_csv": result["output_csv"],
-            "size_bytes": _path_size_bytes(result.get("output_csv")),
-            "generated": True,
-            "deleted_after_success": False,
-            "hits": 0,
-            "result": result,
-        }
-        entries[cache_key] = entry
-        feature_cache["generated_entries"] = int(feature_cache.get("generated_entries") or 0) + 1
-        self._write_feature_cache_manifest(feature_cache)
-        return entry
 
     def _resolve_benchmark_protocol(self, benchmark_mode: str) -> str:
         normalized = benchmark_mode.strip().lower()
@@ -344,17 +205,18 @@ class BenchmarkToolkit(Toolkit):
         target_columns: List[str],
         requested_backends: Optional[List[str]],
     ) -> List[str]:
+        backends = self.training_toolkit.backend_mapping()
         available: List[str] = []
-        if self.chemprop_toolkit.backend.is_available():
+        if backends["chemprop"].is_available():
             available.append("chemprop")
         if (
-            self.lightgbm_toolkit.backend.is_available()
+            backends["lightgbm"].is_available()
             and task_type == "regression"
             and len(target_columns) == 1
         ):
             available.append("lightgbm")
         if (
-            self.tabicl_toolkit.backend.is_available()
+            backends["tabicl"].is_available()
             and task_type == "regression"
             and len(target_columns) == 1
         ):
@@ -481,125 +343,6 @@ class BenchmarkToolkit(Toolkit):
             )
         return candidates
 
-    def _prepare_tabular_candidate_dataset(
-        self,
-        *,
-        candidate: Dict[str, Any],
-        train_csv: str,
-        smiles_column: str,
-        target_columns: List[str],
-        candidate_dir: Path,
-        feature_cache: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        normalized_smiles_column = "smiles"
-        base_columns = [normalized_smiles_column] + list(target_columns)
-        feature_csvs: List[str] = []
-        features_dir = candidate_dir / "features"
-        features_dir.mkdir(parents=True, exist_ok=True)
-        base_csv_for_build = train_csv
-
-        if smiles_column != normalized_smiles_column:
-            cache_dir = Path(str(feature_cache["path"])) if feature_cache else features_dir
-            normalized_base_csv = cache_dir / "base_normalized.csv"
-            cache_entry = (feature_cache or {}).get("entries", {}).get("base_normalized")
-            if cache_entry and Path(str(cache_entry.get("output_csv"))).expanduser().exists():
-                if feature_cache is not None:
-                    feature_cache["hits"] = int(feature_cache.get("hits") or 0) + 1
-                    cache_entry["hits"] = int(cache_entry.get("hits") or 0) + 1
-                base_csv_for_build = str(cache_entry["output_csv"])
-            else:
-                if feature_cache is not None:
-                    feature_cache["misses"] = int(feature_cache.get("misses") or 0) + 1
-                source_df = pd.read_csv(Path(train_csv).expanduser())
-                if smiles_column not in source_df.columns:
-                    raise ValueError(
-                        f"SMILES column '{smiles_column}' not found in benchmark input columns: {list(source_df.columns)}"
-                    )
-                normalized_df = source_df.copy()
-                normalized_df = normalized_df.rename(columns={smiles_column: normalized_smiles_column})
-                normalized_df.to_csv(normalized_base_csv, index=False)
-                base_csv_for_build = str(normalized_base_csv)
-                if feature_cache is not None:
-                    feature_cache.setdefault("entries", {})["base_normalized"] = {
-                        "cache_key": "base_normalized",
-                        "output_csv": str(normalized_base_csv),
-                        "size_bytes": _path_size_bytes(str(normalized_base_csv)),
-                        "generated": True,
-                        "deleted_after_success": False,
-                        "hits": 0,
-                    }
-                    feature_cache["generated_entries"] = int(feature_cache.get("generated_entries") or 0) + 1
-                    self._write_feature_cache_manifest(feature_cache)
-
-        def _candidate_tabular_output() -> Path:
-            return candidate_dir / f"{Path(train_csv).stem}_{candidate['representation_name']}_tabular.csv"
-
-        def _build_candidate_from_features(feature_sources: List[str]) -> Dict[str, Any]:
-            build_result = self.molecular_feature_toolkit.build_tabular_qsar_dataset(
-                base_csv=base_csv_for_build,
-                output_csv=str(_candidate_tabular_output()),
-                feature_csvs=feature_sources,
-                join_on=[normalized_smiles_column],
-                base_columns_to_keep=base_columns,
-                drop_duplicate_feature_columns=True,
-            )
-            return {
-                "train_csv": build_result["output_csv"],
-                "representation_name": candidate["representation_name"],
-                "feature_cache": self._feature_cache_summary(feature_cache),
-            }
-
-        if candidate.get("use_morgan"):
-            if feature_cache is not None:
-                morgan_entry = self._feature_cache_entry(
-                    feature_cache=feature_cache,
-                    cache_key="morgan_radius2_2048",
-                    output_name="morgan_radius2_2048_fp.csv",
-                    generator=lambda output_csv: self.molecular_feature_toolkit.smiles_to_morgan_fingerprints(
-                        input_csv=base_csv_for_build,
-                        smiles_column=normalized_smiles_column,
-                        output_csv=output_csv,
-                        input_columns_to_keep=[normalized_smiles_column],
-                    ),
-                )
-                feature_csvs.append(str(morgan_entry["output_csv"]))
-            else:
-                morgan_result = self.molecular_feature_toolkit.smiles_to_morgan_fingerprints(
-                    input_csv=base_csv_for_build,
-                    smiles_column=normalized_smiles_column,
-                    output_csv=str(features_dir / "morgan_fp.csv"),
-                    input_columns_to_keep=[normalized_smiles_column],
-                )
-                feature_csvs.append(morgan_result["output_csv"])
-
-        if candidate.get("use_rdkit"):
-            descriptor_set = str(candidate["descriptor_set"])
-            if feature_cache is not None:
-                rdkit_entry = self._feature_cache_entry(
-                    feature_cache=feature_cache,
-                    cache_key=f"rdkit_{descriptor_set}",
-                    output_name=f"rdkit_{descriptor_set}.csv",
-                    generator=lambda output_csv: self.molecular_feature_toolkit.smiles_to_rdkit_descriptors(
-                        input_csv=base_csv_for_build,
-                        smiles_column=normalized_smiles_column,
-                        output_csv=output_csv,
-                        descriptor_set=descriptor_set,
-                        input_columns_to_keep=[normalized_smiles_column],
-                    ),
-                )
-                feature_csvs.append(str(rdkit_entry["output_csv"]))
-            else:
-                rdkit_result = self.molecular_feature_toolkit.smiles_to_rdkit_descriptors(
-                    input_csv=base_csv_for_build,
-                    smiles_column=normalized_smiles_column,
-                    output_csv=str(features_dir / f"rdkit_{descriptor_set}.csv"),
-                    descriptor_set=descriptor_set,
-                    input_columns_to_keep=[normalized_smiles_column],
-                )
-                feature_csvs.append(rdkit_result["output_csv"])
-
-        return _build_candidate_from_features(feature_csvs)
-
     def _train_candidate(
         self,
         *,
@@ -613,7 +356,6 @@ class BenchmarkToolkit(Toolkit):
         allow_heavy_compute: bool,
         training_profile: Optional[str],
         campaign_seed_policy: Dict[str, Any],
-        feature_cache: Optional[Dict[str, Any]],
         agent: Agent,
     ) -> Dict[str, Any]:
         requested_extra_args: Dict[str, Any] = {
@@ -624,55 +366,24 @@ class BenchmarkToolkit(Toolkit):
         if training_profile:
             requested_extra_args["training_profile"] = training_profile
 
-        if candidate["backend_name"] == "chemprop":
-            result = self.chemprop_toolkit.train_model(
-                train_csv=train_csv,
-                task_type=task_type,
-                output_dir=str(candidate_dir),
-                smiles_columns=[smiles_column],
-                target_columns=list(target_columns),
-                extra_args=requested_extra_args,
-                agent=agent,
-            )
-            result["representation_name"] = candidate["representation_name"]
-            result["candidate_train_csv"] = train_csv
-            return result
-
-        prepared = self._prepare_tabular_candidate_dataset(
-            candidate=candidate,
+        result = self.training_toolkit.train_qsar_model(
             train_csv=train_csv,
-            smiles_column=smiles_column,
-            target_columns=target_columns,
-            candidate_dir=candidate_dir,
-            feature_cache=feature_cache,
-        )
-        if candidate["backend_name"] == "lightgbm":
-            result = self.lightgbm_toolkit.train_lightgbm_model(
-                train_csv=prepared["train_csv"],
-                task_type=task_type,
-                output_dir=str(candidate_dir),
-                target_columns=list(target_columns),
-                validation_protocol=benchmark_protocol,
-                extra_args=requested_extra_args,
-                agent=agent,
-            )
-            result["representation_name"] = prepared["representation_name"]
-            result["candidate_train_csv"] = prepared["train_csv"]
-            result["feature_cache"] = prepared.get("feature_cache")
-            return result
-
-        result = self.tabicl_toolkit.train_tabicl_model(
-            train_csv=prepared["train_csv"],
+            backend_name=candidate["backend_name"],
             task_type=task_type,
             output_dir=str(candidate_dir),
+            smiles_column=smiles_column,
             target_columns=list(target_columns),
             validation_protocol=benchmark_protocol,
+            representation_name=(
+                None
+                if candidate["backend_name"] == "chemprop"
+                else candidate["representation_name"]
+            ),
             extra_args=requested_extra_args,
             agent=agent,
         )
-        result["representation_name"] = prepared["representation_name"]
-        result["candidate_train_csv"] = prepared["train_csv"]
-        result["feature_cache"] = prepared.get("feature_cache")
+        result["representation_name"] = candidate["representation_name"]
+        result.setdefault("candidate_train_csv", result.get("train_csv") or train_csv)
         return result
 
     def _display_name_for_candidate(
@@ -918,7 +629,6 @@ class BenchmarkToolkit(Toolkit):
         candidate_results: List[Dict[str, Any]],
         recommendations: Dict[str, Optional[str]],
         campaign_seed_policy: Dict[str, Any],
-        feature_cache_summary: Dict[str, Any],
     ) -> str:
         lines: List[str] = []
         lines.append(f"# Benchmark QSAR Report — {benchmark_mode}")
@@ -945,11 +655,6 @@ class BenchmarkToolkit(Toolkit):
         )
         if split_seed_text:
             lines.append(f"- Shared split seeds: `{split_seed_text}`")
-        if feature_cache_summary.get("enabled"):
-            lines.append(
-                "- Feature cache: Morgan/RDKit features shared across tabular candidates; "
-                "intermediate cache CSVs removed after successful benchmark."
-            )
         lines.append("")
         lines.append("## Candidate inventory")
         lines.append("")
@@ -1091,11 +796,6 @@ class BenchmarkToolkit(Toolkit):
 
         campaign_root = Path(output_dir).expanduser().resolve()
         campaign_root.mkdir(parents=True, exist_ok=True)
-        feature_cache = self._init_feature_cache(
-            campaign_root=campaign_root,
-            train_csv=train_csv,
-            smiles_column=smiles_column,
-        )
 
         candidate_rows: List[Dict[str, Any]] = []
         candidate_results: List[Dict[str, Any]] = []
@@ -1126,7 +826,6 @@ class BenchmarkToolkit(Toolkit):
                     allow_heavy_compute=allow_heavy_compute,
                     training_profile=training_profile,
                     campaign_seed_policy=campaign_seed_policy,
-                    feature_cache=feature_cache,
                     agent=agent,
                 )
             except Exception:
@@ -1190,7 +889,6 @@ class BenchmarkToolkit(Toolkit):
 
         ranked_rows = self._rank_summary_rows(candidate_rows)
         recommendations = self._resolve_recommendations(ranked_rows, benchmark_protocol)
-        feature_cache_summary = self._delete_feature_cache_csvs(feature_cache)
 
         leaderboard_path = campaign_root / "leaderboard.csv"
         pd.DataFrame(ranked_rows).to_csv(leaderboard_path, index=False)
@@ -1205,7 +903,6 @@ class BenchmarkToolkit(Toolkit):
                 candidate_results=candidate_results,
                 recommendations=recommendations,
                 campaign_seed_policy=campaign_seed_policy,
-                feature_cache_summary=feature_cache_summary,
             )
         )
 
@@ -1221,7 +918,6 @@ class BenchmarkToolkit(Toolkit):
             "campaign_seed_policy": campaign_seed_policy,
             "seed_policy_report": seed_policy_reporting_text(campaign_seed_policy),
             "reproducibility": seed_policy_reproducibility_metadata(campaign_seed_policy),
-            "feature_cache": feature_cache_summary,
             "candidate_inventory": [
                 {
                     "candidate_id": candidate["candidate_id"],
@@ -1248,7 +944,6 @@ class BenchmarkToolkit(Toolkit):
             "campaign_seed_policy": campaign_seed_policy,
             "seed_policy_report": seed_policy_reporting_text(campaign_seed_policy),
             "reproducibility": seed_policy_reproducibility_metadata(campaign_seed_policy),
-            "feature_cache": feature_cache_summary,
             "candidate_results": compact_candidate_results,
             "leaderboard": ranked_rows,
             "persisted_model_mapping": persisted_model_mapping,

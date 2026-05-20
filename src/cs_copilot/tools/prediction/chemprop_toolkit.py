@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 """
-Toolkit for model registration, prediction, and future Chemprop training flows.
+Internal toolkit for Chemprop-specific QSAR training flows.
 """
 
 from __future__ import annotations
@@ -20,18 +20,10 @@ from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 from scipy.stats import kendalltau, spearmanr
 
-from cs_copilot.storage import S3
-from cs_copilot.tools.chemistry.standardize import (
-    resolve_smiles_column_name,
-    standardize_smiles_column,
-)
 from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, split_activity_cliff_args
 
-from .backend import PredictionModelRecord, PredictionTaskSpec
-from .catalog import PredictionModelCatalog
+from .backend import PredictionTaskSpec
 from .chemprop_backend import ChempropBackend
-from .prediction_inference_toolkit import PredictionInferenceToolkit
-from .prediction_registry_toolkit import PredictionRegistryToolkit, build_default_prediction_backends
 from .qsar_training_policy import (
     QSAR_HARDEST_SPLIT_R2_MIN,
     QSAR_RANDOM_STABILITY_R2_STD_MAX,
@@ -75,52 +67,22 @@ def _find_first_existing_path(candidates: List[Path]) -> Optional[Path]:
 
 
 class ChempropToolkit(Toolkit):
-    """Toolkit exposing Chemprop-backed property prediction workflows."""
+    """Backend-specific Chemprop training toolkit used behind QSARTrainingToolkit."""
 
     def __init__(
         self,
         backend: Optional[ChempropBackend] = None,
         *,
-        include_prediction_summary_export: bool = True,
-        include_registry_tools: bool = True,
-        include_inference_tools: bool = True,
+        register_tools: bool = True,
     ):
         super().__init__("chemprop_prediction")
-        primary_backend = backend or ChempropBackend()
-        self.backends = build_default_prediction_backends(chemprop_backend=primary_backend)
-        self.backend = primary_backend
-        self.catalog = PredictionModelCatalog.load()
-        self.catalog.refresh_from_internal_store(persist=True)
-        self.registry_toolkit = PredictionRegistryToolkit(
-            backends=self.backends,
-            catalog=self.catalog,
-            default_backend_name=primary_backend.backend_name,
-            register_tools=False,
-        )
-        self.inference_toolkit = PredictionInferenceToolkit(
-            backends=self.backends,
-            registry_toolkit=self.registry_toolkit,
-            register_tools=False,
-        )
+        self.backend = backend or ChempropBackend()
+        if not register_tools:
+            return
+
         self.register(self.describe_backend)
-        if include_registry_tools:
-            self.register(self.describe_backends)
-            self.register(self.describe_catalog)
-            self.register(self.list_catalog_models)
-            self.register(self.summarize_catalog_model)
-            self.register(self.recommend_catalog_model)
-            self.register(self.register_catalog_model)
-            self.register(self.persist_registered_model)
-            self.register(self.register_model)
-            self.register(self.list_registered_models)
-            self.register(self.summarize_model)
-        if include_inference_tools:
-            self.register(self.predict_from_csv)
-            self.register(self.predict_from_smiles)
-            if include_prediction_summary_export:
-                self.register(self.export_prediction_summary)
-        self.register(self.prepare_training_dataset)
         self.register(self.describe_compute_environment)
+        self.register(self.validate_chemprop_model_path)
         self.register(self.train_model)
 
     def _detect_memory_limit_bytes(self) -> Optional[int]:
@@ -198,6 +160,15 @@ class ChempropToolkit(Toolkit):
     def describe_compute_environment(self) -> Dict[str, Any]:
         """Describe the local compute budget used to choose safe training defaults."""
         return describe_compute_environment()
+
+    def validate_chemprop_model_path(self, model_path: str) -> Dict[str, Any]:
+        """Validate a Chemprop model artifact path."""
+        resolved = self.backend.validate_model_path(model_path)
+        return {
+            "valid": True,
+            "model_path": str(resolved),
+            "backend_name": self.backend.backend_name,
+        }
 
     def _resolve_training_profile(self, compute_env: Dict[str, Any]) -> Dict[str, Any]:
         return resolve_training_profile(compute_env)
@@ -501,222 +472,6 @@ class ChempropToolkit(Toolkit):
         """
         return self.backend.describe_environment()
 
-    def describe_backends(self) -> Dict[str, Any]:
-        """Describe all configured prediction backends."""
-        return self.registry_toolkit.describe_backends()
-
-    def _get_backend(self, backend_name: str):
-        return self.registry_toolkit.get_backend(backend_name)
-
-    def describe_catalog(self) -> Dict[str, Any]:
-        """Describe the persistent model catalog configured for prediction."""
-        return self.registry_toolkit.describe_catalog()
-
-    def _annotate_record(self, record: PredictionModelRecord) -> Dict[str, Any]:
-        return self.registry_toolkit.annotate_record(record)
-
-    def list_catalog_models(
-        self,
-        allowed_statuses: Optional[List[str]] = None,
-        include_unavailable_paths: bool = False,
-    ) -> List[Dict[str, Any]]:
-        """List models from the persistent catalog with runtime annotations."""
-        return self.registry_toolkit.list_catalog_models(
-            allowed_statuses=allowed_statuses,
-            include_unavailable_paths=include_unavailable_paths,
-        )
-
-    def summarize_catalog_model(self, model_id: str) -> Dict[str, Any]:
-        """Return the catalog metadata for one model, enriched with runtime checks."""
-        return self.registry_toolkit.summarize_catalog_model(model_id)
-
-    def recommend_catalog_model(
-        self,
-        task_type: str,
-        target_hint: Optional[str] = None,
-        domain_hint: Optional[str] = None,
-        require_uncertainty: bool = False,
-        allowed_statuses: Optional[List[str]] = None,
-        preferred_backend: Optional[str] = None,
-        include_unavailable_paths: bool = True,
-        agent: Optional[Agent] = None,
-    ) -> Dict[str, Any]:
-        """Recommend the best catalog model for a requested task."""
-        return self.registry_toolkit.recommend_catalog_model(
-            task_type=task_type,
-            target_hint=target_hint,
-            domain_hint=domain_hint,
-            require_uncertainty=require_uncertainty,
-            allowed_statuses=allowed_statuses,
-            preferred_backend=preferred_backend,
-            include_unavailable_paths=include_unavailable_paths,
-            agent=agent,
-        )
-
-    def register_catalog_model(self, model_id: str, agent: Optional[Agent] = None) -> Dict[str, Any]:
-        """Register a model from the persistent catalog into the current session."""
-        return self.registry_toolkit.register_catalog_model(model_id=model_id, agent=agent)
-
-    def register_model(
-        self,
-        model_id: str,
-        model_path: str,
-        task_type: str,
-        backend_name: Optional[str] = None,
-        smiles_columns: Optional[List[str]] = None,
-        target_columns: Optional[List[str]] = None,
-        reaction_columns: Optional[List[str]] = None,
-        uncertainty_method: Optional[str] = None,
-        calibration_method: Optional[str] = None,
-        description: Optional[str] = None,
-        tags: Optional[Dict[str, str]] = None,
-        version: Optional[str] = None,
-        status: str = "experimental",
-        owner: Optional[str] = None,
-        source: Optional[str] = None,
-        domain_summary: Optional[str] = None,
-        strengths: Optional[List[str]] = None,
-        limitations: Optional[List[str]] = None,
-        recommended_for: Optional[List[str]] = None,
-        not_recommended_for: Optional[List[str]] = None,
-        known_metrics: Optional[Dict[str, Any]] = None,
-        training_data_summary: Optional[Dict[str, Any]] = None,
-        inference_profile: Optional[Dict[str, Any]] = None,
-        selection_hints: Optional[Dict[str, Any]] = None,
-        applicability_domain: Optional[Dict[str, Any]] = None,
-        agent: Optional[Agent] = None,
-    ) -> Dict[str, Any]:
-        """Register a prediction model in session state for later use."""
-        return self.registry_toolkit.register_model(
-            model_id=model_id,
-            model_path=model_path,
-            task_type=task_type,
-            backend_name=backend_name,
-            smiles_columns=smiles_columns,
-            target_columns=target_columns,
-            reaction_columns=reaction_columns,
-            uncertainty_method=uncertainty_method,
-            calibration_method=calibration_method,
-            description=description,
-            tags=tags,
-            version=version,
-            status=status,
-            owner=owner,
-            source=source,
-            domain_summary=domain_summary,
-            strengths=strengths,
-            limitations=limitations,
-            recommended_for=recommended_for,
-            not_recommended_for=not_recommended_for,
-            known_metrics=known_metrics,
-            training_data_summary=training_data_summary,
-            inference_profile=inference_profile,
-            selection_hints=selection_hints,
-            applicability_domain=applicability_domain,
-            agent=agent,
-        )
-
-    def persist_registered_model(
-        self,
-        model_id: str,
-        status: Optional[str] = None,
-        display_name: Optional[str] = None,
-        description: Optional[str] = None,
-        source: Optional[str] = None,
-        domain_summary: Optional[str] = None,
-        owner: Optional[str] = None,
-        version: Optional[str] = None,
-        strengths: Optional[List[str]] = None,
-        limitations: Optional[List[str]] = None,
-        recommended_for: Optional[List[str]] = None,
-        not_recommended_for: Optional[List[str]] = None,
-        known_metrics: Optional[Dict[str, Any]] = None,
-        training_data_summary: Optional[Dict[str, Any]] = None,
-        inference_profile: Optional[Dict[str, Any]] = None,
-        selection_hints: Optional[Dict[str, Any]] = None,
-        tags: Optional[Dict[str, str]] = None,
-        agent: Optional[Agent] = None,
-    ) -> Dict[str, Any]:
-        """Persist a session-registered model into the catalog JSON."""
-        return self.registry_toolkit.persist_registered_model(
-            model_id=model_id,
-            status=status,
-            display_name=display_name,
-            description=description,
-            source=source,
-            domain_summary=domain_summary,
-            owner=owner,
-            version=version,
-            strengths=strengths,
-            limitations=limitations,
-            recommended_for=recommended_for,
-            not_recommended_for=not_recommended_for,
-            known_metrics=known_metrics,
-            training_data_summary=training_data_summary,
-            inference_profile=inference_profile,
-            selection_hints=selection_hints,
-            tags=tags,
-            agent=agent,
-        )
-
-    def list_registered_models(self, agent: Optional[Agent] = None) -> List[Dict[str, Any]]:
-        """List models registered in the current session."""
-        return self.registry_toolkit.list_registered_models(agent=agent)
-
-    def summarize_model(self, model_id: str, agent: Optional[Agent] = None) -> Dict[str, Any]:
-        """Return the stored summary for a registered model."""
-        return self.registry_toolkit.summarize_model(model_id=model_id, agent=agent)
-
-    def _resolve_record(self, model_id: str, agent: Agent) -> PredictionModelRecord:
-        return self.registry_toolkit.resolve_record(model_id, agent)
-
-    def predict_from_csv(
-        self,
-        model_id: str,
-        input_csv: str,
-        smiles_column: str = "smiles",
-        preds_path: Optional[str] = None,
-        return_uncertainty: bool = False,
-        agent: Optional[Agent] = None,
-    ) -> Dict[str, Any]:
-        """Run prediction from a CSV file and persist the result path in session state."""
-        return self.inference_toolkit.predict_from_csv(
-            model_id=model_id,
-            input_csv=input_csv,
-            smiles_column=smiles_column,
-            preds_path=preds_path,
-            return_uncertainty=return_uncertainty,
-            agent=agent,
-        )
-
-    def predict_from_smiles(
-        self,
-        model_id: str,
-        smiles: List[str],
-        preds_path: Optional[str] = None,
-        return_uncertainty: bool = False,
-        agent: Optional[Agent] = None,
-    ) -> Dict[str, Any]:
-        """Run prediction from an in-memory list of SMILES by materializing a temporary CSV."""
-        return self.inference_toolkit.predict_from_smiles(
-            model_id=model_id,
-            smiles=smiles,
-            preds_path=preds_path,
-            return_uncertainty=return_uncertainty,
-            agent=agent,
-        )
-
-    def export_prediction_summary(
-        self,
-        summary_csv: Optional[str] = None,
-        agent: Optional[Agent] = None,
-    ) -> Dict[str, Any]:
-        """Export a consolidated CSV summary from prediction history."""
-        return self.inference_toolkit.export_prediction_summary(
-            summary_csv=summary_csv,
-            agent=agent,
-        )
-
     def _compute_training_metrics(
         self,
         *,
@@ -801,44 +556,6 @@ class ChempropToolkit(Toolkit):
                     "target_column": target_column,
                 }
             },
-        }
-
-    def prepare_training_dataset(
-        self,
-        input_csv: str,
-        smiles_column: str,
-        target_columns: List[str] | str,
-        output_csv: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Normalize a training CSV into the canonical format expected by later prediction tools."""
-        with S3.open(input_csv, "r") as fh:
-            df = pd.read_csv(fh)
-
-        target_columns = normalize_json_list_argument(
-            target_columns,
-            argument_name="target_columns",
-        ) or []
-
-        resolved_smiles_column = resolve_smiles_column_name(df, smiles_column)
-        df = standardize_smiles_column(df, resolved_smiles_column)
-        if resolved_smiles_column != "smiles":
-            df["smiles"] = df[resolved_smiles_column]
-            df = df.drop(columns=[resolved_smiles_column])
-        missing_targets = [column for column in target_columns if column not in df.columns]
-        if missing_targets:
-            raise ValueError(f"Missing target columns: {missing_targets}")
-
-        standardized = df[["smiles", *target_columns]].copy()
-        destination = output_csv or "training/chemprop_training_dataset.csv"
-        with S3.open(destination, "w") as fh:
-            standardized.to_csv(fh, index=False)
-
-        return {
-            "output_csv": destination,
-            "rows": int(len(standardized)),
-            "columns": list(standardized.columns),
-            "smiles_column": "smiles",
-            "source_smiles_column": resolved_smiles_column,
         }
 
     def train_model(

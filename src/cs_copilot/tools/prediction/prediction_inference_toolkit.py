@@ -17,7 +17,7 @@ from cs_copilot.tools.chemistry.standardize import (
     standardize_smiles_column,
 )
 
-from .prediction_registry_toolkit import PredictionRegistryToolkit
+from .model_registry_toolkit import ModelRegistryToolkit
 from .session_state import get_prediction_state
 
 
@@ -34,7 +34,7 @@ class PredictionInferenceToolkit(Toolkit):
         self,
         *,
         backends: Mapping[str, Any],
-        registry_toolkit: PredictionRegistryToolkit,
+        registry_toolkit: ModelRegistryToolkit,
         register_tools: bool = True,
     ):
         super().__init__("prediction_inference")

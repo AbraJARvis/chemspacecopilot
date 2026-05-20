@@ -18,20 +18,18 @@ from cs_copilot.tools import (
     ActivityCliffToolkit,
     BenchmarkToolkit,
     ChemblToolkit,
-    ChempropToolkit,
     ChemicalSimilarityToolkit,
     DatasetCurationToolkit,
     EnsembleToolkit,
     GTMToolkit,
-    LightGBMToolkit,
     MolecularFeatureToolkit,
     PeptideWAEToolkit,
     PointerPandasTools,
     PredictionInferenceToolkit,
     QSARReportingToolkit,
-    PredictionRegistryToolkit,
+    ModelRegistryToolkit,
+    QSARTrainingToolkit,
     SynPlannerToolkit,
-    TabICLToolkit,
     build_default_prediction_backends,
     # SessionToolkit,
     save_gtm_plot,
@@ -86,7 +84,7 @@ class AgentCreationError(Exception):
 def _prediction_facade_tools(*, include_inference: bool = False) -> List[Any]:
     """Create backend-neutral prediction tools that share one backend registry."""
     backends = build_default_prediction_backends()
-    registry_toolkit = PredictionRegistryToolkit(backends=backends)
+    registry_toolkit = ModelRegistryToolkit(backends=backends)
     tools: List[Any] = [registry_toolkit]
     if include_inference:
         tools.append(
@@ -707,16 +705,10 @@ class QSARTrainingFactory(BaseAgentFactory):
             not interpret business meaning, and you do not decide catalog policy.
             """,
             tools=[
+                QSARTrainingToolkit(),
+                *_prediction_facade_tools(),
                 BenchmarkToolkit(),
                 ActivityCliffToolkit(),
-                *_prediction_facade_tools(),
-                ChempropToolkit(
-                    include_prediction_summary_export=False,
-                    include_registry_tools=False,
-                    include_inference_tools=False,
-                ),
-                LightGBMToolkit(),
-                TabICLToolkit(),
                 MolecularFeatureToolkit(),
                 PointerPandasTools(),
             ],

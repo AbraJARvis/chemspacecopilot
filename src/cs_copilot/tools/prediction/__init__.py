@@ -21,15 +21,14 @@ from .backend_capabilities import (
 from .catalog import CatalogRecommendation, PredictionModelCatalog
 from .benchmark_toolkit import BenchmarkToolkit
 from .chemprop_backend import ChempropBackend
-from .chemprop_toolkit import ChempropToolkit
 from .ensemble_backend import EnsembleBackend
 from .ensemble_toolkit import EnsembleToolkit
 from .lightgbm_backend import LightGBMBackend
-from .lightgbm_toolkit import LightGBMToolkit
 from .prediction_inference_toolkit import PredictionInferenceToolkit
-from .prediction_registry_toolkit import PredictionRegistryToolkit, build_default_prediction_backends
+from .model_registry_toolkit import ModelRegistryToolkit
+from .backend_factory import build_default_prediction_backends
+from .qsar_training_toolkit import QSARTrainingToolkit
 from .tabicl_backend import TabICLBackend
-from .tabicl_toolkit import TabICLToolkit
 
 __all__ = [
     "PredictionBackend",
@@ -50,14 +49,12 @@ __all__ = [
     "CatalogRecommendation",
     "BenchmarkToolkit",
     "ChempropBackend",
-    "ChempropToolkit",
     "EnsembleBackend",
     "EnsembleToolkit",
     "LightGBMBackend",
-    "LightGBMToolkit",
     "PredictionInferenceToolkit",
-    "PredictionRegistryToolkit",
+    "ModelRegistryToolkit",
     "build_default_prediction_backends",
+    "QSARTrainingToolkit",
     "TabICLBackend",
-    "TabICLToolkit",
 ]

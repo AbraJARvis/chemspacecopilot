@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZipFile
 
+import pandas as pd
 import pytest
 
 from cs_copilot.tools.prediction.backend import (
@@ -12,8 +13,9 @@ from cs_copilot.tools.prediction.backend import (
 )
 from cs_copilot.tools.prediction.chemprop_backend import ChempropBackend
 from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
-from cs_copilot.tools.prediction.prediction_inference_toolkit import PredictionInferenceToolkit
-from cs_copilot.tools.prediction.prediction_registry_toolkit import PredictionRegistryToolkit
+from cs_copilot.tools.prediction.backend_factory import build_default_prediction_backends
+from cs_copilot.tools.prediction.model_registry_toolkit import ModelRegistryToolkit
+from cs_copilot.tools.prediction.qsar_training_toolkit import QSARTrainingToolkit
 from cs_copilot.tools.prediction.backend_capabilities import (
     backend_requires_feature_preparation,
     backend_supports_component_orchestration,
@@ -210,13 +212,13 @@ def test_training_orchestration_materializes_summary_and_bundle_inputs(tmp_path)
     assert Path(artifacts["best_model_path"]) in files
 
 
-def test_describe_backends_includes_official_capabilities(monkeypatch):
-    import cs_copilot.tools.prediction.chemprop_toolkit as toolkit_module
-
+def test_model_registry_describe_backends_includes_official_capabilities():
     catalog = SimpleNamespace(refresh_from_internal_store=lambda persist=True: None)
-    monkeypatch.setattr(toolkit_module.PredictionModelCatalog, "load", lambda: catalog)
-
-    toolkit = ChempropToolkit(include_prediction_summary_export=False)
+    toolkit = ModelRegistryToolkit(
+        backends=build_default_prediction_backends(),
+        catalog=catalog,
+        register_tools=False,
+    )
 
     descriptions = toolkit.describe_backends()
 
@@ -225,51 +227,116 @@ def test_describe_backends_includes_official_capabilities(monkeypatch):
     assert descriptions["ensemble"]["capabilities"]["supports_component_orchestration"] is True
 
 
-def test_chemprop_toolkit_uses_backend_neutral_registry_and_inference_facades(monkeypatch):
-    import cs_copilot.tools.prediction.chemprop_toolkit as toolkit_module
+def test_chemprop_toolkit_is_backend_only():
+    toolkit = ChempropToolkit()
 
-    catalog = SimpleNamespace(refresh_from_internal_store=lambda persist=True: None)
-    monkeypatch.setattr(toolkit_module.PredictionModelCatalog, "load", lambda: catalog)
+    assert toolkit.backend.backend_name == "chemprop"
+    assert hasattr(toolkit, "validate_chemprop_model_path")
+    assert not hasattr(toolkit, "registry_toolkit")
+    assert not hasattr(toolkit, "inference_toolkit")
+    assert not hasattr(toolkit, "register_model")
+    assert not hasattr(toolkit, "persist_registered_model")
+    assert not hasattr(toolkit, "predict_from_csv")
 
-    toolkit = ChempropToolkit(include_prediction_summary_export=False)
 
-    assert isinstance(toolkit.registry_toolkit, PredictionRegistryToolkit)
-    assert isinstance(toolkit.inference_toolkit, PredictionInferenceToolkit)
-    assert toolkit.describe_backends() == toolkit.registry_toolkit.describe_backends()
-
-
-def test_chemprop_toolkit_persist_registered_model_delegates_to_registry(monkeypatch):
-    import cs_copilot.tools.prediction.chemprop_toolkit as toolkit_module
-
-    catalog = SimpleNamespace(refresh_from_internal_store=lambda persist=True: None)
-    monkeypatch.setattr(toolkit_module.PredictionModelCatalog, "load", lambda: catalog)
-
-    toolkit = ChempropToolkit(include_prediction_summary_export=False)
+def test_qsar_training_toolkit_routes_lightgbm_through_facade(monkeypatch, tmp_path):
+    toolkit = QSARTrainingToolkit()
+    train_csv = tmp_path / "train.csv"
+    train_csv.write_text("smiles,Y,feature_a\nCCO,1.0,0.1\nCCC,2.0,0.2\n")
     captured = {}
 
-    def fake_persist_registered_model(**kwargs):
+    def fake_train_lightgbm_model(**kwargs):
         captured.update(kwargs)
-        return {"persisted": True, "model_id": kwargs["model_id"]}
+        return {
+            "model_path": str(tmp_path / "best.pkl"),
+            "validation_protocol": kwargs.get("validation_protocol"),
+            "metrics": {"test": {"r2": 0.5}},
+        }
 
-    monkeypatch.setattr(
-        toolkit.registry_toolkit,
-        "persist_registered_model",
-        fake_persist_registered_model,
+    monkeypatch.setattr(toolkit.lightgbm_toolkit, "train_lightgbm_model", fake_train_lightgbm_model)
+
+    result = toolkit.train_qsar_model(
+        train_csv=str(train_csv),
+        backend_name="lightgbm",
+        task_type="regression",
+        output_dir=str(tmp_path / "out"),
+        target_columns=["Y"],
+        feature_columns=["feature_a"],
+        validation_protocol="standard_qsar",
     )
 
-    agent = SimpleNamespace(session_state={})
-    result = toolkit.persist_registered_model(
-        model_id="session_model",
-        status="workflow_demo",
-        display_name="Session Model",
-        agent=agent,
+    assert result["backend_name"] == "lightgbm"
+    assert captured["train_csv"] == str(train_csv)
+    assert captured["feature_columns"] == ["feature_a"]
+    assert result["recommended_registry_payload"]["backend_name"] == "lightgbm"
+
+
+def test_qsar_training_toolkit_normalizes_tabular_smiles_column(tmp_path):
+    class FakeMolecularFeatureToolkit:
+        def smiles_to_morgan_fingerprints(
+            self,
+            *,
+            input_csv,
+            smiles_column,
+            output_csv,
+            radius,
+            n_bits,
+            include_input_columns,
+            input_columns_to_keep,
+        ):
+            assert smiles_column == "smiles"
+            source = pd.read_csv(input_csv)
+            pd.DataFrame(
+                {
+                    "smiles": source["smiles"],
+                    "Y": source["Y"],
+                    "fp_0000": [1, 0],
+                }
+            ).to_csv(output_csv, index=False)
+            return {"output_csv": output_csv}
+
+        def build_tabular_qsar_dataset(
+            self,
+            *,
+            base_csv,
+            output_csv,
+            feature_csvs,
+            join_on,
+            base_columns_to_keep,
+            drop_duplicate_feature_columns,
+        ):
+            assembled = pd.read_csv(base_csv)[base_columns_to_keep].copy()
+            for feature_csv in feature_csvs:
+                assembled = assembled.merge(
+                    pd.read_csv(feature_csv),
+                    on=join_on,
+                    how="left",
+                    validate="one_to_one",
+                )
+            assembled.to_csv(output_csv, index=False)
+            return {"output_csv": output_csv}
+
+    train_csv = tmp_path / "train.csv"
+    pd.DataFrame(
+        {
+            "standardized_smiles": ["CCO", "CCC"],
+            "Y": [1.0, 2.0],
+        }
+    ).to_csv(train_csv, index=False)
+    toolkit = QSARTrainingToolkit(molecular_feature_toolkit=FakeMolecularFeatureToolkit())
+
+    result = toolkit._prepare_tabular_training_dataset(
+        train_csv=str(train_csv),
+        output_dir=str(tmp_path / "out"),
+        smiles_column="standardized_smiles",
+        target_columns=["Y"],
+        representation_name="morgan_only",
     )
 
-    assert result == {"persisted": True, "model_id": "session_model"}
-    assert captured["model_id"] == "session_model"
-    assert captured["status"] == "workflow_demo"
-    assert captured["display_name"] == "Session Model"
-    assert captured["agent"] is agent
+    output_columns = list(pd.read_csv(result["train_csv"], nrows=0).columns)
+    assert "smiles" in output_columns
+    assert "standardized_smiles" not in output_columns
+    assert result["feature_columns"] == ["fp_0000"]
 
 
 def test_prediction_registry_rejects_archive_model_paths_without_backend_validation():
@@ -282,7 +349,7 @@ def test_prediction_registry_rejects_archive_model_paths_without_backend_validat
         def validate_model_path(self, model_path):
             raise AssertionError("archive paths should be rejected before backend validation")
 
-    toolkit = PredictionRegistryToolkit(
+    toolkit = ModelRegistryToolkit(
         backends={"lightgbm": FakeBackend()},
         catalog=catalog,
         default_backend_name="lightgbm",
@@ -307,7 +374,7 @@ def test_prediction_registry_rejects_archive_model_paths_without_backend_validat
 
 def test_prediction_registry_summarize_model_unknown_id_returns_guidance():
     catalog = SimpleNamespace(refresh_from_internal_store=lambda persist=True: None)
-    toolkit = PredictionRegistryToolkit(
+    toolkit = ModelRegistryToolkit(
         backends={},
         catalog=catalog,
         default_backend_name="chemprop",

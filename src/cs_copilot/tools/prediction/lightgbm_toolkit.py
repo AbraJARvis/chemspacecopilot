@@ -56,15 +56,16 @@ logger = logging.getLogger(__name__)
 class LightGBMToolkit(Toolkit):
     """Toolkit exposing LightGBM-backed QSAR orchestration for tabular datasets."""
 
-    def __init__(self, backend: Optional[LightGBMBackend] = None):
+    def __init__(self, backend: Optional[LightGBMBackend] = None, *, register_tools: bool = True):
         super().__init__("lightgbm_prediction")
         self.backend = backend or LightGBMBackend()
-        self.register(self.describe_lightgbm_backend)
-        self.register(self.describe_lightgbm_environment)
-        self.register(self.is_lightgbm_available)
-        self.register(self.validate_lightgbm_model_path)
-        self.register(self.train_lightgbm_model)
-        self.register(self.predict_with_lightgbm_from_csv)
+        if register_tools:
+            self.register(self.describe_lightgbm_backend)
+            self.register(self.describe_lightgbm_environment)
+            self.register(self.is_lightgbm_available)
+            self.register(self.validate_lightgbm_model_path)
+            self.register(self.train_lightgbm_model)
+            self.register(self.predict_with_lightgbm_from_csv)
 
     def is_lightgbm_available(self) -> bool:
         """Return whether the LightGBM backend is available in the current environment."""

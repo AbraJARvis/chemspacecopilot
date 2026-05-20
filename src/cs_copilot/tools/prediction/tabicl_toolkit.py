@@ -53,18 +53,19 @@ logger = logging.getLogger(__name__)
 
 
 class TabICLToolkit(Toolkit):
-    """Toolkit exposing Chemprop-style QSAR orchestration for TabICL."""
+    """Backend-specific TabICL training toolkit used behind QSARTrainingToolkit."""
 
-    def __init__(self, backend: Optional[TabICLBackend] = None):
+    def __init__(self, backend: Optional[TabICLBackend] = None, *, register_tools: bool = True):
         super().__init__("tabicl_prediction")
         self.backend = backend or TabICLBackend()
-        self.register(self.describe_tabicl_backend)
-        self.register(self.describe_tabicl_environment)
-        self.register(self.is_tabicl_available)
-        self.register(self.validate_tabicl_model_path)
-        self.register(self.validate_tabicl_checkpoint_path)
-        self.register(self.train_tabicl_model)
-        self.register(self.predict_with_tabicl_from_csv)
+        if register_tools:
+            self.register(self.describe_tabicl_backend)
+            self.register(self.describe_tabicl_environment)
+            self.register(self.is_tabicl_available)
+            self.register(self.validate_tabicl_model_path)
+            self.register(self.validate_tabicl_checkpoint_path)
+            self.register(self.train_tabicl_model)
+            self.register(self.predict_with_tabicl_from_csv)
 
     def is_tabicl_available(self) -> bool:
         """Return whether the TabICL backend is available in the current environment."""
@@ -231,7 +232,7 @@ class TabICLToolkit(Toolkit):
                     "explicit_user_override": True,
                 },
                 "notes": [
-                    "Supports Chemprop-style QSAR protocol names and split families.",
+                    "Supports the shared QSAR protocol names and split families.",
                     "Default TabICL tabular features combine Morgan fingerprints with RDKit descriptors.",
                     "Lighter profiles default to RDKit basic; heavy GPU-capable profiles default to RDKit all.",
                     "If the user explicitly requests Morgan only or RDKit only, that override should win.",
@@ -683,7 +684,7 @@ class TabICLToolkit(Toolkit):
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
-        """Train a TabICLv2 regressor with Chemprop-style QSAR validation protocols."""
+        """Train a TabICLv2 regressor with shared QSAR validation protocols."""
         normalized_target_columns = self._normalize_json_list_argument(
             target_columns,
             argument_name="target_columns",

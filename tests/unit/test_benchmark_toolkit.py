@@ -8,10 +8,9 @@ import pandas as pd
 
 from cs_copilot.tools.prediction import catalog as catalog_module
 from cs_copilot.tools.prediction.benchmark_toolkit import BenchmarkToolkit, _coerce_list
-from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
 from cs_copilot.tools.prediction.lightgbm_toolkit import LightGBMToolkit
-from cs_copilot.tools.prediction.prediction_registry_toolkit import PredictionRegistryToolkit
-from cs_copilot.tools.prediction.tabicl_toolkit import TabICLToolkit
+from cs_copilot.tools.prediction.model_registry_toolkit import ModelRegistryToolkit
+from cs_copilot.tools.prediction.qsar_training_toolkit import QSARTrainingToolkit
 
 
 def _fake_agent() -> SimpleNamespace:
@@ -156,120 +155,6 @@ def test_rank_summary_rows_prefers_hardest_split_then_gap():
     assert ranked[0]["candidate_id"] == "b"
 
 
-def test_tabular_feature_cache_reuses_and_cleans_intermediate_csvs(tmp_path):
-    train_csv = tmp_path / "dataset_curated.csv"
-    pd.DataFrame({"SMILES": ["CCO", "CCC"], "Y": [1.0, 2.0]}).to_csv(train_csv, index=False)
-
-    class FakeMolecularFeatureToolkit:
-        def __init__(self):
-            self.morgan_calls = 0
-            self.rdkit_calls = {"basic": 0, "all": 0}
-
-        def smiles_to_morgan_fingerprints(self, *, input_csv, smiles_column, output_csv, input_columns_to_keep):
-            self.morgan_calls += 1
-            source = pd.read_csv(input_csv)
-            pd.DataFrame(
-                {
-                    "smiles": source[smiles_column],
-                    "fp_0000": [1, 0],
-                    "fp_0001": [0, 1],
-                }
-            ).to_csv(output_csv, index=False)
-            return {"output_csv": output_csv}
-
-        def smiles_to_rdkit_descriptors(
-            self,
-            *,
-            input_csv,
-            smiles_column,
-            output_csv,
-            descriptor_set,
-            input_columns_to_keep,
-        ):
-            self.rdkit_calls[descriptor_set] += 1
-            source = pd.read_csv(input_csv)
-            pd.DataFrame(
-                {
-                    "smiles": source[smiles_column],
-                    f"desc_{descriptor_set}": [0.1, 0.2],
-                }
-            ).to_csv(output_csv, index=False)
-            return {"output_csv": output_csv}
-
-        def build_tabular_qsar_dataset(
-            self,
-            *,
-            base_csv,
-            output_csv,
-            feature_csvs,
-            join_on,
-            base_columns_to_keep,
-            drop_duplicate_feature_columns,
-        ):
-            assembled = pd.read_csv(base_csv)[base_columns_to_keep].copy()
-            for feature_csv in feature_csvs:
-                features = pd.read_csv(feature_csv)
-                assembled = assembled.merge(features, on=join_on, how="left", validate="one_to_one")
-            assembled.to_csv(output_csv, index=False)
-            return {"output_csv": output_csv}
-
-    feature_toolkit = FakeMolecularFeatureToolkit()
-    toolkit = BenchmarkToolkit(molecular_feature_toolkit=feature_toolkit)
-    campaign_root = tmp_path / "benchmark_output"
-    campaign_root.mkdir()
-    feature_cache = toolkit._init_feature_cache(
-        campaign_root=campaign_root,
-        train_csv=str(train_csv),
-        smiles_column="SMILES",
-    )
-
-    candidates = [
-        toolkit.LIGHTGBM_VARIANT_SPECS["lightgbm_morgan_only"],
-        toolkit.LIGHTGBM_VARIANT_SPECS["lightgbm_morgan_rdkit_basic"],
-        toolkit.LIGHTGBM_VARIANT_SPECS["lightgbm_morgan_rdkit_all"],
-        toolkit.TABICL_VARIANT_SPECS["tabicl_morgan_rdkit_basic"],
-        toolkit.TABICL_VARIANT_SPECS["tabicl_morgan_rdkit_all"],
-    ]
-    for index, candidate in enumerate(candidates):
-        candidate = {"candidate_id": f"candidate_{index}", **candidate}
-        result = toolkit._prepare_tabular_candidate_dataset(
-            candidate=candidate,
-            train_csv=str(train_csv),
-            smiles_column="SMILES",
-            target_columns=["Y"],
-            candidate_dir=campaign_root / candidate["candidate_id"],
-            feature_cache=feature_cache,
-        )
-        output = Path(result["train_csv"])
-        assert output.exists()
-        assert {"smiles", "Y"}.issubset(pd.read_csv(output).columns)
-
-    assert feature_toolkit.morgan_calls == 1
-    assert feature_toolkit.rdkit_calls == {"basic": 1, "all": 1}
-    assert feature_cache["hits"] >= 3
-    manifest_before_cleanup = Path(feature_cache["manifest_path"])
-    assert manifest_before_cleanup.exists()
-
-    cache_csvs = [
-        Path(entry["output_csv"])
-        for entry in feature_cache["entries"].values()
-        if str(entry.get("output_csv", "")).endswith(".csv")
-    ]
-    assert all(path.exists() for path in cache_csvs)
-    for cache_csv in cache_csvs:
-        cached_columns = pd.read_csv(cache_csv, nrows=0).columns.tolist()
-        if cache_csv.name == "base_normalized.csv":
-            continue
-        assert cached_columns[0] == "smiles"
-        assert "Y" not in cached_columns
-
-    summary = toolkit._delete_feature_cache_csvs(feature_cache)
-    assert summary["retention_policy"] == "manifest_only"
-    assert summary["deleted_entries"] == len(cache_csvs)
-    assert manifest_before_cleanup.exists()
-    assert all(not path.exists() for path in cache_csvs)
-
-
 def test_benchmark_qsar_models_requires_explicit_benchmark_request(tmp_path):
     train_csv = tmp_path / "dataset_curated.csv"
     pd.DataFrame({"smiles": ["CCO", "CCC"], "Y": [1.0, 2.0]}).to_csv(train_csv, index=False)
@@ -323,46 +208,25 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     pd.DataFrame({"smiles": ["CCO", "CCC"], "Y": [1.0, 2.0]}).to_csv(train_csv, index=False)
 
     monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
-    import cs_copilot.tools.prediction.prediction_registry_toolkit as registry_module
+    import cs_copilot.tools.prediction.model_registry_toolkit as registry_module
 
     monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
 
-    import cs_copilot.tools.prediction.chemprop_toolkit as chemprop_module
+    training_toolkit = QSARTrainingToolkit()
+    monkeypatch.setattr(training_toolkit.chemprop_toolkit.backend, "is_available", lambda: True)
+    monkeypatch.setattr(training_toolkit.lightgbm_toolkit.backend, "is_available", lambda: True)
+    monkeypatch.setattr(training_toolkit.tabicl_toolkit.backend, "is_available", lambda: True)
+    backends = training_toolkit.backend_mapping()
 
-    monkeypatch.setattr(
-        chemprop_module.PredictionModelCatalog,
-        "load",
-        classmethod(lambda cls: cls(source_path=catalog_path)),
-    )
-
-    chemprop_toolkit = ChempropToolkit()
-    lightgbm_toolkit = LightGBMToolkit()
-    tabicl_toolkit = TabICLToolkit()
-    monkeypatch.setattr(chemprop_toolkit.backend, "is_available", lambda: True)
-    monkeypatch.setattr(lightgbm_toolkit.backend, "is_available", lambda: True)
-    monkeypatch.setattr(tabicl_toolkit.backend, "is_available", lambda: True)
-
-    def fail_chemprop_registry_call(*args, **kwargs):
-        raise AssertionError("BenchmarkToolkit should use PredictionRegistryToolkit for registry calls")
-
-    monkeypatch.setattr(chemprop_toolkit, "register_model", fail_chemprop_registry_call)
-    monkeypatch.setattr(chemprop_toolkit, "persist_registered_model", fail_chemprop_registry_call)
-
-    registry_toolkit = PredictionRegistryToolkit(
-        backends={
-            chemprop_toolkit.backend.backend_name: chemprop_toolkit.backend,
-            lightgbm_toolkit.backend.backend_name: lightgbm_toolkit.backend,
-            tabicl_toolkit.backend.backend_name: tabicl_toolkit.backend,
-        },
+    registry_toolkit = ModelRegistryToolkit(
+        backends=backends,
         catalog=catalog_module.PredictionModelCatalog(records=[], source_path=catalog_path),
-        default_backend_name=chemprop_toolkit.backend.backend_name,
+        default_backend_name="chemprop",
         register_tools=False,
     )
 
     toolkit = BenchmarkToolkit(
-        chemprop_toolkit=chemprop_toolkit,
-        lightgbm_toolkit=lightgbm_toolkit,
-        tabicl_toolkit=tabicl_toolkit,
+        training_toolkit=training_toolkit,
         registry_toolkit=registry_toolkit,
     )
 
@@ -381,130 +245,85 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
         },
     )
 
-    def fake_prepare_tabular_candidate_dataset(
+    def fake_train_qsar_model(
         *,
-        candidate,
         train_csv,
-        smiles_column,
-        target_columns,
-        candidate_dir,
-        feature_cache=None,
-    ):
-        output = candidate_dir / f"{candidate['candidate_id']}_tabular.csv"
-        pd.DataFrame(
-            {
-                "smiles": ["CCO", "CCC"],
-                "Y": [1.0, 2.0],
-                "feature_a": [0.1, 0.2],
-                "feature_b": [0.3, 0.4],
-            }
-        ).to_csv(output, index=False)
-        return {"train_csv": str(output), "representation_name": candidate["representation_name"]}
-
-    monkeypatch.setattr(toolkit, "_prepare_tabular_candidate_dataset", fake_prepare_tabular_candidate_dataset)
-
-    def fake_chemprop_train_model(self, train_csv, task_type, output_dir, smiles_columns=None, target_columns=None, extra_args=None, agent=None):
-        root = Path(output_dir)
-        model_path, _, _, _ = _write_fake_training_outputs(root, model_name="best.pt", model_suffix=".pt")
-        result = {
-            "best_model_path": str(model_path),
-            "summary_path": str(root / "cs_copilot_training_summary.json"),
-            "validation_assessment": _fake_validation_assessment("standard_qsar", 0.60, "scaffold", 0.52),
-            "split_results": [
-                {"strategy_label": "random", "metrics": {"test": {"r2": 0.60, "rmse": 0.70, "mae": 0.50, "mse": 0.49}}},
-                {"strategy_label": "scaffold", "metrics": {"test": {"r2": 0.52, "rmse": 0.75, "mae": 0.55, "mse": 0.56}}},
-            ],
-            "training_durations": {"total_duration_seconds": 12.0},
-            "metrics": {"test": {"r2": 0.60}},
-            "applicability_domain": {},
-            "train_csv": train_csv,
-            "trained_at": "2026-04-27T12:00:00+02:00",
-        }
-        (root / "cs_copilot_training_summary.json").write_text(json.dumps(result))
-        agent.session_state["prediction_models"]["training_runs"].append(
-            {
-                "train_csv": train_csv,
-                "output_dir": str(root.resolve()),
-                "task_type": task_type,
-                "smiles_columns": smiles_columns or ["smiles"],
-                "target_columns": target_columns or [],
-                "validation_protocol": "standard_qsar",
-            }
-        )
-        return result
-
-    def fake_tabicl_train_model(self, train_csv, task_type, output_dir, target_columns, validation_protocol=None, extra_args=None, agent=None):
-        root = Path(output_dir)
-        model_path, test_predictions_path, config_path, splits_path = _write_fake_training_outputs(root, model_name="best.pkl", model_suffix=".pkl")
-        (root / "test_predictions.csv").write_text(test_predictions_path.read_text())
-        result = {
-            "model_path": str(model_path),
-            "summary_path": str(root / "cs_copilot_training_summary.json"),
-            "config_path": str(config_path),
-            "splits_path": str(splits_path),
-            "test_predictions_path": str(root / "test_predictions.csv"),
-            "validation_assessment": _fake_validation_assessment("standard_qsar", 0.58, "scaffold", 0.50),
-            "split_results": [
-                {"strategy_label": "random", "metrics": {"test": {"r2": 0.58, "rmse": 0.71, "mae": 0.51, "mse": 0.50}}},
-                {"strategy_label": "scaffold", "metrics": {"test": {"r2": 0.50, "rmse": 0.77, "mae": 0.56, "mse": 0.59}}},
-            ],
-            "training_durations": {"total_duration_seconds": 10.0},
-            "metrics": {"test": {"r2": 0.58}},
-            "feature_columns": ["feature_a", "feature_b"],
-            "applicability_domain": {},
-            "train_csv": train_csv,
-            "trained_at": "2026-04-27T12:00:00+02:00",
-        }
-        (root / "cs_copilot_training_summary.json").write_text(json.dumps(result))
-        agent.session_state["prediction_models"]["training_runs"].append(
-            {
-                "train_csv": train_csv,
-                "output_dir": str(root.resolve()),
-                "task_type": task_type,
-                "smiles_columns": ["smiles"],
-                "target_columns": target_columns,
-                "validation_protocol": validation_protocol or "standard_qsar",
-                "training_profile": "heavy_validation",
-            }
-        )
-        return result
-
-    def fake_lightgbm_train_model(
-        self,
-        train_csv,
+        backend_name,
         task_type,
         output_dir,
-        target_columns,
-        feature_columns=None,
-        categorical_feature_columns=None,
-        validation_protocol=None,
+        smiles_column="smiles",
+        target_columns=None,
+        validation_protocol="standard_qsar",
+        representation_name=None,
         extra_args=None,
         agent=None,
+        **kwargs,
     ):
         root = Path(output_dir)
+        model_name = "best.pt" if backend_name == "chemprop" else "best.pkl"
+        model_suffix = ".pt" if backend_name == "chemprop" else ".pkl"
         model_path, test_predictions_path, config_path, splits_path = _write_fake_training_outputs(
             root,
-            model_name="best.pkl",
-            model_suffix=".pkl",
+            model_name=model_name,
+            model_suffix=model_suffix,
         )
-        (root / "test_predictions.csv").write_text(test_predictions_path.read_text())
+        deployment_predictions = root / "test_predictions.csv"
+        deployment_predictions.write_text(test_predictions_path.read_text())
+
+        random_r2 = {"chemprop": 0.60, "lightgbm": 0.57, "tabicl": 0.58}[backend_name]
+        scaffold_r2 = {"chemprop": 0.52, "lightgbm": 0.49, "tabicl": 0.50}[backend_name]
+        train_time = {"chemprop": 12.0, "lightgbm": 9.0, "tabicl": 10.0}[backend_name]
+        feature_columns = [] if backend_name == "chemprop" else ["feature_a", "feature_b"]
+        resolved_representation = representation_name or (
+            "molecular_graph" if backend_name == "chemprop" else "morgan_rdkit_basic"
+        )
+
         result = {
+            "best_model_path": str(model_path),
             "model_path": str(model_path),
             "summary_path": str(root / "cs_copilot_training_summary.json"),
             "config_path": str(config_path),
             "splits_path": str(splits_path),
-            "test_predictions_path": str(root / "test_predictions.csv"),
-            "validation_assessment": _fake_validation_assessment("standard_qsar", 0.57, "scaffold", 0.49),
+            "test_predictions_path": str(deployment_predictions),
+            "validation_assessment": _fake_validation_assessment(
+                validation_protocol,
+                random_r2,
+                "scaffold",
+                scaffold_r2,
+            ),
             "split_results": [
-                {"strategy_label": "random", "metrics": {"test": {"r2": 0.57, "rmse": 0.72, "mae": 0.52, "mse": 0.52}}},
-                {"strategy_label": "scaffold", "metrics": {"test": {"r2": 0.49, "rmse": 0.78, "mae": 0.57, "mse": 0.61}}},
+                {
+                    "strategy_label": "random",
+                    "metrics": {
+                        "test": {
+                            "r2": random_r2,
+                            "rmse": 0.70,
+                            "mae": 0.50,
+                            "mse": 0.49,
+                        }
+                    },
+                },
+                {
+                    "strategy_label": "scaffold",
+                    "metrics": {
+                        "test": {
+                            "r2": scaffold_r2,
+                            "rmse": 0.75,
+                            "mae": 0.55,
+                            "mse": 0.56,
+                        }
+                    },
+                },
             ],
-            "training_durations": {"total_duration_seconds": 9.0},
-            "metrics": {"test": {"r2": 0.57}},
-            "feature_columns": ["feature_a", "feature_b"],
+            "training_durations": {"total_duration_seconds": train_time},
+            "metrics": {"test": {"r2": random_r2}},
+            "feature_columns": feature_columns,
             "categorical_feature_columns": [],
             "applicability_domain": {},
             "train_csv": train_csv,
+            "candidate_train_csv": train_csv,
+            "backend_name": backend_name,
+            "representation_name": resolved_representation,
             "trained_at": "2026-04-27T12:00:00+02:00",
         }
         (root / "cs_copilot_training_summary.json").write_text(json.dumps(result))
@@ -513,17 +332,15 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
                 "train_csv": train_csv,
                 "output_dir": str(root.resolve()),
                 "task_type": task_type,
-                "smiles_columns": ["smiles"],
-                "target_columns": target_columns,
-                "validation_protocol": validation_protocol or "standard_qsar",
+                "smiles_columns": [smiles_column],
+                "target_columns": target_columns or [],
+                "validation_protocol": validation_protocol,
                 "training_profile": "heavy_validation",
             }
         )
         return result
 
-    monkeypatch.setattr(ChempropToolkit, "train_model", fake_chemprop_train_model)
-    monkeypatch.setattr(LightGBMToolkit, "train_lightgbm_model", fake_lightgbm_train_model)
-    monkeypatch.setattr(TabICLToolkit, "train_tabicl_model", fake_tabicl_train_model)
+    monkeypatch.setattr(training_toolkit, "train_qsar_model", fake_train_qsar_model)
 
     agent = _fake_agent()
     output_dir = tmp_path / "benchmark_output"
@@ -544,9 +361,7 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     assert result["campaign_seed_policy"]["mode"] == "generated_per_benchmark_campaign"
     assert result["campaign_seed_policy"]["shared_across_candidates"] is True
     assert result["seed_policy_report"] == "Politique de seeds : partagée au niveau campagne benchmark"
-    assert result["feature_cache"]["enabled"] is True
-    assert result["feature_cache"]["retention_policy"] == "manifest_only"
-    assert Path(result["feature_cache"]["manifest_path"]).exists()
+    assert "feature_cache" not in result
 
     candidate_ids = {item["candidate_id"] for item in result["persisted_model_mapping"]}
     assert "chemprop_default" in candidate_ids
@@ -575,7 +390,7 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     benchmark_summary = json.loads(Path(result["summary_path"]).read_text())
     assert benchmark_summary["campaign_seed_policy"]["split_runs"] == result["campaign_seed_policy"]["split_runs"]
     assert benchmark_summary["seed_policy_report"] == result["seed_policy_report"]
-    assert benchmark_summary["feature_cache"]["manifest_path"] == result["feature_cache"]["manifest_path"]
+    assert "feature_cache" not in benchmark_summary
 
     leaderboard = pd.read_csv(result["leaderboard_path"])
     assert set(["candidate_id", "model_id", "backend", "representation", "hardest_split_r2"]).issubset(

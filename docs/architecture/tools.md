@@ -23,9 +23,16 @@ tools/
 │   └── descriptors.py             Molecular descriptors
 │
 ├── prediction/        Predictive modeling backends and toolkits
-│   ├── backend.py     Backend contract for pluggable predictors
-│   ├── chemprop_backend.py  Chemprop CLI adapter
-│   └── chemprop_toolkit.py  Model registration + prediction workflows
+│   ├── backend.py                 Backend contract for pluggable predictors
+│   ├── backend_factory.py         Shared backend construction
+│   ├── qsar_training_toolkit.py   Public QSAR training facade
+│   ├── model_registry_toolkit.py  Public model registry and catalog facade
+│   ├── prediction_inference_toolkit.py  Public inference facade
+│   ├── benchmark_toolkit.py       Explicit benchmark campaign orchestration
+│   ├── chemprop_toolkit.py        Internal Chemprop training toolkit
+│   ├── lightgbm_toolkit.py        Internal LightGBM training toolkit
+│   ├── tabicl_toolkit.py          Internal TabICL training toolkit
+│   └── *_backend.py               Backend adapters
 │
 ├── io/                I/O and formatting
 │   ├── pointer_pandas_tools.py   DataFrame ops + S3 integration
