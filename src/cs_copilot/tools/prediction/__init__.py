@@ -27,7 +27,7 @@ from .ensemble_toolkit import EnsembleToolkit
 from .lightgbm_backend import LightGBMBackend
 from .lightgbm_toolkit import LightGBMToolkit
 from .prediction_inference_toolkit import PredictionInferenceToolkit
-from .prediction_registry_toolkit import PredictionRegistryToolkit
+from .prediction_registry_toolkit import PredictionRegistryToolkit, build_default_prediction_backends
 from .tabicl_backend import TabICLBackend
 from .tabicl_toolkit import TabICLToolkit
 
@@ -57,6 +57,7 @@ __all__ = [
     "LightGBMToolkit",
     "PredictionInferenceToolkit",
     "PredictionRegistryToolkit",
+    "build_default_prediction_backends",
     "TabICLBackend",
     "TabICLToolkit",
 ]

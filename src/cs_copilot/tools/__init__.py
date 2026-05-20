@@ -41,9 +41,12 @@ from .prediction import (
     EnsembleToolkit,
     LightGBMBackend,
     LightGBMToolkit,
+    PredictionInferenceToolkit,
     PredictionModelCatalog,
+    PredictionRegistryToolkit,
     TabICLBackend,
     TabICLToolkit,
+    build_default_prediction_backends,
 )
 
 # GTM Toolkit
@@ -87,6 +90,9 @@ __all__ = [
     "TabICLToolkit",
     "TabICLBackend",
     "PredictionModelCatalog",
+    "PredictionRegistryToolkit",
+    "PredictionInferenceToolkit",
+    "build_default_prediction_backends",
     "CatalogRecommendation",
     "ChemblToolkit",
     "RobustnessAnalysisToolkit",

@@ -27,9 +27,12 @@ from cs_copilot.tools import (
     MolecularFeatureToolkit,
     PeptideWAEToolkit,
     PointerPandasTools,
+    PredictionInferenceToolkit,
     QSARReportingToolkit,
+    PredictionRegistryToolkit,
     SynPlannerToolkit,
     TabICLToolkit,
+    build_default_prediction_backends,
     # SessionToolkit,
     save_gtm_plot,
 )
@@ -78,6 +81,21 @@ class AgentCreationError(Exception):
     """Exception raised when agent creation fails."""
 
     pass
+
+
+def _prediction_facade_tools(*, include_inference: bool = False) -> List[Any]:
+    """Create backend-neutral prediction tools that share one backend registry."""
+    backends = build_default_prediction_backends()
+    registry_toolkit = PredictionRegistryToolkit(backends=backends)
+    tools: List[Any] = [registry_toolkit]
+    if include_inference:
+        tools.append(
+            PredictionInferenceToolkit(
+                backends=backends,
+                registry_toolkit=registry_toolkit,
+            )
+        )
+    return tools
 
 
 class BaseAgentFactory(ABC):
@@ -691,7 +709,12 @@ class QSARTrainingFactory(BaseAgentFactory):
             tools=[
                 BenchmarkToolkit(),
                 ActivityCliffToolkit(),
-                ChempropToolkit(include_prediction_summary_export=False),
+                *_prediction_facade_tools(),
+                ChempropToolkit(
+                    include_prediction_summary_export=False,
+                    include_registry_tools=False,
+                    include_inference_tools=False,
+                ),
                 LightGBMToolkit(),
                 TabICLToolkit(),
                 MolecularFeatureToolkit(),
@@ -732,7 +755,10 @@ class ModelRegistryFactory(BaseAgentFactory):
             model status, and persist eligible models into the prediction catalog.
             You do not train models or perform free-form prediction analysis.
             """,
-            tools=[ChempropToolkit(), EnsembleToolkit()],
+            tools=[
+                *_prediction_facade_tools(),
+                EnsembleToolkit(),
+            ],
             instructions=MODEL_REGISTRY_INSTRUCTIONS,
             session_state={
                 "prediction_models": {
@@ -765,7 +791,7 @@ class ModelInferenceFactory(BaseAgentFactory):
             downstream reporting. You do not curate datasets or train models.
             """,
             tools=[
-                ChempropToolkit(),
+                *_prediction_facade_tools(include_inference=True),
                 EnsembleToolkit(),
                 PointerPandasTools(),
             ],

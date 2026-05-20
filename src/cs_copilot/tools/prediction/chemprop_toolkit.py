@@ -30,10 +30,8 @@ from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, spl
 from .backend import PredictionModelRecord, PredictionTaskSpec
 from .catalog import PredictionModelCatalog
 from .chemprop_backend import ChempropBackend
-from .ensemble_backend import EnsembleBackend
-from .lightgbm_backend import LightGBMBackend
 from .prediction_inference_toolkit import PredictionInferenceToolkit
-from .prediction_registry_toolkit import PredictionRegistryToolkit
+from .prediction_registry_toolkit import PredictionRegistryToolkit, build_default_prediction_backends
 from .qsar_training_policy import (
     QSAR_HARDEST_SPLIT_R2_MIN,
     QSAR_RANDOM_STABILITY_R2_STD_MAX,
@@ -52,7 +50,6 @@ from .session_state import (
     get_prediction_state,
     write_active_training_marker,
 )
-from .tabicl_backend import TabICLBackend
 from .training_orchestration import (
     apply_training_profile,
     build_applicability_domain_for_training,
@@ -85,24 +82,12 @@ class ChempropToolkit(Toolkit):
         backend: Optional[ChempropBackend] = None,
         *,
         include_prediction_summary_export: bool = True,
+        include_registry_tools: bool = True,
+        include_inference_tools: bool = True,
     ):
         super().__init__("chemprop_prediction")
         primary_backend = backend or ChempropBackend()
-        tabicl_backend = TabICLBackend()
-        lightgbm_backend = LightGBMBackend()
-        ensemble_backend = EnsembleBackend(
-            backends={
-                primary_backend.backend_name: primary_backend,
-                tabicl_backend.backend_name: tabicl_backend,
-                lightgbm_backend.backend_name: lightgbm_backend,
-            }
-        )
-        self.backends = {
-            primary_backend.backend_name: primary_backend,
-            tabicl_backend.backend_name: tabicl_backend,
-            lightgbm_backend.backend_name: lightgbm_backend,
-            ensemble_backend.backend_name: ensemble_backend,
-        }
+        self.backends = build_default_prediction_backends(chemprop_backend=primary_backend)
         self.backend = primary_backend
         self.catalog = PredictionModelCatalog.load()
         self.catalog.refresh_from_internal_store(persist=True)
@@ -118,20 +103,22 @@ class ChempropToolkit(Toolkit):
             register_tools=False,
         )
         self.register(self.describe_backend)
-        self.register(self.describe_backends)
-        self.register(self.describe_catalog)
-        self.register(self.list_catalog_models)
-        self.register(self.summarize_catalog_model)
-        self.register(self.recommend_catalog_model)
-        self.register(self.register_catalog_model)
-        self.register(self.persist_registered_model)
-        self.register(self.register_model)
-        self.register(self.list_registered_models)
-        self.register(self.summarize_model)
-        self.register(self.predict_from_csv)
-        self.register(self.predict_from_smiles)
-        if include_prediction_summary_export:
-            self.register(self.export_prediction_summary)
+        if include_registry_tools:
+            self.register(self.describe_backends)
+            self.register(self.describe_catalog)
+            self.register(self.list_catalog_models)
+            self.register(self.summarize_catalog_model)
+            self.register(self.recommend_catalog_model)
+            self.register(self.register_catalog_model)
+            self.register(self.persist_registered_model)
+            self.register(self.register_model)
+            self.register(self.list_registered_models)
+            self.register(self.summarize_model)
+        if include_inference_tools:
+            self.register(self.predict_from_csv)
+            self.register(self.predict_from_smiles)
+            if include_prediction_summary_export:
+                self.register(self.export_prediction_summary)
         self.register(self.prepare_training_dataset)
         self.register(self.describe_compute_environment)
         self.register(self.train_model)

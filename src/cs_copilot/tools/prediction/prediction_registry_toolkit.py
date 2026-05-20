@@ -32,6 +32,31 @@ from .session_state import (
 ARCHIVE_MODEL_PATH_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz")
 
 
+def build_default_prediction_backends(
+    *,
+    chemprop_backend: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Build the standard backend set without making ChempropToolkit the hub."""
+    from .chemprop_backend import ChempropBackend
+    from .ensemble_backend import EnsembleBackend
+    from .lightgbm_backend import LightGBMBackend
+    from .tabicl_backend import TabICLBackend
+
+    primary_backend = chemprop_backend or ChempropBackend()
+    tabicl_backend = TabICLBackend()
+    lightgbm_backend = LightGBMBackend()
+    component_backends = {
+        primary_backend.backend_name: primary_backend,
+        tabicl_backend.backend_name: tabicl_backend,
+        lightgbm_backend.backend_name: lightgbm_backend,
+    }
+    ensemble_backend = EnsembleBackend(backends=component_backends)
+    return {
+        **component_backends,
+        ensemble_backend.backend_name: ensemble_backend,
+    }
+
+
 def _relative_posix(path: Path, start: Path) -> str:
     return path.relative_to(start).as_posix()
 
