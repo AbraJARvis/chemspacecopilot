@@ -6,16 +6,16 @@ Toolkit for explicit molecular feature generation from curated QSAR datasets.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from agno.tools.toolkit import Toolkit
 from rdkit import Chem
-from rdkit.Chem import Descriptors
+from rdkit.Chem import Descriptors, rdFingerprintGenerator
 
 from cs_copilot.storage import S3
-from cs_copilot.tools.chemistry.base_chemistry import calc_morgan_bit_fp
 from cs_copilot.tools.chemistry.standardize import (
     resolve_smiles_column_name,
     standardize_smiles_column,
@@ -152,7 +152,11 @@ def _validate_unique_keys(df: pd.DataFrame, join_on: List[str], *, df_name: str)
 
 
 def _canonicalize_join_columns(
-    df: pd.DataFrame, join_on: List[str], *, df_name: str
+    df: pd.DataFrame,
+    join_on: List[str],
+    *,
+    df_name: str,
+    canonicalize_smiles: bool = True,
 ) -> pd.DataFrame:
     """Normalize join columns in-memory before strict table joins.
 
@@ -161,7 +165,7 @@ def _canonicalize_join_columns(
     strict while reducing accidental mismatches caused by representation drift.
     """
     normalized = df.copy()
-    if "smiles" in join_on:
+    if "smiles" in join_on and canonicalize_smiles:
         if "smiles" not in normalized.columns:
             raise ValueError(f"{df_name} is missing join column 'smiles'.")
         normalized = standardize_smiles_column(normalized, "smiles")
@@ -201,6 +205,7 @@ class MolecularFeatureToolkit(Toolkit):
         tabular backends (for example TabICL or tree models) can reuse the same
         featurization step without coupling it to training.
         """
+        started_at = time.monotonic()
         if radius != 2:
             raise ValueError(
                 "The current Morgan helper supports radius=2 only in this V1 implementation."
@@ -232,13 +237,15 @@ class MolecularFeatureToolkit(Toolkit):
             )
 
         feature_columns = _feature_column_names(feature_prefix, n_bits)
+        fp_generator = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=n_bits)
         fingerprint_rows: List[Any] = []
         for smiles in working["smiles"].tolist():
-            fingerprint = calc_morgan_bit_fp(smiles, n_bits)
-            if fingerprint is None:
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
                 raise ValueError(
                     f"Could not compute Morgan fingerprint for standardized SMILES: {smiles}"
                 )
+            fingerprint = fp_generator.GetFingerprintAsNumPy(mol)
             fingerprint_rows.append(fingerprint.astype(int).tolist())
 
         feature_df = pd.DataFrame(fingerprint_rows, columns=feature_columns)
@@ -269,6 +276,7 @@ class MolecularFeatureToolkit(Toolkit):
             "feature_prefix": feature_prefix,
             "feature_columns_sample": feature_columns[:5],
             "input_columns_kept": kept_columns,
+            "duration_seconds": round(time.monotonic() - started_at, 3),
         }
 
     def smiles_to_rdkit_descriptors(
@@ -287,6 +295,7 @@ class MolecularFeatureToolkit(Toolkit):
         - `basic`: short, fixed descriptor set for lightweight workflows
         - `all`: full RDKit descriptor list exposed by `Descriptors._descList`
         """
+        started_at = time.monotonic()
         descriptor_funcs = _resolve_rdkit_descriptor_funcs(descriptor_set)
 
         with S3.open(input_csv, "r") as fh:
@@ -354,6 +363,7 @@ class MolecularFeatureToolkit(Toolkit):
             "descriptor_names": descriptor_names,
             "descriptor_columns_sample": descriptor_columns[:5],
             "input_columns_kept": kept_columns,
+            "duration_seconds": round(time.monotonic() - started_at, 3),
         }
 
     def build_tabular_qsar_dataset(
@@ -364,11 +374,13 @@ class MolecularFeatureToolkit(Toolkit):
         join_on: Optional[List[str]] = None,
         base_columns_to_keep: Optional[List[str]] = None,
         drop_duplicate_feature_columns: bool = True,
+        canonicalize_smiles_join: bool = True,
     ) -> Dict[str, Any]:
         """
         Build a final tabular QSAR dataset by combining a curated base CSV with
         one or more precomputed molecular feature tables.
         """
+        started_at = time.monotonic()
         if not feature_csvs:
             raise ValueError("feature_csvs must contain at least one feature table.")
 
@@ -376,7 +388,12 @@ class MolecularFeatureToolkit(Toolkit):
 
         with S3.open(base_csv, "r") as fh:
             base_df = pd.read_csv(fh)
-        base_df = _canonicalize_join_columns(base_df, join_columns, df_name="base_csv")
+        base_df = _canonicalize_join_columns(
+            base_df,
+            join_columns,
+            df_name="base_csv",
+            canonicalize_smiles=canonicalize_smiles_join,
+        )
 
         _validate_join_columns(base_df, join_columns, df_name="base_csv")
         _validate_unique_keys(base_df, join_columns, df_name="base_csv")
@@ -399,7 +416,12 @@ class MolecularFeatureToolkit(Toolkit):
                 feature_df = pd.read_csv(fh)
 
             source_name = f"feature_csv[{index}]"
-            feature_df = _canonicalize_join_columns(feature_df, join_columns, df_name=source_name)
+            feature_df = _canonicalize_join_columns(
+                feature_df,
+                join_columns,
+                df_name=source_name,
+                canonicalize_smiles=canonicalize_smiles_join,
+            )
             _validate_join_columns(feature_df, join_columns, df_name=source_name)
             _validate_unique_keys(feature_df, join_columns, df_name=source_name)
 
@@ -468,4 +490,6 @@ class MolecularFeatureToolkit(Toolkit):
             "num_added_feature_columns": len(added_feature_columns),
             "final_column_count": int(len(assembled_df.columns)),
             "feature_column_samples": added_feature_columns[:5],
+            "canonicalize_smiles_join": canonicalize_smiles_join,
+            "duration_seconds": round(time.monotonic() - started_at, 3),
         }

@@ -841,6 +841,7 @@ class ChempropToolkit(Toolkit):
                 ad_summary=ad_summary,
                 plot_artifacts=plot_artifacts,
                 activity_cliffs=activity_cliffs,
+                extra_files=[Path(resolved_output_dir)],
             )
             bundle = bundle_artifacts(
                 bundle_path,

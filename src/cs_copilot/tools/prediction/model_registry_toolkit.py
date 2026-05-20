@@ -470,7 +470,23 @@ class ModelRegistryToolkit(Toolkit):
 
         prediction_state = get_prediction_state(agent)
         prediction_state["registered"][model_id] = record.as_dict()
-        return record.as_dict()
+        payload = record.as_dict()
+        payload.update(
+            {
+                "registered": True,
+                "persisted": False,
+                "catalog_persisted": False,
+                "persistence_state": "session_registered_only",
+                "next_required_tool": "persist_registered_model",
+                "usage_hint": (
+                    "This model is registered only in the current session. "
+                    "For persistent catalog storage, call `persist_registered_model` "
+                    "and use the returned canonical `model_id`, `model_root`, "
+                    "`model_path`, and `metadata_path`."
+                ),
+            }
+        )
+        return payload
 
     def _infer_training_run_dir(self, record: PredictionModelRecord) -> Optional[Path]:
         model_path = Path(record.model_path).expanduser()

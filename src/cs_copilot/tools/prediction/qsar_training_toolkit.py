@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -21,8 +22,9 @@ from cs_copilot.tools.features.molecular_feature_toolkit import MolecularFeature
 from .chemprop_toolkit import ChempropToolkit
 from .lightgbm_toolkit import LightGBMToolkit
 from .qsar_training_policy import describe_compute_environment
+from .session_state import bundle_artifacts
 from .tabicl_toolkit import TabICLToolkit
-from .training_orchestration import normalize_json_list_argument
+from .training_orchestration import normalize_json_list_argument, write_training_summary
 
 
 TABULAR_REPRESENTATION_SPECS: Dict[str, Dict[str, Any]] = {
@@ -159,6 +161,8 @@ class QSARTrainingToolkit(Toolkit):
                 f"Expected one of {sorted(TABULAR_REPRESENTATION_SPECS)}."
             )
 
+        total_started_at = time.monotonic()
+        duration_steps: List[Dict[str, Any]] = []
         output_path = Path(output_dir).expanduser().resolve()
         features_dir = output_path / "features"
         features_dir.mkdir(parents=True, exist_ok=True)
@@ -166,6 +170,7 @@ class QSARTrainingToolkit(Toolkit):
         base_csv_for_features = train_csv
         feature_smiles_column = smiles_column
         if smiles_column != "smiles":
+            step_started_at = time.monotonic()
             with S3.open(train_csv, "r") as fh:
                 source_df = pd.read_csv(fh)
             resolved_smiles_column = resolve_smiles_column_name(source_df, smiles_column)
@@ -181,9 +186,17 @@ class QSARTrainingToolkit(Toolkit):
                 normalized_df[["smiles", *target_columns]].to_csv(fh, index=False)
             base_csv_for_features = str(normalized_csv)
             feature_smiles_column = "smiles"
+            duration_steps.append(
+                {
+                    "step": "canonical_smiles_dataset",
+                    "duration_seconds": round(time.monotonic() - step_started_at, 3),
+                    "output_csv": base_csv_for_features,
+                }
+            )
 
         feature_csvs: List[str] = []
         if spec["use_morgan"]:
+            step_started_at = time.monotonic()
             morgan = self.molecular_feature_toolkit.smiles_to_morgan_fingerprints(
                 input_csv=base_csv_for_features,
                 smiles_column=feature_smiles_column,
@@ -194,9 +207,23 @@ class QSARTrainingToolkit(Toolkit):
                 input_columns_to_keep=[feature_smiles_column, *target_columns],
             )
             feature_csvs.append(morgan["output_csv"])
+            duration_steps.append(
+                {
+                    "step": "morgan_fingerprints",
+                    "duration_seconds": float(
+                        morgan.get("duration_seconds")
+                        or round(time.monotonic() - step_started_at, 3)
+                    ),
+                    "output_csv": morgan["output_csv"],
+                    "num_features": morgan.get("num_features"),
+                    "radius": morgan.get("radius"),
+                    "n_bits": morgan.get("n_bits"),
+                }
+            )
 
         if spec["use_rdkit"]:
             descriptor_set = str(spec["descriptor_set"])
+            step_started_at = time.monotonic()
             rdkit = self.molecular_feature_toolkit.smiles_to_rdkit_descriptors(
                 input_csv=base_csv_for_features,
                 smiles_column=feature_smiles_column,
@@ -206,7 +233,20 @@ class QSARTrainingToolkit(Toolkit):
                 input_columns_to_keep=[feature_smiles_column, *target_columns],
             )
             feature_csvs.append(rdkit["output_csv"])
+            duration_steps.append(
+                {
+                    "step": "rdkit_descriptors",
+                    "duration_seconds": float(
+                        rdkit.get("duration_seconds")
+                        or round(time.monotonic() - step_started_at, 3)
+                    ),
+                    "output_csv": rdkit["output_csv"],
+                    "descriptor_set": rdkit.get("descriptor_set"),
+                    "num_descriptors": rdkit.get("num_descriptors"),
+                }
+            )
 
+        step_started_at = time.monotonic()
         tabular = self.molecular_feature_toolkit.build_tabular_qsar_dataset(
             base_csv=base_csv_for_features,
             output_csv=str(output_path / f"{Path(train_csv).stem}_{representation_name}.csv"),
@@ -214,13 +254,43 @@ class QSARTrainingToolkit(Toolkit):
             join_on=["smiles", *target_columns],
             base_columns_to_keep=["smiles", *target_columns],
             drop_duplicate_feature_columns=True,
+            canonicalize_smiles_join=False,
         )
+        duration_steps.append(
+            {
+                "step": "tabular_dataset_assembly",
+                "duration_seconds": float(
+                    tabular.get("duration_seconds")
+                    or round(time.monotonic() - step_started_at, 3)
+                ),
+                "output_csv": tabular["output_csv"],
+                "num_added_feature_columns": tabular.get("num_added_feature_columns"),
+                "final_column_count": tabular.get("final_column_count"),
+                "canonicalize_smiles_join": tabular.get("canonicalize_smiles_join"),
+            }
+        )
+        feature_columns = _feature_columns_from_csv(tabular["output_csv"], target_columns)
+        feature_preparation = {
+            "mode": "generated_tabular_features",
+            "representation_name": representation_name,
+            "input_csv": train_csv,
+            "base_csv_for_features": base_csv_for_features,
+            "prepared_train_csv": tabular["output_csv"],
+            "feature_csvs": feature_csvs,
+            "feature_count": len(feature_columns),
+            "durations": {
+                "total_duration_seconds": round(time.monotonic() - total_started_at, 3),
+                "steps": duration_steps,
+            },
+        }
         return {
             "train_csv": tabular["output_csv"],
             "representation_name": representation_name,
             "feature_csvs": feature_csvs,
-            "feature_columns": _feature_columns_from_csv(tabular["output_csv"], target_columns),
+            "feature_columns": feature_columns,
             "tabular_dataset": tabular,
+            "feature_preparation": feature_preparation,
+            "feature_preparation_durations": feature_preparation["durations"],
         }
 
     def _recommended_registry_payload(
@@ -244,6 +314,7 @@ class QSARTrainingToolkit(Toolkit):
                 "training_profile": result.get("training_profile"),
                 "seed_policy": result.get("seed_policy"),
                 "representation_name": result.get("representation_name"),
+                "feature_preparation": result.get("feature_preparation") or {},
             },
             "inference_profile": {
                 "feature_columns": list(result.get("feature_columns") or []),
@@ -251,6 +322,29 @@ class QSARTrainingToolkit(Toolkit):
             },
             "applicability_domain": result.get("applicability_domain") or {},
         }
+
+    def _refresh_enriched_training_artifacts(
+        self,
+        *,
+        result: Dict[str, Any],
+        output_dir: str,
+    ) -> None:
+        """Rewrite summary and bundle after facade-level enrichment."""
+        summary_path = result.get("summary_path") or result.get("canonical_summary_path")
+        if summary_path:
+            write_training_summary(Path(str(summary_path)), result)
+
+        bundle_path = result.get("bundle_file_ref") or result.get("training_bundle")
+        if bundle_path:
+            resolved_output_dir = result.get("output_dir") or output_dir
+            bundle_inputs = [Path(str(resolved_output_dir)).expanduser().resolve()]
+            for key in ("candidate_train_csv", "train_csv"):
+                if result.get(key):
+                    bundle_inputs.append(Path(str(result[key])))
+            bundle = bundle_artifacts(Path(str(bundle_path)), bundle_inputs)
+            result["bundle_file_ref"] = str(bundle)
+            result["training_bundle"] = str(bundle)
+            result["bundle_download_tag"] = f"<file>{bundle}</file>"
 
     def train_qsar_model(
         self,
@@ -325,8 +419,17 @@ class QSARTrainingToolkit(Toolkit):
                 )
                 working_train_csv = prepared["train_csv"]
                 normalized_feature_columns = prepared["feature_columns"]
+                feature_preparation = prepared["feature_preparation"]
             else:
                 resolved_representation = resolved_representation or "precomputed_tabular"
+                feature_preparation = {
+                    "mode": "precomputed_tabular_features",
+                    "representation_name": resolved_representation,
+                    "input_csv": train_csv,
+                    "prepared_train_csv": working_train_csv,
+                    "feature_count": len(normalized_feature_columns or []),
+                    "durations": {"total_duration_seconds": 0.0, "steps": []},
+                }
 
             if normalized_backend == "lightgbm":
                 result = self.lightgbm_toolkit.train_lightgbm_model(
@@ -367,6 +470,12 @@ class QSARTrainingToolkit(Toolkit):
             result["representation_name"] = resolved_representation
             result["candidate_train_csv"] = working_train_csv
             result["feature_columns"] = list(normalized_feature_columns or [])
+            result["feature_preparation"] = feature_preparation
+            result["feature_preparation_durations"] = feature_preparation["durations"]
+            self._refresh_enriched_training_artifacts(
+                result=result,
+                output_dir=output_dir,
+            )
         else:
             raise ValueError(
                 "Unsupported backend_name. Expected one of ['chemprop', 'lightgbm', 'tabicl']."

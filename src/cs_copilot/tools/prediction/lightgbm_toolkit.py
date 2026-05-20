@@ -1050,6 +1050,7 @@ class LightGBMToolkit(Toolkit):
             plot_artifacts=plot_artifacts,
             curation_artifacts=curation_artifacts,
             activity_cliffs=activity_cliffs,
+            extra_files=[Path(resolved_output_dir)],
         )
 
         bundle = bundle_artifacts(bundle_path, bundle_files)

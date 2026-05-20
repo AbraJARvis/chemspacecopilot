@@ -327,7 +327,7 @@ def test_qsar_training_toolkit_normalizes_tabular_smiles_column(tmp_path):
                     "fp_0000": [1, 0],
                 }
             ).to_csv(output_csv, index=False)
-            return {"output_csv": output_csv}
+            return {"output_csv": output_csv, "duration_seconds": 1.25, "num_features": 1}
 
         def build_tabular_qsar_dataset(
             self,
@@ -338,7 +338,9 @@ def test_qsar_training_toolkit_normalizes_tabular_smiles_column(tmp_path):
             join_on,
             base_columns_to_keep,
             drop_duplicate_feature_columns,
+            canonicalize_smiles_join=True,
         ):
+            assert canonicalize_smiles_join is False
             assembled = pd.read_csv(base_csv)[base_columns_to_keep].copy()
             for feature_csv in feature_csvs:
                 assembled = assembled.merge(
@@ -348,7 +350,13 @@ def test_qsar_training_toolkit_normalizes_tabular_smiles_column(tmp_path):
                     validate="one_to_one",
                 )
             assembled.to_csv(output_csv, index=False)
-            return {"output_csv": output_csv}
+            return {
+                "output_csv": output_csv,
+                "duration_seconds": 0.5,
+                "num_added_feature_columns": 1,
+                "final_column_count": len(assembled.columns),
+                "canonicalize_smiles_join": canonicalize_smiles_join,
+            }
 
     train_csv = tmp_path / "train.csv"
     pd.DataFrame(
@@ -371,6 +379,9 @@ def test_qsar_training_toolkit_normalizes_tabular_smiles_column(tmp_path):
     assert "smiles" in output_columns
     assert "standardized_smiles" not in output_columns
     assert result["feature_columns"] == ["fp_0000"]
+    assert result["feature_preparation"]["feature_count"] == 1
+    assert result["feature_preparation_durations"]["steps"][0]["step"] == "morgan_fingerprints"
+    assert result["feature_preparation_durations"]["steps"][0]["duration_seconds"] == 1.25
 
 
 def test_prediction_registry_rejects_archive_model_paths_without_backend_validation():
@@ -404,6 +415,44 @@ def test_prediction_registry_rejects_archive_model_paths_without_backend_validat
     assert result["expected_model_extensions"] == [".pkl"]
     assert "bundle/archive" in result["usage_hint"]
     assert get_prediction_state(agent)["registered"] == {}
+
+
+def test_prediction_registry_register_model_is_session_only(tmp_path):
+    model_path = tmp_path / "best.pkl"
+    model_path.write_text("model")
+    catalog = SimpleNamespace(refresh_from_internal_store=lambda persist=True: None)
+
+    class FakeBackend:
+        backend_name = "lightgbm"
+        MODEL_EXTENSIONS = (".pkl",)
+
+        def validate_model_path(self, model_path):
+            return Path(model_path)
+
+    toolkit = ModelRegistryToolkit(
+        backends={"lightgbm": FakeBackend()},
+        catalog=catalog,
+        default_backend_name="lightgbm",
+        register_tools=False,
+    )
+    agent = SimpleNamespace(session_state={})
+
+    result = toolkit.register_model(
+        model_id="session_model",
+        model_path=str(model_path),
+        backend_name="lightgbm",
+        task_type="regression",
+        target_columns=["pEC50"],
+        status="workflow_demo",
+        agent=agent,
+    )
+
+    assert result["registered"] is True
+    assert result["persisted"] is False
+    assert result["catalog_persisted"] is False
+    assert result["persistence_state"] == "session_registered_only"
+    assert result["next_required_tool"] == "persist_registered_model"
+    assert "session" in result["usage_hint"]
 
 
 def test_prediction_registry_summarize_model_unknown_id_returns_guidance():
