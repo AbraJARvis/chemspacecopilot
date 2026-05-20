@@ -138,6 +138,40 @@ def test_shared_bundle_artifacts_deduplicates_archive_names(tmp_path):
     assert len(set(names)) == 2
 
 
+def test_shared_bundle_artifacts_expands_directories_to_files(tmp_path):
+    run_dir = tmp_path / "lightgbm_standard_qsar"
+    model_path = run_dir / "random_seed_1_split" / "model_0" / "best.pkl"
+    predictions_path = run_dir / "scaffold_split" / "model_0" / "test_predictions.csv"
+    empty_dir = run_dir / "empty"
+    model_path.parent.mkdir(parents=True)
+    predictions_path.parent.mkdir(parents=True)
+    empty_dir.mkdir(parents=True)
+    model_path.write_text("model")
+    predictions_path.write_text("prediction")
+
+    bundle = bundle_artifacts(tmp_path / "bundle.zip", [run_dir])
+
+    with ZipFile(bundle) as zf:
+        names = zf.namelist()
+    assert any(name.endswith("random_seed_1_split/model_0/best.pkl") for name in names)
+    assert any(name.endswith("scaffold_split/model_0/test_predictions.csv") for name in names)
+    assert all(not name.endswith("/") for name in names)
+    assert all("empty" not in name for name in names)
+
+
+def test_shared_bundle_artifacts_writes_relative_file_names(tmp_path):
+    file_path = tmp_path / "app" / ".files" / "sessions" / "thread" / "run" / "summary.json"
+    file_path.parent.mkdir(parents=True)
+    file_path.write_text("{}")
+
+    bundle = bundle_artifacts(tmp_path / "bundle.zip", [file_path])
+
+    with ZipFile(bundle) as zf:
+        names = zf.namelist()
+    assert names == ["summary.json"]
+    assert all(not name.startswith("/") for name in names)
+
+
 def test_training_orchestration_normalizes_agent_list_arguments():
     assert normalize_json_list_argument("pEC50", argument_name="target_columns") == ["pEC50"]
     assert normalize_json_list_argument('["smiles"]', argument_name="smiles_columns") == ["smiles"]

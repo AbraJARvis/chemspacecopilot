@@ -10,12 +10,15 @@ on Chemprop's toolkit implementation.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List
 from zipfile import ZIP_DEFLATED, ZipFile
 
 if TYPE_CHECKING:
     from agno.agent import Agent
+
+_BUNDLE_DIRECTORY_ROOTS_TO_SKIP = {"/", "/app", "/app/.files", "/app/.files/sessions"}
 
 
 def get_prediction_state(agent: Agent) -> Dict[str, Any]:
@@ -97,20 +100,63 @@ def discover_curation_artifacts_near_dataset(dataset_path: str | None) -> Dict[s
     return {"artifacts": artifacts}
 
 
+def _iter_bundle_files(paths: Iterable[Path], bundle_path: Path) -> List[Path]:
+    """Return existing files to include in a bundle, expanding directories."""
+    resolved_bundle_path = bundle_path.resolve()
+    discovered: List[Path] = []
+    seen: set[Path] = set()
+    for raw_path in paths:
+        path = Path(raw_path).expanduser()
+        if not path.exists():
+            continue
+        if path.is_dir() and path.resolve().as_posix() in _BUNDLE_DIRECTORY_ROOTS_TO_SKIP:
+            continue
+        candidates = sorted(path.rglob("*")) if path.is_dir() else [path]
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            resolved = candidate.resolve()
+            if resolved == resolved_bundle_path or resolved in seen:
+                continue
+            seen.add(resolved)
+            discovered.append(resolved)
+    return discovered
+
+
+def _bundle_common_root(files: List[Path]) -> Path | None:
+    """Find a stable common parent for archive names."""
+    if not files:
+        return None
+    try:
+        return Path(os.path.commonpath([str(path.parent) for path in files]))
+    except ValueError:
+        return None
+
+
+def _bundle_arcname(file_path: Path, common_root: Path | None) -> str:
+    """Build a relative archive name without leaking absolute root entries."""
+    if common_root is not None:
+        try:
+            return file_path.relative_to(common_root).as_posix()
+        except ValueError:
+            pass
+    parts = [part for part in file_path.parts if part not in (file_path.anchor, os.sep)]
+    return Path(*parts).as_posix() if parts else file_path.name
+
+
 def bundle_artifacts(bundle_path: Path, files: List[Path]) -> Path:
     """Create a zip bundle from existing artifact files, de-duplicating names."""
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_files = _iter_bundle_files(files, bundle_path)
+    common_root = _bundle_common_root(existing_files)
     seen_names: Dict[str, int] = {}
     with ZipFile(bundle_path, "w", compression=ZIP_DEFLATED) as zf:
-        for file_path in files:
-            if file_path.exists():
-                arcname = "/".join(file_path.parts[-8:])
-                duplicate_count = seen_names.get(arcname, 0)
-                seen_names[arcname] = duplicate_count + 1
-                if duplicate_count:
-                    path = Path(arcname)
-                    arcname = str(
-                        path.with_name(f"{path.stem}_{duplicate_count}{path.suffix}")
-                    )
-                zf.write(file_path, arcname=arcname)
+        for file_path in existing_files:
+            arcname = _bundle_arcname(file_path, common_root)
+            duplicate_count = seen_names.get(arcname, 0)
+            seen_names[arcname] = duplicate_count + 1
+            if duplicate_count:
+                path = Path(arcname)
+                arcname = path.with_name(f"{path.stem}_{duplicate_count}{path.suffix}").as_posix()
+            zf.write(file_path, arcname=arcname)
     return bundle_path
