@@ -17,6 +17,7 @@ from agno.tools.toolkit import Toolkit
 
 from .chemprop_toolkit import ChempropToolkit
 from .lightgbm_toolkit import LightGBMToolkit
+from .prediction_registry_toolkit import PredictionRegistryToolkit
 from .qsar_training_policy import (
     describe_compute_environment,
     resolve_seed_policy,
@@ -178,13 +179,28 @@ class BenchmarkToolkit(Toolkit):
         lightgbm_toolkit: Optional[LightGBMToolkit] = None,
         tabicl_toolkit: Optional[TabICLToolkit] = None,
         molecular_feature_toolkit: Optional[MolecularFeatureToolkit] = None,
+        registry_toolkit: Optional[PredictionRegistryToolkit] = None,
     ):
         super().__init__("benchmark_prediction")
         self.chemprop_toolkit = chemprop_toolkit or ChempropToolkit()
         self.lightgbm_toolkit = lightgbm_toolkit or LightGBMToolkit()
         self.tabicl_toolkit = tabicl_toolkit or TabICLToolkit()
         self.molecular_feature_toolkit = molecular_feature_toolkit or MolecularFeatureToolkit()
+        self.registry_toolkit = registry_toolkit
         self.register(self.benchmark_qsar_models)
+
+    def _get_registry_toolkit(self) -> PredictionRegistryToolkit:
+        if self.registry_toolkit is None:
+            self.registry_toolkit = PredictionRegistryToolkit(
+                backends={
+                    self.chemprop_toolkit.backend.backend_name: self.chemprop_toolkit.backend,
+                    self.lightgbm_toolkit.backend.backend_name: self.lightgbm_toolkit.backend,
+                    self.tabicl_toolkit.backend.backend_name: self.tabicl_toolkit.backend,
+                },
+                default_backend_name=self.chemprop_toolkit.backend.backend_name,
+                register_tools=False,
+            )
+        return self.registry_toolkit
 
     def _init_feature_cache(
         self,
@@ -694,7 +710,8 @@ class BenchmarkToolkit(Toolkit):
             or result.get("metrics")
             or {}
         )
-        self.chemprop_toolkit.register_model(
+        registry_toolkit = self._get_registry_toolkit()
+        registry_toolkit.register_model(
             model_id=temporary_model_id,
             model_path=str(model_path),
             backend_name=candidate["backend_name"],
@@ -747,7 +764,7 @@ class BenchmarkToolkit(Toolkit):
             applicability_domain=result.get("applicability_domain") or {},
             agent=agent,
         )
-        persisted = self.chemprop_toolkit.persist_registered_model(
+        persisted = registry_toolkit.persist_registered_model(
             model_id=temporary_model_id,
             display_name=self._display_name_for_candidate(
                 candidate=candidate,

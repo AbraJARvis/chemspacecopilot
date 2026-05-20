@@ -10,6 +10,7 @@ from cs_copilot.tools.prediction import catalog as catalog_module
 from cs_copilot.tools.prediction.benchmark_toolkit import BenchmarkToolkit, _coerce_list
 from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
 from cs_copilot.tools.prediction.lightgbm_toolkit import LightGBMToolkit
+from cs_copilot.tools.prediction.prediction_registry_toolkit import PredictionRegistryToolkit
 from cs_copilot.tools.prediction.tabicl_toolkit import TabICLToolkit
 
 
@@ -341,10 +342,28 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     monkeypatch.setattr(lightgbm_toolkit.backend, "is_available", lambda: True)
     monkeypatch.setattr(tabicl_toolkit.backend, "is_available", lambda: True)
 
+    def fail_chemprop_registry_call(*args, **kwargs):
+        raise AssertionError("BenchmarkToolkit should use PredictionRegistryToolkit for registry calls")
+
+    monkeypatch.setattr(chemprop_toolkit, "register_model", fail_chemprop_registry_call)
+    monkeypatch.setattr(chemprop_toolkit, "persist_registered_model", fail_chemprop_registry_call)
+
+    registry_toolkit = PredictionRegistryToolkit(
+        backends={
+            chemprop_toolkit.backend.backend_name: chemprop_toolkit.backend,
+            lightgbm_toolkit.backend.backend_name: lightgbm_toolkit.backend,
+            tabicl_toolkit.backend.backend_name: tabicl_toolkit.backend,
+        },
+        catalog=catalog_module.PredictionModelCatalog(records=[], source_path=catalog_path),
+        default_backend_name=chemprop_toolkit.backend.backend_name,
+        register_tools=False,
+    )
+
     toolkit = BenchmarkToolkit(
         chemprop_toolkit=chemprop_toolkit,
         lightgbm_toolkit=lightgbm_toolkit,
         tabicl_toolkit=tabicl_toolkit,
+        registry_toolkit=registry_toolkit,
     )
 
     monkeypatch.setattr(
